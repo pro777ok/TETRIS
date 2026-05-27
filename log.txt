@@ -1,0 +1,145 @@
+
+> tetris-multiplayer@1.0.0 start
+> node server/server.js
+
+◇ injected env (1) from .env // tip: ⌘ custom filepath { path: '/custom/path/.env' }
+◇ injected env (0) from .env // tip: ⌁ auth for agents [www.vestauth.com]
+Tetrix server on http://localhost:3000
+[Discord] Logged in as TETRIS#9513
+[Discord] Found target user uni298 (1487457757991927838) in guild さぶれ鯖
+connected: mg5inLb8n9jDYiAJAAAB
+connected: pMa6bRYLAGFMlYbqAAAD
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=2 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=4 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=4 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[PUYO ATK] from=Uni298 total=4 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=4
+[PUYO ATK] from=Uni298 total=5 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=5
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=2 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=2 spin=ISPIN ren=1 b2b=true b2bCount=2 allClear=false atkBefore=3 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=4 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=MINI_TSPIN ren=1 b2b=true b2bCount=2 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=3 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[PUYO ATK] from=Uni298 total=6 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=6
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=4 b2b=false b2bCount=0 allClear=false atkBefore=3 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=5 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=3 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=3 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=3 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=3 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=3 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[PUYO ATK] from=Uni298 total=12 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=12
+[BOT ATK] 🤖NOVA: lines=2 spin=ISPIN ren=1 b2b=true b2bCount=2 allClear=false atkBefore=3 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=4 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=2 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=1 spin=MINI_TSPIN ren=1 b2b=true b2bCount=2 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[PUYO ATK] from=Uni298 total=7 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=7
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=2 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=4 spin=ISPIN ren=1 b2b=true b2bCount=2 allClear=false atkBefore=5 atkAfter=2
+[BOT ATK] 🤖NOVA: lines=3 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=4 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=4 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=2 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=4 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=4 atkAfter=1
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[PUYO ATK] from=Uni298 total=2 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=2
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=4 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=4 atkAfter=1
+[PUYO ATK] from=Uni298 total=3 playerModes={"pMa6bRYLAGFMlYbqAAAD":"puyo"}
+[PUYO ATK] targets=🤖NOVA(bot_17,bot=true,alive=true)
+[PUYO ATK] -> target=🤖NOVA mode=tetris isBot=true
+[PUYO ATK] -> bot: mult=1 lines=3
+[BOT ATK] 🤖NOVA: lines=2 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=2 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=3 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=1 b2b=false b2bCount=0 allClear=false atkBefore=0 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=null ren=2 b2b=false b2bCount=0 allClear=false atkBefore=1 atkAfter=0
+[BOT ATK] 🤖NOVA: lines=1 spin=ISPIN ren=1 b2b=true b2bCount=1 allClear=false atkBefore=1 atkAfter=0
