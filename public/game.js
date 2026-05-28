@@ -49,6 +49,7 @@ function updateSetting(key,val){
   saveSettings();
 }
 function toggleSettings(){document.getElementById('settings-modal').classList.toggle('open');}
+function toggleHostSettings(){const b=document.getElementById('host-settings-body');if(!b)return;const h=b.previousElementSibling;b.style.display=b.style.display==='none'?'':'none';if(h)h.textContent=b.style.display==='none'?'▶ ⚙ GAME SETTINGS':'▼ ⚙ GAME SETTINGS';}
 
 // ★ 背景画像機能
 let _bgImageUrl = null;
@@ -4181,6 +4182,8 @@ class GameRenderer{
     this.b2bBadgeCont.visible=false;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
+    this.elapsedText=Object.assign(new PIXI.Text('0:00',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(11*fsc),fill:0x888888,letterSpacing:2})),{x:this.mainBX+BOARD_W*sc+4,y:this.mainBY-22});
+    this.root.addChild(this.elapsedText);
 
     // ★ モード別背景オーバーレイテキスト（40ライン残り数 / Blitz残り時間）
     // ボードの boardCont に乗せるので常に正面に出るが、alpha低くして目立たなくする
@@ -7135,6 +7138,15 @@ class GameRenderer{
     this.drawGarbageMeter();
     this._drawDangerWarning();
     this.updateParticlesEtc(dt);
+    // ── Elapsed time ──
+    if(this.elapsedText){
+      const gs=this.gs||gameState||puyoGameState;
+      if(gs&&gs.startTime){
+        const sec=Math.floor((performance.now()-gs.startTime)/1000);
+        const m=Math.floor(sec/60);const s=sec%60;
+        this.elapsedText.text=m+':'+(s<10?'0':'')+s;
+      }
+    }
     // ULTRA: animated scanline
     if(settings.quality==='ultra'&&this._bgScanline){
       this._bgScanlineY=(this._bgScanlineY||0)+(dt*0.4);
@@ -7465,7 +7477,7 @@ class SpectatorRenderer{
   }
 }
 
-let das=null,arr=null,softDropTimer=null,keyState={};
+let das=null,dasDcd=null,arr=null,softDropTimer=null,keyState={};
 function setupInput(){document.addEventListener('keydown',handleKeyDown);document.addEventListener('keyup',handleKeyUp);}
 function removeInput(){document.removeEventListener('keydown',handleKeyDown);document.removeEventListener('keyup',handleKeyUp);}
 function handleKeyDown(e){
@@ -7502,17 +7514,17 @@ function startDAS(dir){
     let dcdStart=_dasStartedAt||0;
     const elapsed=performance.now()-dcdStart;
     const dcdWait=Math.max(0,dcdMs-elapsed);
-    setTimeout(()=>{
+    dasDcd=setTimeout(()=>{
       arr=setInterval(()=>{
         if(!gameState||!gameState.alive){stopDAS();return;}
         gameState.move(dir);
-      },settings.arrInterval||20);
+      },settings.arrInterval??20);
     },dcdWait);
-  },settings.dasDelay||133);
+  },settings.dasDelay??133);
 }
 let _dasStartedAt=0;
-function stopDAS(){if(das){clearTimeout(das);das=null;}if(arr){clearInterval(arr);arr=null;}}
-function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},settings.softDropInterval||50);}
+function stopDAS(){if(das){clearTimeout(das);das=null;}if(dasDcd){clearTimeout(dasDcd);dasDcd=null;}if(arr){clearInterval(arr);arr=null;}}
+function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},settings.softDropInterval??50);}
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
 
 // ---- Multiplayer ----
@@ -7898,7 +7910,7 @@ function _dpadStartDAS(key, action, repeatMs) {
       if (!gameState || !gameState.alive) { _dpadStopKey(key); return; }
       action();
     }, repeatMs);
-  }, settings.dasDelay||133);
+  }, settings.dasDelay??133);
 }
 
 function _dpadStopKey(key) {
@@ -7944,11 +7956,11 @@ function setupDpadButtons() {
   }
 
   bind('dpad-btn-left',
-    () => _dpadStartDAS('left',  () => gameState && gameState.move(-1), settings.arrInterval||20),
+    () => _dpadStartDAS('left',  () => gameState && gameState.move(-1), settings.arrInterval??20),
     () => { _dpadStopKey('left');  if(renderer) renderer._wallBumpActive=false; }
   );
   bind('dpad-btn-right',
-    () => _dpadStartDAS('right', () => gameState && gameState.move(1),  settings.arrInterval||20),
+    () => _dpadStartDAS('right', () => gameState && gameState.move(1),  settings.arrInterval??20),
     () => { _dpadStopKey('right'); if(renderer) renderer._wallBumpActive=false; }  );
   bind('dpad-btn-up',
     () => { if(gameState && gameState.alive) gameState.rotate(1); }, null
@@ -10615,8 +10627,8 @@ function removePuyoInput(){
 let _puyoDasTimers={};
 function _puyoStartDas(key,action,interval){
   if(_puyoDasTimers[key]){clearTimeout(_puyoDasTimers[key].das);clearInterval(_puyoDasTimers[key].arr);}
-  const dasDelay=settings.dasDelay||170;
-  const arrInterval=interval||settings.arrInterval||50;
+  const dasDelay=settings.dasDelay??170;
+  const arrInterval=interval??settings.arrInterval??50;
   // DCD: 直前のDASからの経過時間が短ければ待つ
   const dcdMs=settings.dcdDelay||0;
   const elapsed=performance.now()-(_puyoDasStartAt||0);
@@ -10690,17 +10702,17 @@ document.addEventListener('DOMContentLoaded',()=>{
   // ソフトドロップ速度
   const sdi=document.getElementById('soft-drop-interval');
   const sdv=document.getElementById('soft-drop-val');
-  if(sdi)sdi.value=settings.softDropInterval||50;
-  if(sdv)sdv.textContent=(settings.softDropInterval||50)+'ms';
+  if(sdi)sdi.value=settings.softDropInterval??50;
+  if(sdv)sdv.textContent=(settings.softDropInterval??50)+'ms';
   // DAS / ARR
   const dasDel=document.getElementById('das-delay-input');
   const dasDelV=document.getElementById('das-delay-val');
-  if(dasDel)dasDel.value=settings.dasDelay||133;
-  if(dasDelV)dasDelV.textContent=(settings.dasDelay||133)+'ms';
+  if(dasDel)dasDel.value=settings.dasDelay??133;
+  if(dasDelV)dasDelV.textContent=(settings.dasDelay??133)+'ms';
   const arrInt=document.getElementById('arr-interval-input');
   const arrIntV=document.getElementById('arr-interval-val');
-  if(arrInt)arrInt.value=settings.arrInterval||20;
-  if(arrIntV)arrIntV.textContent=(settings.arrInterval||20)+'ms';
+  if(arrInt)arrInt.value=settings.arrInterval??20;
+  if(arrIntV)arrIntV.textContent=(settings.arrInterval??20)+'ms';
   const dcdDel=document.getElementById('dcd-delay-input');
   const dcdDelV=document.getElementById('dcd-delay-val');
   if(dcdDel)dcdDel.value=settings.dcdDelay||0;

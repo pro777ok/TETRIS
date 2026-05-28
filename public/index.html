@@ -1012,7 +1012,8 @@
       <!-- HOST SETTINGS PANEL -->
       <div id="host-settings-wrap" style="display:none">
         <div class="host-settings-panel">
-          <h3>⚙ GAME SETTINGS</h3>
+          <h3 onclick="toggleHostSettings()" style="cursor:pointer;user-select:none">▼ ⚙ GAME SETTINGS</h3>
+          <div id="host-settings-body">
 
           <div class="hs-row">
             <label>⚡ Mutation Rate</label>
@@ -1193,6 +1194,7 @@
               <button class="btn btn-secondary" onclick="clearBotCode()" style="padding:0.3rem 0.7rem;font-size:0.7rem;background:rgba(255,0,110,0.15);border-color:rgba(255,0,110,0.4)">CLEAR</button>
             </div>
             <div id="bot-code-status" style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin-top:0.2rem"></div>
+          </div>
           </div>
         </div>
       </div>
