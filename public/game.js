@@ -7478,8 +7478,23 @@ class SpectatorRenderer{
 }
 
 let das=null,dasDcd=null,arr=null,softDropTimer=null,keyState={};
-function setupInput(){document.addEventListener('keydown',handleKeyDown);document.addEventListener('keyup',handleKeyUp);}
-function removeInput(){document.removeEventListener('keydown',handleKeyDown);document.removeEventListener('keyup',handleKeyUp);}
+function setupInput(){
+  document.addEventListener('keydown',handleKeyDown);
+  document.addEventListener('keyup',handleKeyUp);
+  document.addEventListener('visibilitychange',_onBlurReset);
+  window.addEventListener('blur',_onBlurReset);
+}
+function removeInput(){
+  document.removeEventListener('keydown',handleKeyDown);
+  document.removeEventListener('keyup',handleKeyUp);
+  document.removeEventListener('visibilitychange',_onBlurReset);
+  window.removeEventListener('blur',_onBlurReset);
+}
+function _onBlurReset(){
+  keyState={};stopDAS();stopSoftDrop();
+  if(puyoGameState)Object.values(_puyoDasTimers).forEach(t=>{clearTimeout(t.das);clearInterval(t.arr);});
+  _puyoDasTimers={};
+}
 function handleKeyDown(e){
   if(!gameState||!gameState.alive)return;
   // チャット・入力欄にフォーカスがある時はゲーム操作を全てブロック
@@ -7487,6 +7502,8 @@ function handleKeyDown(e){
   if(ae&&(ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.isContentEditable))return;
   if(keyState[e.code])return;
   keyState[e.code]=true;
+  // ゲーム用キーはブラウザのデフォルト動作を抑制
+  if(e.code.startsWith('Arrow')||['Space','KeyX','KeyZ','KeyA','KeyC','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
   switch(e.code){
     case 'ArrowLeft':gameState.move(-1);_dasStartedAt=performance.now();startDAS(-1);break;
     case 'ArrowRight':gameState.move(1);_dasStartedAt=performance.now();startDAS(1);break;
@@ -7494,7 +7511,7 @@ function handleKeyDown(e){
     case 'KeyZ':gameState.rotate(-1);break;
     case 'KeyA':gameState.rotate180();break;
     case 'ArrowDown':startSoftDrop();break;
-    case 'Space':e.preventDefault();gameState.hardDrop();break;
+    case 'Space':gameState.hardDrop();break;
     case 'ShiftLeft':case 'ShiftRight':case 'KeyC':gameState.hold();break;
   }
 }
@@ -10616,11 +10633,15 @@ function _onPuyoTE(e){
 function setupPuyoInput(){
   document.addEventListener('keydown',_puyoKey);
   document.addEventListener('keyup',_puyoKeyUp);
+  document.addEventListener('visibilitychange',_onBlurReset);
+  window.addEventListener('blur',_onBlurReset);
   _puyoDasTimers={};
 }
 function removePuyoInput(){
   document.removeEventListener('keydown',_puyoKey);
   document.removeEventListener('keyup',_puyoKeyUp);
+  document.removeEventListener('visibilitychange',_onBlurReset);
+  window.removeEventListener('blur',_onBlurReset);
   Object.values(_puyoDasTimers).forEach(t=>{clearTimeout(t.das);clearInterval(t.arr);});
   _puyoDasTimers={};
 }
@@ -10653,6 +10674,7 @@ function _puyoKeyUp(e){
 function _puyoKey(e){
   if(!puyoGameState||!puyoGameState.alive)return;
   if(e.repeat)return;
+  if(e.code.startsWith('Arrow')||['Space','KeyX','KeyZ','KeyA','KeyC','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
   switch(e.code){
     case'ArrowLeft':_puyoStartDas(e.code,()=>puyoGameState.move(-1));break;
     case'ArrowRight':_puyoStartDas(e.code,()=>puyoGameState.move(1));break;
