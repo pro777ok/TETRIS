@@ -1318,6 +1318,10 @@
         <option value="on" selected>ON</option>
       </select>
     </div>
+    <div class="settings-row">
+      <label>MAX FRAMERATE <span class="settings-val" id="maxfps-val">144fps</span></label>
+      <input type="range" id="maxfps-input" min="30" max="360" step="10" value="144" oninput="updateSetting('maxFPS',this.value)">
+    </div>
     <h2 style="margin-top:1rem">🖼 BACKGROUND</h2>
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の背景画像を設定</div>
     <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem">

@@ -2256,8 +2256,13 @@ class BotPlayer {
     if (room && room.roomSettings && room.roomSettings.puyotetMode) {
       attack = attack + Math.min(this.ren, 10);
     } else {
-      const comboBonus = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5][Math.min(this.ren, 14)] ?? 5;
-      attack = attack + comboBonus;
+      const isBig = lines === 4 || (isTSpin && (lines === 2 || lines === 3));
+      if (isBig) {
+        attack = Math.floor(attack * (1 + Math.max(0, this.ren - 1) * 0.25));
+      } else {
+        const comboBonus = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5][Math.min(this.ren, 14)] ?? 5;
+        attack = attack + comboBonus;
+      }
     }
 
     if (allClear) {
@@ -2360,8 +2365,11 @@ class BotPlayer {
           this._ccInit();
         }
       }
-      // コンボ中は相殺されなかったゴミをキューに戻す
-      for (const g of remaining) this.garbageQueue.unshift(g);
+    } else if (remaining.length > 0) {
+      // コンボ中は適用しなかったゴミをキューに戻す（500ms待ち）
+      for (const g of remaining) {
+        this.garbageQueue.unshift({...g, readyAt: now + 500});
+      }
     }
 
     if (room && attack > 0) {

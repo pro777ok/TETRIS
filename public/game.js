@@ -2,7 +2,7 @@
 
 // ---- Settings ----
 let mobileControlsEnabled = false; // Mobile controls toggle
-let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,
+let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,
   overlayOpacity:33,
   uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
   dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false}};
@@ -44,6 +44,7 @@ function updateSetting(key,val){
   else if(key==='arrInterval'){settings.arrInterval=parseInt(val);document.getElementById('arr-interval-val').textContent=val+'ms';}
   else if(key==='dcdDelay'){settings.dcdDelay=parseInt(val);document.getElementById('dcd-delay-val').textContent=val+'ms';}
   else if(key==='swipeThreshold'){settings.swipeThreshold=parseInt(val);document.getElementById('swipe-threshold-val').textContent=val+'px';}
+  else if(key==='maxFPS'){settings.maxFPS=parseInt(val);document.getElementById('maxfps-val').textContent=val+'fps';if(gameApp&&gameApp.ticker)gameApp.ticker.maxFPS=parseInt(val);PIXI.Ticker.shared.maxFPS=parseInt(val);}
   else if(key==='dpad'){if(val.part){settings.dpad[val.part]={...settings.dpad[val.part],...val.data};}else{settings.dpad={...settings.dpad,...val};}applyDpadLayout();}
   else if(key==='uiLayout'){settings.uiLayout={...settings.uiLayout,...val};applyUiLayout();}
   saveSettings();
@@ -888,6 +889,7 @@ socket.on('spectate_joined',({roomId:rid,players,host})=>{
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
   const res=settings.quality==='minimum'||settings.quality==='low'?1:settings.quality==='medium'?1.5:settings.quality==='ultra'?2.5:2;
   gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,backgroundAlpha:1,transparent:true,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
+  gameApp.ticker.maxFPS = settings.maxFPS||144;
   container.appendChild(gameApp.view);
   _applyBgImage();
   gameState=null;
@@ -1128,7 +1130,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
 const ANIM_SPEED = 1.0;
 
 // PixiJS tickerのFPS上限を上げる（デフォルト60→120）
-PIXI.Ticker.shared.maxFPS = 144; // 144fps (高リフレッシュレート対応)
+PIXI.Ticker.shared.maxFPS = settings.maxFPS||144; // 設定可能fps上限
 
 // ---- Seeded RNG ----
 function seededRng(seed){
@@ -1146,7 +1148,7 @@ function showCountdown(bagSeed,cb){
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
   const res=settings.quality==='minimum'||settings.quality==='low'?1:settings.quality==='medium'?1.5:settings.quality==='ultra'?2.5:2;
   gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,backgroundAlpha:1,transparent:true,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
-  gameApp.ticker.maxFPS=144; // 144fps
+  gameApp.ticker.maxFPS = settings.maxFPS||144;
   container.appendChild(gameApp.view);
   _applyBgImage();
   gameState=new TetrisGame(bagSeed);
@@ -3264,6 +3266,7 @@ function openReplayViewer(replayData, mode) {
   const res = settings.quality === 'minimum' || settings.quality === 'low' ? 1 :
               settings.quality === 'medium' ? 1.5 : settings.quality === 'ultra' ? 2.5 : 2;
   gameApp = new PIXI.Application({ width: W, height: H, backgroundColor: 0x030712, backgroundAlpha: 1, transparent: true, antialias: true, resolution: res, autoDensity: true });
+  gameApp.ticker.maxFPS = settings.maxFPS||144;
   container.appendChild(gameApp.view);
   _applyBgImage();
 
@@ -9086,6 +9089,13 @@ class PuyoRenderer {
     this._scoreTxt.x=bW/2; this._scoreTxt.y=bH+Math.floor(6*sc);
     this._myBoardCont.addChild(this._scoreTxt);
 
+    // ─ 経過時間 ─
+    this._elapsedTxt=new PIXI.Text('0:00',new PIXI.TextStyle({
+      fontFamily:'Share Tech Mono',fontSize:Math.floor(11*sc),fill:0x888888,letterSpacing:2
+    }));
+    this._elapsedTxt.x=bW+4; this._elapsedTxt.y=-Math.floor(26*sc);
+    this._myBoardCont.addChild(this._elapsedTxt);
+
     // ─ ゴミゲージ (テトリスと同じ) ─
     this._myGarbageGfx=new PIXI.Graphics();
     this._myGarbageGfx.x=bW+Math.floor(4*sc);
@@ -10118,6 +10128,12 @@ class PuyoRenderer {
     }
     // スコア更新
     if(this._scoreTxt&&this.game) this._scoreTxt.text=this.game.score.toLocaleString();
+    // 経過時間
+    if(this._elapsedTxt&&this.game){
+      const sec=Math.floor((performance.now()-this.game.startTime)/1000);
+      const m=Math.floor(sec/60);const s=sec%60;
+      this._elapsedTxt.text=m+':'+(s<10?'0':'')+s;
+    }
     // コンボ表示（chain=0時に_comboTxtが消えていたらgameから再表示）
     if(this._comboTxt&&this.game&&this.game.comboCount>=2&&this._comboTxt.alpha===0){
       this._comboTxt.text=`${this.game.comboCount} COMBO!`;
