@@ -4276,6 +4276,13 @@ class GameRenderer{
     const gy=gs.ghostY();
     if(gy===gs.current.y)return;
     const shape=gs._getShapeForPiece(gs.current);
+    let maxDr=-Infinity;
+    for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+      if(!shape[r][c])continue;
+      const dr=gy+r-HIDDEN;
+      if(dr>maxDr)maxDr=dr;
+    }
+    const yOff=maxDr<0?-maxDr*CELL:0;
     const pieceColor=PIECE_COLORS[gs.current.type]||0xffffff;
     const fillAlpha=0.22;
     const lineAlpha=0.90;
@@ -4283,7 +4290,7 @@ class GameRenderer{
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const dr=gy+r-HIDDEN;
-      const cx=(gs.current.x+c)*CELL,cy=dr*CELL,s=CELL-1;
+      const cx=(gs.current.x+c)*CELL,cy=dr*CELL+yOff,s=CELL-1;
       // Fill with piece color (semi-transparent)
       g.lineStyle(0);
       g.beginFill(pieceColor,fillAlpha);
@@ -4314,7 +4321,7 @@ class GameRenderer{
       const dr=gs.current.y+r-HIDDEN;
       if(dr>maxDr)maxDr=dr;
     }
-    const yOff=maxDr<0?Math.min(-maxDr,gs._garbagePushY||0)*CELL:0;
+    const yOff=maxDr<0?-maxDr*CELL:0;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;const dr=gs.current.y+r-HIDDEN;
       this.drawCell(g,(gs.current.x+c)*CELL,dr*CELL+yOff,CELL,gs.current.type,dr<0?0.75:1,lockFlash);
