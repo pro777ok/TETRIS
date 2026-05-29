@@ -7588,7 +7588,7 @@ socket.on('opponent_update',(data)=>{
 
 // BOT board update (same structure as opponent_update)
 socket.on('bot_update',(data)=>{
-  const{id}=data;
+  const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue}=data;
   if(renderer&&renderer.onOpponentUpdate) renderer.onOpponentUpdate(id, data);
   if(!renderer||!renderer.opBoardData)return;
   ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
