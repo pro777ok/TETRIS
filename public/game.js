@@ -7477,7 +7477,7 @@ class SpectatorRenderer{
   }
 }
 
-let das=null,dasDcd=null,arr=null,softDropTimer=null,keyState={};
+let das=null,dasDcd=null,arr=null,softDropTimer=null,keyState={},dasActive=false;
 function setupInput(){
   document.addEventListener('keydown',handleKeyDown);
   document.addEventListener('keyup',handleKeyUp);
@@ -7491,7 +7491,7 @@ function removeInput(){
   window.removeEventListener('blur',_onBlurReset);
 }
 function _onBlurReset(){
-  keyState={};stopDAS();stopSoftDrop();
+  keyState={};dasActive=false;stopDAS();stopSoftDrop();
   if(puyoGameState)Object.values(_puyoDasTimers).forEach(t=>{clearTimeout(t.das);clearInterval(t.arr);});
   _puyoDasTimers={};
 }
@@ -7525,22 +7525,26 @@ function handleKeyUp(e){
 }
 function startDAS(dir){
   stopDAS();
+  dasActive=true;
   das=setTimeout(()=>{
+    if(!dasActive)return;
     // DCD (DAS Cut Delay): スポーン直後のDAS誤爆防止
     const dcdMs=settings.dcdDelay||0;
     let dcdStart=_dasStartedAt||0;
     const elapsed=performance.now()-dcdStart;
     const dcdWait=Math.max(0,dcdMs-elapsed);
     dasDcd=setTimeout(()=>{
+      if(!dasActive){stopDAS();return;}
       arr=setInterval(()=>{
         if(!gameState||!gameState.alive){stopDAS();return;}
+        if(!dasActive)return;
         gameState.move(dir);
       },settings.arrInterval??20);
     },dcdWait);
   },settings.dasDelay??133);
 }
 let _dasStartedAt=0;
-function stopDAS(){if(das){clearTimeout(das);das=null;}if(dasDcd){clearTimeout(dasDcd);dasDcd=null;}if(arr){clearInterval(arr);arr=null;}}
+function stopDAS(){dasActive=false;if(das){clearTimeout(das);das=null;}if(dasDcd){clearTimeout(dasDcd);dasDcd=null;}if(arr){clearInterval(arr);arr=null;}}
 function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},settings.softDropInterval??50);}
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
 
@@ -10647,7 +10651,7 @@ function removePuyoInput(){
 }
 let _puyoDasTimers={};
 function _puyoStartDas(key,action,interval){
-  if(_puyoDasTimers[key]){clearTimeout(_puyoDasTimers[key].das);clearInterval(_puyoDasTimers[key].arr);}
+  if(_puyoDasTimers[key]){_puyoDasTimers[key].active=false;clearTimeout(_puyoDasTimers[key].das);clearInterval(_puyoDasTimers[key].arr);}
   const dasDelay=settings.dasDelay??170;
   const arrInterval=interval??settings.arrInterval??50;
   // DCD: 直前のDASからの経過時間が短ければ待つ
@@ -10655,15 +10659,21 @@ function _puyoStartDas(key,action,interval){
   const elapsed=performance.now()-(_puyoDasStartAt||0);
   const dcdWait=Math.max(0,dcdMs-elapsed);
   action();
-  _puyoDasTimers[key]={das:setTimeout(()=>{
-    _puyoDasTimers[key].arr=setInterval(action,arrInterval);
-  },dasDelay+dcdWait)};
+  const entry={active:true,das:null,arr:null};
+  entry.das=setTimeout(()=>{
+    if(!entry.active)return;
+    entry.arr=setInterval(()=>{
+      if(!entry.active)return;
+      action();
+    },arrInterval);
+  },dasDelay+dcdWait);
+  _puyoDasTimers[key]=entry;
   _puyoDasStartAt=performance.now();
 }
 let _puyoDasStartAt=0;
 function _puyoStopDas(key){
   const t=_puyoDasTimers[key];
-  if(t){clearTimeout(t.das);clearInterval(t.arr);delete _puyoDasTimers[key];}
+  if(t){t.active=false;clearTimeout(t.das);clearInterval(t.arr);delete _puyoDasTimers[key];}
 }
 function _puyoKeyUp(e){
   switch(e.code){

@@ -291,13 +291,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   }
 
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
-  if (spinType === 'TSPIN') {
-    if (linesCleared === 1) score += 1200;
-    else if (linesCleared === 2) score += 2800;
-    else if (linesCleared === 3) score += 4500;
-    else if (linesCleared > 0) score += linesCleared * 500;
-  } else if (spinType === 'MINI_TSPIN' && linesCleared > 0) {
-    score += 200;
+  if (spinType === 'TSPIN' || spinType === 'MINI_TSPIN') {
+    score -= 100000;
   } else if (spinType && linesCleared > 0) {
     score += linesCleared * 600;
   }
@@ -418,7 +413,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     if (wellCount >= 2) score -= (wellCount - 1) * 300;
   }
 
-  if (maxH <= 14) score += evaluateTspinSetup(board, heights);
+  // T-spin禁止のため評価しない
 
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / cols;
   score -= variance * 1.2;
@@ -1223,29 +1218,9 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       return b;
     }
 
-    // ── T-spin ボーナス強化 ────────────────────────────────────
-    if (p.spin === 'TSPIN') {
-      if (p.lines === 1) b += 1200;
-      else if (p.lines === 2) b += 2800; // TSD
-      else if (p.lines === 3) b += 4500; // TST
-    } else if (p.spin === 'MINI_TSPIN' && p.lines > 0) {
-      b += 200; // mini T-spin is still fine
-    } else if (p.spin && p.spin !== 'NONE' && p.lines > 0) {
-      // S/Z/L/J/I spin
-      b += p.lines * 600;
-    }
-
-    // ── T-spinセットアップ保持ボーナス (T以外のピース) ──────────
-    if (p.type !== 'T' && p.board) {
-      b += evaluateTspinSetup(p.board, (() => {
-        const cols = p.board[0].length;
-        return Array.from({ length: cols }, (_, c) => {
-          for (let r = 0; r < ROWS + HIDDEN; r++) {
-            if (p.board[r][c]) return ROWS + HIDDEN - r;
-          }
-          return 0;
-        });
-      })()) * 0.5;
+    // ── T-spin 禁止（botはtspinしない） ────────────────────────
+    if (p.spin === 'TSPIN' || p.spin === 'MINI_TSPIN') {
+      b -= 100000;
     }
 
     // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
@@ -1271,7 +1246,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
     // ── ソフトドロップ縦積みペナルティ ─────────────────────────
     // ソフトドロップで無理矢理高い柱を作る行為を禁止
-    if (p.needsSoftDrop && p.board && p.lines === 0) {
+    if (p.needsSoftDrop && p.board) {
       const cols = p.board[0].length;
       const ph = [];
       for (let c = 0; c < cols; c++) {
@@ -1283,12 +1258,12 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       const maxH = Math.max(...ph);
       for (let c = 0; c < cols; c++) {
         const h = ph[c];
-        if (h < 3) continue;
+        if (h < 2) continue;
         const lh = c > 0 ? ph[c-1] : 0;
         const rh = c < cols-1 ? ph[c+1] : 0;
         const protrude = h - Math.max(lh, rh);
-        if (protrude >= 2) {
-          b -= protrude * protrude * 120;
+        if (protrude >= 1) {
+          b -= protrude * protrude * 300;
         }
       }
     }
