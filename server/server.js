@@ -338,10 +338,10 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   }
 
   // ── 穴ペナルティ（大幅強化） ──────────────────────────────────
-  score -= holes        * 350.0;  // 穴を絶対開けるな
-  score -= coveredDepth * 45.0;   // 深い穴は致命的
-  score -= floorGaps    * 60.0;   // 底の隙間は最悪
-  score -= overhangs    * 50.0;   // 張り出しもペナルティ
+  score -= holes        * 600.0;  // 穴を絶対開けるな
+  score -= coveredDepth * 80.0;   // 深い穴は致命的
+  score -= floorGaps    * 120.0;  // 底の隙間は最悪
+  score -= overhangs    * 100.0;  // 張り出しもペナルティ
   score -= bumpiness    * 6.0;
   score -= sumH         * 2.0;
 
@@ -425,8 +425,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     const lh = c > 0 ? heights[c-1] : 0;
     const rh = c < cols-1 ? heights[c+1] : 0;
     const protrude = h - Math.max(lh, rh);
-    if (protrude >= 2) {
-      score -= protrude * protrude * 50;
+    if (protrude >= 1) {
+      score -= protrude * protrude * 120;
     }
     if (protrude >= 4) {
       score -= protrude * 150;
@@ -1210,7 +1210,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
   function addBonuses(p) {
     let b = 0;
-    if (p.lines === 4) b += 800;
+    if (p.lines === 4) b += 3000;
 
     // PC達成ボーナス
     if (p.board && p.board.every(row => row.every(c => c === 0))) {
@@ -1279,6 +1279,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     const placements = getAllPlacementsBFS(board, useType);
     let bestScore = -Infinity, bestPlacement = null;
     for (const p of placements) {
+      if (p.needsSoftDrop) continue;
       const newRen = p.lines > 0 ? (ren||0) + 1 : 0;
       const iB2B = b2b && (p.lines===4||(p.spin&&p.spin!=='MINI_TSPIN'&&p.lines>0));
       const nc = combo + (p.lines > 0 ? 1 : 0);

@@ -1800,7 +1800,7 @@ class TetrisGame{
         socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
       }
       // 相手に視覚エフェクトを送信
-      const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear};
+      const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack};
       socket.emit('line_clear_effect',lcEv);
       ReplayRecorder.record('line_clear_effect',lcEv);
 
@@ -3377,7 +3377,7 @@ function openReplayViewer(replayData, mode) {
       }
       case 'line_clear_effect': {
         // ライン消去エフェクト（リプレイ：完全版エフェクト）
-        const { count, spinType, isB2B, ren, allClear } = data;
+        const { count, spinType, isB2B, ren, allClear, attack } = data;
 
         // B2B切れ検出（前回B2Bがあって今回ない場合）
         const wasB2B = replayState._lastWasB2B || false;
@@ -3409,7 +3409,7 @@ function openReplayViewer(replayData, mode) {
           // フルエフェクト（renderer.onLineClearを直接呼ぶ）
           if (renderer.onLineClear) {
             renderer._b2bCount = replayState._b2bCount;
-            renderer.onLineClear([], count, spinType, isB2B, 0, ren, allClear, 0);
+            renderer.onLineClear([], count, spinType, isB2B, 0, ren, allClear, attack||0);
           }
         } else {
           // ライン消去なし → RENリセット
