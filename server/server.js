@@ -79,7 +79,7 @@ const lastRoom = {};
 const onlinePlayers = {}; // socket.id -> name
 
 // ── Constants (mirror client) ──────────────────────────────────────
-const COLS = 10, ROWS = 20, HIDDEN = 3;
+const COLS = 10, ROWS = 20, HIDDEN = 7;
 // 4Wideモード時のボード幅
 const COLS_4WIDE = 4;
 

@@ -1253,7 +1253,7 @@ const SFX={
 };
 
 // ---- Constants ----
-const COLS=10,HIDDEN=3;let ROWS=20;
+const COLS=10,HIDDEN=7;let ROWS=20;
 const COLS_4WIDE=4;
 // ゲーム中の実効列数（4wideモードで切り替わる）
 function getGameCols(){return fourWideMode?COLS_4WIDE:COLS;}
@@ -1609,7 +1609,7 @@ class TetrisGame{
     }
     if(minNY<0){
       const shift=-minNY;
-      for(let i=0;i<shift;i++){this.board.unshift(Array(cols).fill(0));this.board.pop();}
+      for(let i=0;i<shift;i++)this.board.unshift(Array(cols).fill(0));
       this.current.y+=shift;
     }
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
@@ -1631,7 +1631,7 @@ class TetrisGame{
     this._pendingGameOver=false;
     const cleared=[];
     let garbageCountInClear = 0;
-    for(let r=Math.min(this.board.length-1,ROWS+HIDDEN-1);r>=0;r--){
+    for(let r=this.board.length-1;r>=0;r--){
       if(this.board[r].every(c=>c!==0)){
         cleared.push(r);
         if(this.board[r].some(c=>c==='G')) garbageCountInClear++;
@@ -2145,7 +2145,7 @@ const ALLSPIN_CHALLENGES = [
 // AllSpin 盤面パターン定義
 //
 // 設計規則:
-//   - rows配列: 各要素が盤面1行（HIDDEN=3行目〜22行目 = board[3..22]）
+//   - rows配列: 各要素が盤面1行（HIDDEN行目〜ROWS+HIDDEN-1行目 = board[HIDDEN..ROWS+HIDDEN-1]）
 //     インデックス0=rows[0]が最上段(board[HIDDEN]=board[3])
 //     インデックス19=最下段(board[22])
 //   - 0=空セル、1=ブロック（後でランダム色で着色）
