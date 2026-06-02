@@ -1326,6 +1326,7 @@ class TetrisGame{
     this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
     this.garbageQueue=[];
+    this._deferredGarbage=[];
     this.gravityMs=0;
     renSemitone=0;
 
@@ -1582,6 +1583,7 @@ class TetrisGame{
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
+    this._applyReadyGarbage();
     renderer&&renderer._endBadge();
     const shape=this._getShapeForPiece(this.current);
     const wasSpin=!!this.lastSpin,spinType=this.lastSpinType;
@@ -1739,48 +1741,8 @@ class TetrisGame{
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
-      // すぐにせり上がるゴミ（armed）を判定
-      const now=performance.now();
-      const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
-      this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      
-      const remaining=armed.filter(g=>g.lines>0);
-      // コンボ中（ren>=1）はゴミを適用しない（PuyoTet除く）
-      if(remaining.length>0&&(puyotetMode||this.ren<1)){
-        const groups=groupByBatch(remaining);
-        
-        // 1手で最大10ラインまでせり上がる（puyotetOff時はrenなしでまとめて）
-        let linesToAdd = 0;
-        const CAP = puyotetMode ? 8 : 10;
-        
-        // ren=0 時は全グループで同一ホールを使う（直列）
-        const sameHole=this.ren<1&&!puyotetMode?((groups[0]&&groups[0][0].holeCol!==undefined?groups[0][0].holeCol:Math.floor(Math.random()*getGameCols()))):null;
-        
-        for(const grp of groups){
-          if (linesToAdd >= CAP) break;
-          let holeCol=sameHole!==null?sameHole:(grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols()));
-          for(const chunk of grp){
-            if (linesToAdd >= CAP) {
-              // Capを超えた分はキューに戻す (少し遅延させる)
-              this.garbageQueue.unshift({...chunk, readyAt: now + 500});
-              continue;
-            }
-            for(let i=0;i<chunk.lines;i++){
-              if (linesToAdd >= CAP) {
-                this.garbageQueue.unshift({lines: chunk.lines - i, fromId: chunk.fromId, readyAt: now + 500, holeCol: holeCol});
-                break;
-              }
-              const row=Array(getGameCols()).fill('G');row[holeCol]=0;this.board.push(row);this.board.shift();
-              linesToAdd++;this.totalGarbageReceived++;
-              if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
-            }
-          }
-        }
-        SFX.garbage();renderer&&renderer.onGarbageApplied(linesToAdd);
-      } else if(remaining.length>0){
-        // コンボ中は相殺されなかったゴミをキューに戻す
-        for(const g of remaining)this.garbageQueue.unshift(g);
-      }
+      // ゴミはロック時に適用（遅延適用）
+      // キューに残して次のlockPieceでまとめて適用
 
       // Update B2B state
       const prevB2bCount=this.b2bCount;
@@ -1822,13 +1784,7 @@ class TetrisGame{
       renderer&&renderer.endComboLabel();
       // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
-      // ガベージ即時適用（ラインなし時）
-      const now=performance.now();
-      const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
-      this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      if(armed.length&&this.combo<1){
-        this._applyGarbageCap(armed, puyotetMode?8:10);
-      }
+      // ゴミは次のlockPieceまで遅延
     }
 
     this.lastSpin=null;this.lastSpinType=null;
@@ -1943,6 +1899,38 @@ class TetrisGame{
     ReplayRecorder.record('board_update', data);
   }
 
+  // ロック時に準備済みゴミを一括適用
+  _applyReadyGarbage(){
+    const now=performance.now();
+    const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
+    if(armed.length===0)return;
+    this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
+    const cap=puyotetMode?8:10;
+    let linesToAdd=0;
+    const backToQueue=[];
+    for(const g of armed){
+      if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+500});continue;}
+      const canAdd=Math.min(g.lines,cap-linesToAdd);
+      if(canAdd>0){
+        const col=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*getGameCols());
+        for(let i=0;i<canAdd;i++){
+          const row=Array(getGameCols()).fill('G');row[col]=0;
+          this.board.push(row);this.board.shift();
+          this.totalGarbageReceived++;
+          if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
+          linesToAdd++;
+        }
+      }
+      if(canAdd<g.lines)backToQueue.push({lines:g.lines-canAdd,fromId:g.fromId,readyAt:now+500,holeCol:g.holeCol});
+    }
+    for(const g of backToQueue)this.garbageQueue.unshift(g);
+    if(linesToAdd>0){
+      SFX.garbage();
+      renderer&&renderer.onGarbageApplied(linesToAdd);
+      renderer&&renderer.onGarbageRowAdded(linesToAdd);
+    }
+  }
+
   // 現在ミノ位置のみ軽量送信（毎フレーム近い頻度で呼ばれる）
   _emitCurrentPiece(){
     if(!this.current)return;
@@ -1957,27 +1945,20 @@ class TetrisGame{
     }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol});}
     renderer&&renderer.onGarbageIncoming(lines,fromId);
 
-    // If total queued garbage exceeds 20 lines, force-apply the overflow immediately
+    // If total queued garbage exceeds 20 lines, force oldest to ready immediately
     const total=this.garbageQueue.reduce((s,g)=>s+g.lines,0);
     if(total>20){
       const overflow=total-20;
-      // Force the oldest entries to fire now
       let remaining=overflow;
       for(const g of this.garbageQueue){
         if(remaining<=0)break;
         const take=Math.min(g.lines,remaining);
         g.lines-=take;
         remaining-=take;
-        g.readyAt=performance.now(); // force ready
+        g.readyAt=performance.now();
       }
       this.garbageQueue=this.garbageQueue.filter(g=>g.lines>0);
-      // Immediately apply forced garbage
-      const forced=this.garbageQueue.filter(g=>g.readyAt<=performance.now()+10);
-      this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>performance.now()+10);
-      if(forced.length>0){
-        const ft=forced.reduce((s,g)=>s+g.lines,0);
-        if(ft>0)this._applyGarbageAnimated(forced,ft);
-      }
+      // 強制readyになったゴミは次のlockPieceで適用される
     }
   }
 
@@ -3335,6 +3316,7 @@ function openReplayViewer(replayData, mode) {
           gameState.score = data.score || 0;
           gameState.lines = data.lines || 0;
           gameState.level = data.level || 1;
+          if (data.garbageQueue) gameState.garbageQueue = data.garbageQueue.map(g=>({...g}));
         }
         renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
         renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
@@ -3920,7 +3902,7 @@ class GameRenderer{
     this.tiltAngle=0;this.tiltTarget=0;this.shakePower=0;
     // 壁バウンス: 押し込み中は繰り返さない
     this.wallBumpX=0;this._wallBumpActive=false;this._wallPressX=0;
-    this.particles=[];this.projectiles=[];this.floatLabels=[];
+    this.particles=[];this.projectiles=[];this.floatLabels=[];this._customLabels=[];
     this.comboLabel=null;this.attackLabel=null;this._attackAccum=0;
     this.opBoardData={};this._flashAlpha=0;
     this._gameOverTick=null;
@@ -5651,22 +5633,40 @@ class GameRenderer{
     } else {this.endComboLabel();}
     if(attack>0&&count>1){
       this._attackAccum+=attack;
-      let atkLabel=`⚔ +${this._attackAccum}`;
-      if(ren>1)atkLabel+=`  REN x${ren-1}`;
-      if(_b2bBreakCount>0)atkLabel+=`  💔 B2B x${_b2bBreakCount}`;
-      if(!this.attackLabel||!this.attackLabel.alive){
+      let atkTxt=`⚔ +${this._attackAccum}`;
+      if(ren>1)atkTxt+=`  REN x${ren-1}`;
+      if(_b2bBreakCount>0)atkTxt+=`  💔 B2B x${_b2bBreakCount}`;
+      const atkSz=Math.min(17+Math.floor(this._attackAccum*3),48);
+      const sc=this._uiScale||1;
+      if(!this._atkText||!this._atkText.alive){
         this._attackAccum=attack;
-        this.attackLabel=new FloatLabel(this.app,lx,this.mainBY+BOARD_H*0.6,atkLabel,0xff6060,false);
-        this.attackLabel._fadeDelay=2800;this.floatLabels.push(this.attackLabel);
-      } else {this.attackLabel.updateText(atkLabel);this.attackLabel._timer=0;}
+        atkTxt=`⚔ +${attack}`;
+        const st=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:atkSz,fill:0xff6060,fontWeight:'700',letterSpacing:2,dropShadow:true,dropShadowColor:0x000000,dropShadowDistance:3,dropShadowBlur:4});
+        this._atkText=new PIXI.Text(atkTxt,st);
+        this._atkText.anchor.set(0,0.5);
+        this._atkText.x=lx;this._atkText.y=this.mainBY+BOARD_H*0.6;
+        this._atkText.alpha=0;this._atkText.scale.set(1.5);
+        this._atkText._popT=0;
+        this._atkText.alive=true;
+        this.effectsLayer.addChild(this._atkText);
+        if(!this._customLabels)this._customLabels=[];
+        this._customLabels.push(this._atkText);
+      } else {
+        this._atkText.style.fontSize=atkSz;
+        this._atkText.text=atkTxt;
+        this._atkText._popT=0;
+        this._atkText.scale.set(1.5);this._atkText.alpha=0;
+      }
       clearTimeout(this._attackAccumTimer);
-      this._attackAccumTimer=setTimeout(()=>{this._attackAccum=0;},3500);
+      this._attackAccumTimer=setTimeout(()=>{this._attackAccum=0;if(this._atkText){this._atkText.alive=false;this._atkText._fadeT=0;this._atkText._fading=true;}},3500);
     }
     if(attack>0){
       const launchY=this._getClearRowsCenterY(cleared);
       this.opponentPlayers.forEach(op=>{
-        if(this.opBoardData[op.id]&&!this.opBoardData[op.id].dead)
+        if(this.opBoardData[op.id]&&!this.opBoardData[op.id].dead){
           this.onAttackProjectile(op.id,attack,launchY);
+          if(attack>=4)this.showOpponentAttackNumber(op.id,attack);
+        }
       });
       // attack>=4: 枠バッジ表示
       if(attack>=4)this.showAttackBadge(attack,'attack');
@@ -6182,6 +6182,48 @@ class GameRenderer{
     // シェイクはonGarbageRowAddedで行う
   }
 
+  // 4ライン以上送った時、相手の盤面近くに赤い数字を表示
+  showOpponentAttackNumber(pid, attack){
+    const d=this.opBoardData[pid];
+    if(!d||d.dead)return;
+    const sc=this._uiScale||1;
+    const sz=Math.min(20+attack*3,52);
+    const col=attack>=6?0xff0044:0xff3333;
+    const st=new PIXI.TextStyle({
+      fontFamily:"'Arial Black','Impact',sans-serif",fontSize:sz,
+      fill:col,stroke:0x000000,strokeThickness:3,fontWeight:'900',
+      dropShadow:true,dropShadowColor:0x000000,dropShadowBlur:8
+    });
+    const txt=new PIXI.Text(`+${attack}`,st);
+    txt.anchor.set(0.5,0.5);
+    txt.x=d.origX+d.boardW/2;
+    txt.y=d.origY-10;
+    txt.alpha=0;txt.scale.set(1.8);
+    this.effectsLayer.addChild(txt);
+    if(!this._customLabels)this._customLabels=[];
+    const anim={txt,targetX:txt.x,targetY:txt.y-40,alive:true,popT:0,fadeDelay:1200,fadeT:0,fading:false};
+    this._customLabels.push(anim);
+    const update=()=>{
+      if(!anim.alive)return;
+      if(anim.popT<1){
+        anim.popT=Math.min(1,(anim.popT||0)+0.06);
+        const e=1-(1-anim.popT)*(1-anim.popT);
+        anim.txt.scale.set(1.8-0.8*e);anim.txt.alpha=e;
+        if(anim.popT>=1){anim.txt.scale.set(1);anim.txt.alpha=1;anim.fadeDelay=performance.now()+1200;}
+        requestAnimationFrame(update);
+        return;
+      }
+      if(!anim.fading&&performance.now()<anim.fadeDelay){requestAnimationFrame(update);return;}
+      if(!anim.fading){anim.fading=true;anim.fadeT=0;}
+      anim.fadeT+=0.03;
+      anim.txt.y=anim.targetY-(anim.fadeT*20);
+      anim.txt.alpha=Math.max(0,1-anim.fadeT);
+      if(anim.txt.alpha<=0){anim.alive=false;try{anim.txt.destroy();}catch(e){}this._customLabels=this._customLabels.filter(l=>l!==anim);return;}
+      requestAnimationFrame(update);
+    };
+    requestAnimationFrame(update);
+  }
+
   // B2B break: 枠からスパークルが上に上がりながらフェードアウト
   onB2BBreak(b2bCount){
     this.showAttackBadge(b2bCount,'b2b_break');
@@ -6220,6 +6262,8 @@ class GameRenderer{
   // 背景無し、3D押し出しテキスト、次の手まで持続
   showAttackBadge(value, type){
     this._badgeValue=value;
+    this._badgeDisplayValue=0;
+    this._badgeCountUpSpeed=Math.max(0.02,value/120);
     this._badgeType=type;
     this._badgePosIdx=(this._badgePosIdx||0)+1;
     this._badgeFlashCount=0;
@@ -6291,6 +6335,22 @@ class GameRenderer{
       const e=1-(1-this._badgePopT)*(1-this._badgePopT);
       c.scale.set(1.4-0.4*e);c.alpha=e;
       if(this._badgePopT>=1){c.scale.set(1);c.alpha=1;this._badgePopT=1;}
+    }
+    // Counting animation: display value counts up
+    if(this._badgeActive&&this._badgePopT>=1&&this._badgeDisplayValue<this._badgeValue){
+      this._badgeDisplayValue=Math.min(this._badgeValue,this._badgeDisplayValue+Math.ceil(this._badgeCountUpSpeed*dt));
+      const txt=this._badgeNumTxt;
+      if(txt&&!txt.destroyed){
+        txt.text=`+${Math.round(this._badgeDisplayValue)}`;
+        // Size grows with counting
+        const sc=1+0.15*(this._badgeDisplayValue/this._badgeValue);
+        c.scale.set(sc);
+      }
+      if(this._badgeDisplayValue>=this._badgeValue){
+        this._badgeDisplayValue=this._badgeValue;
+        if(txt&&!txt.destroyed)txt.text=`+${this._badgeValue}`;
+        c.scale.set(1);
+      }
     }
     // 初回フラッシュ: 一瞬で白点滅（フレームベース）
     if(this._badgeFlashCount<2){
@@ -7071,6 +7131,26 @@ class GameRenderer{
       if(p.life<=0){if(p._mask)try{p._mask.destroy();}catch(e){}try{p.gfx.destroy();}catch(e){}return false;}return true;
     });
     this.floatLabels=this.floatLabels.filter(fl=>{fl.update(dt);return fl.alive;});
+    // Custom labels (attack text with dynamic size)
+    if(this._customLabels){
+      this._customLabels=this._customLabels.filter(l=>{
+        if(!l.alive&&!l._fading)return false;
+        if(l._fading){
+          l._fadeT=(l._fadeT||0)+dt;
+          l.alpha=Math.max(0,1-l._fadeT/800);
+          l.y-=0.12;
+          if(l.alpha<=0){try{l.destroy();}catch(e){}return false;}
+          return true;
+        }
+        if(l._popT!==undefined&&l._popT<1){
+          l._popT=Math.min(1,(l._popT||0)+dt/150);
+          const e=1-(1-l._popT)*(1-l._popT);
+          l.scale.set(1.5-0.5*e);l.alpha=e;
+          if(l._popT>=1){l.scale.set(1);l.alpha=1;}
+        }
+        return true;
+      });
+    }
     // ALL CLEAR spinning text update
     if(this._allClearTexts){
       this._allClearTexts=this._allClearTexts.filter(a=>{
