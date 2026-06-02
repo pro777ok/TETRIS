@@ -395,6 +395,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // ウェルは低くても常時評価（maxH制限なし）
   {
     let wellCount = 0;
+    let iPieceWells = 0;
     let bestWellCol = -1, bestWellDepth = 0;
     for (let c = 0; c < cols; c++) {
       const lh = c > 0      ? heights[c-1] : 99;
@@ -404,6 +405,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
         wellCount++;
         if (w > bestWellDepth) { bestWellDepth = w; bestWellCol = c; }
       }
+      if (w >= 3) iPieceWells++;
     }
     if (bestWellDepth >= 2) {
       const edgeDist = Math.min(bestWellCol, cols-1-bestWellCol);
@@ -411,6 +413,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
       score += Math.min(bestWellDepth, 6) * 20 * edgeMult;
     }
     if (wellCount >= 2) score -= (wellCount - 1) * 300;
+    // Iミノ専用の深い隙間を複数作らない
+    if (iPieceWells >= 2) score -= iPieceWells * 500;
   }
 
   // T-spin禁止のため評価しない
@@ -1275,11 +1279,11 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
   const jitterAmp = [0, 400, 220, 120, 60, 20, 0][botLevel] || 0;
 
   // BFS for current piece (finds soft-drop reachable placements)
-  function evalPlacementsBFS(useType, useHold) {
+  function evalPlacementsBFS(useType, useHold, allowSoftDrop) {
     const placements = getAllPlacementsBFS(board, useType);
     let bestScore = -Infinity, bestPlacement = null;
     for (const p of placements) {
-      if (p.needsSoftDrop) continue;
+      if (!allowSoftDrop && p.needsSoftDrop) continue;
       const newRen = p.lines > 0 ? (ren||0) + 1 : 0;
       const iB2B = b2b && (p.lines===4||(p.spin&&p.spin!=='MINI_TSPIN'&&p.lines>0));
       const nc = combo + (p.lines > 0 ? 1 : 0);
@@ -1289,6 +1293,10 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
         sc += evalDeep(p.board, nextTypes, depth-1, iB2B, nc, newRen) * 0.6;
       sc += (Math.random() * 2 - 1) * jitterAmp;
       if (sc > bestScore) { bestScore = sc; bestPlacement = { ...p, useHold }; }
+    }
+    // ソフトドロップなしの配置がない場合は許可する
+    if (!bestPlacement && !allowSoftDrop) {
+      return evalPlacementsBFS(useType, useHold, true);
     }
     return { bestScore, bestPlacement };
   }
@@ -1810,7 +1818,7 @@ class BotPlayer {
     // ── デバッグ: CCの生の出力をログ ──────────────────────────
     const rawXs = Array.from(mv.expected_x);
     const rawYs = Array.from(mv.expected_y);
-    console.log(`[CC DEBUG] type=${type} hold=${useHold} raw_x=[${rawXs}] raw_y=[${rawYs}]`);
+        //console.log(`[CC DEBUG] type=${type} hold=${useHold} raw_x=[${rawXs}] raw_y=[${rawYs}]`);
 
     // ── BFS合法手と照合 ──────────────────────────────────────
     const bfsPlacements = getAllPlacementsBFS(this.board, type);
@@ -1941,8 +1949,11 @@ class BotPlayer {
     if (placement) {
       this.executePlacement(placement, onDone);
     } else {
-      // ── GAME OVER (Block Out) ──────────────────────────────────
-      // AI could not find any valid reachable placement
+      // ── 最終フォールバック: 何も置けなければ現在位置のまま真下にハードドロップ ──
+      const t=this.currentPiece;if(t){const fy=hardDropY(this.board,t.type,t.rotation,t.x,0);if(isValid(this.board,t.type,t.rotation,t.x,fy)){
+        console.log(`[BOT] Fallback hard drop for ${this.name}`);
+        this.executePlacement({rot:t.rotation,x:t.x,board:null,lines:0,spin:null,type:t.type,needsSoftDrop:false,useHold:false},onDone);return;
+      }}
       console.log(`[BOT] No placement found for ${this.name}. Triggering game over.`);
       this.alive = false;
       const room = rooms[this.roomId];
@@ -2295,7 +2306,7 @@ class BotPlayer {
     attack = Math.floor(attack);
 
     if (this.isBot && lines > 0) {
-      console.log(`[BOT ATK] ${this.name}: lines=${lines} spin=${spin} ren=${this.ren} b2b=${this.b2b} b2bCount=${this.b2bCount} allClear=${allClear} atkBefore=${attackBeforeNerf} atkAfter=${attack}`);
+      //console.log(`[BOT ATK] ${this.name}: lines=${lines} spin=${spin} ren=${this.ren} b2b=${this.b2b} b2bCount=${this.b2bCount} allClear=${allClear} atkBefore=${attackBeforeNerf} atkAfter=${attack}`);
     }
 
     // ── Garbage cancellation logic ──────────────────────────────────
@@ -2495,15 +2506,10 @@ function checkGameEnd(roomId) {
   const alive = allPlayers(room).filter(p => p.alive);
   const humanAlive = room.players.filter(p => p.alive);
 
-  // ソロモード: プレイヤーが死んだら即ゲーム終了
-  // 通常モード: BOTだけ生き残っていてもゲームは続ける
-  //   → 終了条件: 生存者が1人以下 かつ その1人はBOTではない（= 人間1人が最後の生存者）
-  //   または: 全員死亡
-  //   BOTのみ残りの場合はゲーム継続（ボットバトル観戦）→ボットが1体になった時に終了
-  const humanDead = humanAlive.length === 0;
+  // プレイヤー（人間＋bot）が1人以下になったら終了
   const shouldEnd = room.isSolo
-    ? humanDead
-    : (alive.length <= 1);
+    ? humanAlive.length === 0
+    : alive.length <= 1;
 
   if (shouldEnd) {
     room.started = false;

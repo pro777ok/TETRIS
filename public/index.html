@@ -1309,7 +1309,7 @@
     </div>
     <div class="settings-row">
       <label>SOFT DROP SPEED <span class="settings-val" id="soft-drop-val">50ms</span></label>
-      <input type="range" id="soft-drop-interval" min="10" max="200" step="5" value="50" oninput="updateSetting('softDropInterval',this.value)">
+      <input type="range" id="soft-drop-interval" min="0" max="100" step="5" value="50" oninput="updateSetting('softDropInterval',this.value)">
     </div>
     <div class="settings-row">
       <label>TILT ON SPIN</label>
@@ -1362,17 +1362,17 @@
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">Left / Right key repeat settings</div>
     <div class="settings-row">
       <label>DAS DELAY <span class="settings-val" id="das-delay-val">133ms</span></label>
-      <input type="range" id="das-delay-input" min="0" max="500" step="5" value="133" oninput="updateSetting('dasDelay',this.value)">
+      <input type="range" id="das-delay-input" min="0" max="300" step="5" value="133" oninput="updateSetting('dasDelay',this.value)">
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">長押しして加速するまでの時間 (小さい = 即加速)</div>
     <div class="settings-row">
       <label>ARR INTERVAL <span class="settings-val" id="arr-interval-val">20ms</span></label>
-      <input type="range" id="arr-interval-input" min="0" max="200" step="5" value="20" oninput="updateSetting('arrInterval',this.value)">
+      <input type="range" id="arr-interval-input" min="0" max="100" step="5" value="20" oninput="updateSetting('arrInterval',this.value)">
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">加速中の繰り返し間隔 (0 = 瞬間移動)</div>
     <div class="settings-row">
       <label>DCD DELAY <span class="settings-val" id="dcd-delay-val">0ms</span></label>
-      <input type="range" id="dcd-delay-input" min="0" max="500" step="10" value="0" oninput="updateSetting('dcdDelay',this.value)">
+      <input type="range" id="dcd-delay-input" min="0" max="200" step="10" value="0" oninput="updateSetting('dcdDelay',this.value)">
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">DAS Cut Delay: ミノ出現直後のDAS誤爆を防ぐ遅延</div>
     <div class="settings-row">

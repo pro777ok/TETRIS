@@ -39,7 +39,7 @@ function updateSetting(key,val){
   else if(key==='shake')settings.shake=val;
   else if(key==='sfx'){settings.sfxVolume=parseInt(val);document.getElementById('sfx-val').textContent=val+'%';sfxVol=parseInt(val)/100;}
   else if(key==='tilt')settings.tilt=val;
-  else if(key==='softDropInterval'){settings.softDropInterval=parseInt(val);document.getElementById('soft-drop-val').textContent=val+'ms';}
+  else if(key==='softDropInterval'){settings.softDropInterval=parseInt(val);document.getElementById('soft-drop-val').textContent=val==='0'?'INSTANT':val+'ms';}
   else if(key==='dasDelay'){settings.dasDelay=parseInt(val);document.getElementById('das-delay-val').textContent=val+'ms';}
   else if(key==='arrInterval'){settings.arrInterval=parseInt(val);document.getElementById('arr-interval-val').textContent=val+'ms';}
   else if(key==='dcdDelay'){settings.dcdDelay=parseInt(val);document.getElementById('dcd-delay-val').textContent=val+'ms';}
@@ -1670,7 +1670,7 @@ class TetrisGame{
 
       // ── Attack Calculation (TETR.IO Standard) ───────────────────
       const isPenta=count===5;
-      const isB2Bable = count===4 || isPenta || (isSpin);
+      const isB2Bable = count===4 || isPenta || (isSpin) || allClear;
       const wasB2B = this.b2b;
       const isB2B = wasB2B && isB2Bable;
       
@@ -1749,13 +1749,16 @@ class TetrisGame{
       if(remaining.length>0&&(puyotetMode||this.ren<1)){
         const groups=groupByBatch(remaining);
         
-        // TETR.IO Garbage Cap: 1手で最大8ラインまでしかせり上がらない
+        // 1手で最大10ラインまでせり上がる（puyotetOff時はrenなしでまとめて）
         let linesToAdd = 0;
-        const CAP = 8;
+        const CAP = puyotetMode ? 8 : 10;
+        
+        // ren=0 時は全グループで同一ホールを使う（直列）
+        const sameHole=this.ren<1&&!puyotetMode?((groups[0]&&groups[0][0].holeCol!==undefined?groups[0][0].holeCol:Math.floor(Math.random()*getGameCols()))):null;
         
         for(const grp of groups){
           if (linesToAdd >= CAP) break;
-          let holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols());
+          let holeCol=sameHole!==null?sameHole:(grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols()));
           for(const chunk of grp){
             if (linesToAdd >= CAP) {
               // Capを超えた分はキューに戻す (少し遅延させる)
@@ -1824,7 +1827,7 @@ class TetrisGame{
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
       if(armed.length&&this.combo<1){
-        this._applyGarbageCap(armed, 8);
+        this._applyGarbageCap(armed, puyotetMode?8:10);
       }
     }
 
@@ -1949,8 +1952,9 @@ class TetrisGame{
 
   queueGarbage(lines,fromId){
     const readyAt=performance.now()+(puyotetMode?0:3000);
-    const holeCol=Math.floor(Math.random()*getGameCols());
-    this.garbageQueue.push({lines,fromId,readyAt,holeCol});
+    if(!puyotetMode&&lines>10){
+      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol});lines-=chunk;}
+    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol});}
     renderer&&renderer.onGarbageIncoming(lines,fromId);
 
     // If total queued garbage exceeds 20 lines, force-apply the overflow immediately
@@ -2017,6 +2021,10 @@ class TetrisGame{
       this.holdPiece=type;
       this.holdCustomShape=customShape;
       this.spawnPiece();
+      if(!this.alive||this._pendingGameOver){
+        this.alive=false;this._pendingGameOver=false;
+        if(!isOfflineSolo){socket.emit('game_over',{totalAttackSent:this.totalAttackSent,totalGarbageReceived:this.totalGarbageReceived});_enterSpectateOnDeath();}renderer&&renderer.onGameOver();_offlineSoloGameOverAutoReturn();
+      }
     }
     this.cancelLock();SFX.hold();
   }
@@ -7543,19 +7551,24 @@ function startDAS(dir){
     let dcdStart=_dasStartedAt||0;
     const elapsed=performance.now()-dcdStart;
     const dcdWait=Math.max(0,dcdMs-elapsed);
-    dasDcd=setTimeout(()=>{
+    const onArr=()=>{
       if(!dasActive){stopDAS();return;}
+      if(!gameState||!gameState.alive){stopDAS();return;}
+      const iv=settings.arrInterval??20;
+      if(iv===0){while(gameState&&gameState.alive&&gameState.move(dir));stopDAS();return;}
       arr=setInterval(()=>{
         if(!gameState||!gameState.alive){stopDAS();return;}
         if(!dasActive)return;
         gameState.move(dir);
-      },settings.arrInterval??20);
-    },dcdWait);
+      },iv);
+    };
+    if(dcdWait>0)dasDcd=setTimeout(onArr,dcdWait);
+    else onArr();
   },settings.dasDelay??133);
 }
 let _dasStartedAt=0;
 function stopDAS(){dasActive=false;if(das){clearTimeout(das);das=null;}if(dasDcd){clearTimeout(dasDcd);dasDcd=null;}if(arr){clearInterval(arr);arr=null;}}
-function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},settings.softDropInterval??50);}
+function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;const interval=settings.softDropInterval??50;if(interval===0){while(gameState.alive&&gameState.softDrop());return;}gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},interval);}
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
 
 // ---- Multiplayer ----
@@ -10685,6 +10698,7 @@ function _puyoStartDas(key,action,interval){
   const entry={active:true,das:null,arr:null};
   entry.das=setTimeout(()=>{
     if(!entry.active)return;
+    if(arrInterval===0){while(entry.active&&action());entry.active=false;clearInterval(entry.arr);clearTimeout(entry.das);return;}
     entry.arr=setInterval(()=>{
       if(!entry.active)return;
       action();
@@ -10758,7 +10772,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   const sdi=document.getElementById('soft-drop-interval');
   const sdv=document.getElementById('soft-drop-val');
   if(sdi)sdi.value=settings.softDropInterval??50;
-  if(sdv)sdv.textContent=(settings.softDropInterval??50)+'ms';
+  if(sdv)sdv.textContent=settings.softDropInterval===0?'INSTANT':(settings.softDropInterval??50)+'ms';
   // DAS / ARR
   const dasDel=document.getElementById('das-delay-input');
   const dasDelV=document.getElementById('das-delay-val');
