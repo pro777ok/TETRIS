@@ -1325,6 +1325,7 @@ class TetrisGame{
     this.alive=true;this.locking=false;
     this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
+    this._wasRotated=false;this._wasKicked=false;
     this.garbageQueue=[];
     this._deferredGarbage=[];
     this.gravityMs=0;
@@ -1382,7 +1383,7 @@ class TetrisGame{
     }
     this._garbagePushY=0;
     this.current={type,rotation:0,x:_spX,y:_spawnY,customShape};
-    this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
+    this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
     // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら
     // すぐには終わらず、一度設置させてから判定する
@@ -1435,7 +1436,7 @@ class TetrisGame{
       const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
-        this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
+        this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -1443,7 +1444,7 @@ class TetrisGame{
       for(const[kx,ky]of [[-1,0],[1,0],[0,-1],[0,1],[-2,0],[2,0]]){
         const t={...base,x:base.x+kx,y:base.y-ky};
         if(this.isValid(t)){
-          this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
+          this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
           if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
           return true;
         }
@@ -1454,14 +1455,14 @@ class TetrisGame{
     const kicks=this.current.type==='I'?KICK_I[key]:KICK_JLSTZ[key];
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
-      this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
+      this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
       if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
-        this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
+        this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -1483,7 +1484,8 @@ class TetrisGame{
       }
     }
     if(['S','Z','L','J'].includes(type)){
-      // kick不要: 着地状態（下にブロックまたは床）でスピン判定
+      // S/Z/L/J spins require a wall kick to have been used
+      if(!kicked)return;
       const shape=this.getShape(type,rot,null);let bb=false;
       outer:for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;const ny=y+r+1;
@@ -1520,7 +1522,7 @@ class TetrisGame{
       const kicks180=[[0,0],[-1,0],[1,0],[0,1],[-1,1],[1,1]];
       for(const[kx,ky]of kicks180){
         const t={...base,x:base.x+kx,y:base.y+ky};
-        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this.tryResetLock();SFX.rotate();
+        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;this.tryResetLock();SFX.rotate();
           renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
           return true;}
       }
@@ -1536,7 +1538,7 @@ class TetrisGame{
     for(const[kx,ky]of kicks180){
       const t={...base,x:base.x+kx,y:base.y+ky};
       if(this.isValid(t)){
-        this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';
+        this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;
         this.tryResetLock();SFX.rotate();
         renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);
         renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
@@ -1584,6 +1586,15 @@ class TetrisGame{
     if(this.locking)return;
     this.locking=true;this.cancelLock();
     this._applyReadyGarbage();
+    // Re-evaluate spin at lock time (after garbage shift, at current position)
+    if(this._wasRotated){
+      const _prev180=this.lastSpin==='180';
+      this.checkSpin(0,0,this._wasKicked||false);
+      // Preserve SPIN180 if 3-corner / other spin didn't trigger
+      if(_prev180&&!this.lastSpin){this.lastSpin='180';this.lastSpinType='SPIN180';}
+    } else {
+      this.lastSpin=null;this.lastSpinType=null;
+    }
     renderer&&renderer._endBadge();
     const shape=this._getShapeForPiece(this.current);
     const wasSpin=!!this.lastSpin,spinType=this.lastSpinType;
@@ -1704,9 +1715,8 @@ class TetrisGame{
         }
       }
 
-      // ── Ren bonus ─────────────────────────────────────────────
-      const renBonus = this.ren >= 11 ? 5 : Math.min(4, Math.floor(this.ren / 2));
-      attack = attack + renBonus;
+      // ── Ren bonus (ren count directly added as attack) ────────
+      attack = attack + this.ren;
 
       // ── PC bonus ──────────────────────────────────────────────
       if (allClear) {
@@ -1914,17 +1924,28 @@ class TetrisGame{
       if(canAdd>0){
         const col=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*getGameCols());
         for(let i=0;i<canAdd;i++){
-          const row=Array(getGameCols()).fill('G');row[col]=0;
+          const row=Array(getGameCols()).fill('G');
+          row[col]=0;
+          if(g.holes3){
+            const cols=getGameCols();
+            const holes=[col];
+            while(holes.length<3){
+              const h=Math.floor(Math.random()*cols);
+              if(!holes.includes(h))holes.push(h);
+            }
+            for(const h of holes)row[h]=0;
+          }
           this.board.push(row);this.board.shift();
           this.totalGarbageReceived++;
           if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
           linesToAdd++;
         }
       }
-      if(canAdd<g.lines)backToQueue.push({lines:g.lines-canAdd,fromId:g.fromId,readyAt:now+500,holeCol:g.holeCol});
+      if(canAdd<g.lines)backToQueue.push({lines:g.lines-canAdd,fromId:g.fromId,readyAt:now+500,holeCol:g.holeCol,holes3:g.holes3});
     }
     for(const g of backToQueue)this.garbageQueue.unshift(g);
     if(linesToAdd>0){
+      this.cancelLock();
       SFX.garbage();
       renderer&&renderer.onGarbageApplied(linesToAdd);
       renderer&&renderer.onGarbageRowAdded(linesToAdd);
@@ -1985,7 +2006,7 @@ class TetrisGame{
       this.holdCustomShape=customShape;
       const _spX2=Math.floor((getGameCols()-4)/2);
       this.current={type:nextType,rotation:0,x:_spX2,y:SPAWN_Y,customShape:nextCustomShape};
-      this.lastSpin=null;this.lastSpinType=null;this.locking=false;
+      this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
       // スポーン位置が埋まっている場合、10マス上まで探す
       if(!this.isValid(this.current)){
