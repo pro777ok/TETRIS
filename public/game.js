@@ -1505,7 +1505,8 @@ class TetrisGame{
       if(bb){this.lastSpin=type;this.lastSpinType=type+'SPIN';}
     }
     if(type==='I'){
-      // I-spin: 着地＋回転で検出（キックの有無は問わない）
+      // I-spin: キックあり＋着地で検出
+      if(!kicked)return;
       const iShape=this.getShape(type,rot,null);
       let atBottom=false;
       outer:for(let r=0;r<iShape.length;r++)for(let c=0;c<iShape[r].length;c++){
@@ -1594,11 +1595,6 @@ class TetrisGame{
     this.score+=d*2;SFX.hardDrop();
     renderer&&renderer.onHardDrop(d);
     ReplayRecorder.record('hard_drop',{dropped:d,pieceType:this.current.type,pieceX:this.current.x,startY:this.current.y-d});
-    // オールスピンモード: ハードドロップはスピン判定を無効化
-    if(allspinMode){
-      this.lastSpin=null; this.lastSpinType=null;
-      this._wasRotated=false; this._wasKicked=false;
-    }
     this.lockPiece();
   }
 
@@ -1830,10 +1826,10 @@ class TetrisGame{
       // ゴミは次のlockPieceまで遅延
     }
 
-    // ── チーズモード: 消した行数分ゴミをせり上げる ──────────
-    if (cheeseMode && count > 0) {
+    // ── チーズモード: 消したガベージ行数分ゴミをせり上げる ──
+    if (cheeseMode && garbageCountInClear > 0) {
       const cols = getGameCols();
-      for (let i = 0; i < count; i++) {
+      for (let i = 0; i < garbageCountInClear; i++) {
         const hole = Math.floor(Math.random() * cols);
         const garbageRow = Array(cols).fill('G');
         garbageRow[hole] = 0;
