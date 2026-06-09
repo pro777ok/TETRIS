@@ -2297,11 +2297,6 @@ class BotPlayer {
         attack = Math.floor(attack * (1 + steps * rate));
       }
     }
-    // BOT nerf: 0.4倍
-    if (this.isBot) {
-      attack = Math.max(0, Math.floor(attack * 0.4));
-    }
-    
     // 整数化
     attack = Math.floor(attack);
 
