@@ -1594,6 +1594,11 @@ class TetrisGame{
     this.score+=d*2;SFX.hardDrop();
     renderer&&renderer.onHardDrop(d);
     ReplayRecorder.record('hard_drop',{dropped:d,pieceType:this.current.type,pieceX:this.current.x,startY:this.current.y-d});
+    // オールスピンモード: ハードドロップはスピン判定を無効化
+    if(allspinMode){
+      this.lastSpin=null; this.lastSpinType=null;
+      this._wasRotated=false; this._wasKicked=false;
+    }
     this.lockPiece();
   }
 
@@ -1658,15 +1663,9 @@ class TetrisGame{
     else SFX.lock();
     this.clearLines();
 
-    // ── チーズモード: ロック後にゴミをせり上げる ──────────────
+    // ── チーズモード: ハンドカウント ─────────────────────────
     if (cheeseMode && this.alive) {
       cheeseHandCount++;
-      const cols = getGameCols();
-      const hole = Math.floor(Math.random() * cols);
-      const garbageRow = Array(cols).fill('G');
-      garbageRow[hole] = 0;
-      this.board.shift();
-      this.board.push(garbageRow);
     }
   }
 
@@ -1829,6 +1828,18 @@ class TetrisGame{
       // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
       // ゴミは次のlockPieceまで遅延
+    }
+
+    // ── チーズモード: 消した行数分ゴミをせり上げる ──────────
+    if (cheeseMode && count > 0) {
+      const cols = getGameCols();
+      for (let i = 0; i < count; i++) {
+        const hole = Math.floor(Math.random() * cols);
+        const garbageRow = Array(cols).fill('G');
+        garbageRow[hole] = 0;
+        this.board.shift();
+        this.board.push(garbageRow);
+      }
     }
 
     this.lastSpin=null;this.lastSpinType=null;
@@ -2833,7 +2844,8 @@ socket.on('forty_line_clear', ({ playerName, elapsedMs }) => {
 
 // =====================================================
 // ===== CHEESE MODE ====================================
-// 40ラインクリアを目指すモード。ピースを置くたびに
+// 40ラインクリアを目指すモード。開始時に10ラインの
+// ゴミがせり上がり、ライン消去後に消した行数分だけ
 // 下から1マス穴のゴミがせり上がる。
 // =====================================================
 
@@ -2850,6 +2862,22 @@ function initCheeseGame(players, bagSeed) {
     roomPlayers: [...roomPlayers],
     mode: 'cheese'
   });
+
+  // 初期10ラインのゴミをせり上げ
+  if (gameState) {
+    const cols = getGameCols();
+    for (let i = 0; i < 10; i++) {
+      const hole = Math.floor(Math.random() * cols);
+      const garbageRow = Array(cols).fill('G');
+      garbageRow[hole] = 0;
+      gameState.board.shift();
+      gameState.board.push(garbageRow);
+    }
+    // 上部の空行をトリム
+    while (gameState.board.length > ROWS + HIDDEN && gameState.board[0].every(c => c === 0)) {
+      gameState.board.shift();
+    }
+  }
 
   _createCheeseUI();
 
