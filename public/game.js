@@ -1955,6 +1955,8 @@ class TetrisGame{
     const now=performance.now();
     const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
     if(armed.length===0)return;
+    // コンボ中はゴミを適用しない（次のロックまで待つ）
+    if(this.ren>=1&&!puyotetMode)return;
     this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
     const cap=puyotetMode?8:10;
     let linesToAdd=0;
@@ -4251,6 +4253,7 @@ class GameRenderer{
       const ppsTxt=new PIXI.Text('0.00 PPS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0x00f5ff}));ppsTxt.x=0;ppsTxt.y=oBH+ppsSz;cont.addChild(ppsTxt);
       const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xff8500}));apmTxt.x=0;apmTxt.y=oBH+ppsSz*2;cont.addChild(apmTxt);
       const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=oBH+ppsSz*3;cont.addChild(vsTxt);
+      const renTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b}));renTxt.x=0;renTxt.y=oBH+ppsSz*4;cont.addChild(renTxt);
 
       const flashGfx=new PIXI.Graphics();flashGfx.alpha=0;cont.addChild(flashGfx);
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
@@ -4270,7 +4273,7 @@ class GameRenderer{
         garbageQueue:[],
         flashGfx,flashAlpha:0,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
-        ren:0,renColor:0x00f5ff,
+        ren:0,renColor:0x00f5ff,renTxt,
         smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
         sinkOffset:0, // ハードドロップ時の沈み込みオフセット
       };
@@ -6897,6 +6900,10 @@ class GameRenderer{
     d.ren=ren||0;
     const renColors=[0x00f5ff,0x06d6a0,0xffbe0b,0xff8c00,0xff3366,0xff00ff,0xcc44ff,0xffffff,0x00f5ff];
     d.renColor=renColors[Math.min(Math.max(0,ren-2),renColors.length-1)];
+    if(d.renTxt){
+      d.renTxt.text=d.ren>=1?`REN ${d.ren}`:'';
+      d.renTxt.style=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12),fill:d.renColor});
+    }
 
     // B2B雷
     if(isB2B&&settings.quality!=='low'){
