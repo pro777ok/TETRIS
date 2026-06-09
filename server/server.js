@@ -2429,11 +2429,11 @@ class BotPlayer {
     this.locking = false;
   }
 
-  queueGarbage(lines, fromId) {
+  queueGarbage(lines, fromId, holes3) {
     const hc = Math.floor(Math.random()*this.cols);
     const room = rooms[this.roomId];
     const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 3000;
-    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc });
+    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: !!holes3 });
   }
 
   startAutonomous(extraDelay = 0) {
@@ -2475,6 +2475,7 @@ function createRoom(roomId) {
       fortyLineMode: false,    // 40ラインモード
       blitzMode: false,        // 2分間スコアアタックモード
       fourWideMode: false,      // 4Wideモード（ボード幅4列）
+      cheeseMode: false,         // チーズモード（せり上がりゴミ）
       puyotetMode: false,        // ぷよテトモード（足し算REN・即時ゴミ・B2B固定+1）
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
@@ -2705,6 +2706,7 @@ io.on('connection', (socket) => {
     if (ns.soloMode!==undefined) rs.soloMode=!!ns.soloMode;
     if (ns.allspinMode!==undefined) rs.allspinMode=!!ns.allspinMode;
     if (ns.fortyLineMode!==undefined) rs.fortyLineMode=!!ns.fortyLineMode;
+    if (ns.cheeseMode!==undefined) rs.cheeseMode=!!ns.cheeseMode;
     if (ns.blitzMode!==undefined) rs.blitzMode=!!ns.blitzMode;
     if (ns.fourWideMode!==undefined) rs.fourWideMode=!!ns.fourWideMode;
     if (ns.puyotetMode!==undefined) rs.puyotetMode=!!ns.puyotetMode;
@@ -2721,7 +2723,7 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.blitzMode || rs.fourWideMode) ? 1 : 2;
+    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
       socket.emit('error',{msg: (rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
@@ -2732,12 +2734,15 @@ io.on('connection', (socket) => {
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});
 
     const humanCount=room.players.length;
-    const isSolo = (humanCount === 1 && room.bots.length === 0 && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode) || !!(rs.soloMode);
+    const isSolo = !!(rs.soloMode || rs.cheeseMode) || (humanCount === 1 && room.bots.length === 0 && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode);
     const doShogi=room.roomSettings.shogiMode&&humanCount===1&&room.bots.length>=1;
     room.shogiMode=doShogi;
     room.isSolo=isSolo;
     room.fortyLineMode=!!(rs.fortyLineMode);
     room.fortyLineStartTime = rs.fortyLineMode ? Date.now() : null;
+    room.cheeseMode=!!(rs.cheeseMode);
+    room.cheeseStartTime = rs.cheeseMode ? Date.now() : null;
+    room.cheeseHandCount = 0;
     room.blitzMode=!!(rs.blitzMode);
     room.blitzStartTime = rs.blitzMode ? Date.now() : null;
     room.fourWideMode=!!(rs.fourWideMode);
@@ -2787,6 +2792,7 @@ io.on('connection', (socket) => {
       roomSettings:room.roomSettings,shogiMode:doShogi,isSolo,
       allspinMode:!!(room.roomSettings&&room.roomSettings.allspinMode),
       fortyLineMode:!!(room.roomSettings&&room.roomSettings.fortyLineMode),
+      cheeseMode:!!(room.roomSettings&&room.roomSettings.cheeseMode),
       blitzMode:!!(room.roomSettings&&room.roomSettings.blitzMode),
       fourWideMode:!!(room.roomSettings&&room.roomSettings.fourWideMode),
       puyotetMode:!!(room.roomSettings&&room.roomSettings.puyotetMode),
@@ -2863,8 +2869,13 @@ io.on('connection', (socket) => {
     recordPlacement(socket.roomId, socket.id, frame);
   });
 
-  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines}) => {
+  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount}) => {
     const room=getRoom(socket.roomId); if (!room) return;
+
+    // チーズモード: ハンド数を記録
+    if (room.cheeseMode && handCount !== undefined) {
+      room.cheeseHandCount = handCount;
+    }
 
     // ── 40ラインモード: 達成チェック ────────────────────────────
     if (room.fortyLineMode && totalLines >= 40) {
@@ -2893,6 +2904,35 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // ── チーズモード: 達成チェック ────────────────────────────
+    if (room.cheeseMode && totalLines >= 40) {
+      const elapsed = room.cheeseStartTime ? Date.now() - room.cheeseStartTime : 0;
+      room.started = false;
+      room.bots.forEach(b => b.stop && b.stop());
+      const scores = allPlayers(room).map(p => ({ id: p.id, name: p.name, score: p.score||0, lines: p.lines||0, attackSent: p.totalAttackSent||0, garbageReceived: p.totalGarbageReceived||0 }));
+      io.to(socket.roomId).emit('cheese_clear', {
+        playerId: socket.id,
+        playerName: socket.playerName,
+        elapsedMs: elapsed,
+        handCount: room.cheeseHandCount || 0,
+        scores
+      });
+      io.to(socket.roomId).emit('game_end', {
+        winner: socket.id,
+        winnerName: socket.playerName,
+        scores,
+        isSolo: true,
+        cheeseClear: true,
+        elapsedMs: elapsed,
+        handCount: room.cheeseHandCount || 0
+      });
+      room.players.forEach(p => { p.alive=true; p.board=null; });
+      room.bots = [];
+      room.isSolo = false;
+      room.cheeseMode = false;
+      return;
+    }
+
     const total=attack||0;
     if (total>0) {
       const senderMode = (room.playerModes && room.playerModes[socket.id]) || 'tetris';
@@ -2901,7 +2941,7 @@ io.on('connection', (socket) => {
         const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
         if (p.isBot && p.queueGarbage) {
           // Bots are always tetris
-          p.queueGarbage(total,socket.id);
+          p.queueGarbage(total,socket.id,holes3);
         } else {
           if (senderMode === 'tetris' && targetMode === 'puyo') {
             // Tetris → Puyo: 1 line = n ojama
@@ -2909,7 +2949,7 @@ io.on('connection', (socket) => {
             const ojama = Math.floor(total * mult);
             if (ojama > 0) io.to(p.id).emit('receive_puyo_ojama', {ojama, fromId: socket.id});
           } else if (senderMode === 'tetris' && targetMode === 'tetris') {
-            io.to(p.id).emit('receive_garbage', {lines: total, fromId: socket.id});
+            io.to(p.id).emit('receive_garbage', {lines: total, fromId: socket.id, holes3: holes3||false});
           }
           // puyo → tetris handled via puyo_attack event below
         }

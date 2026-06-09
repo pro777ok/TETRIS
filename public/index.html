@@ -1102,6 +1102,16 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>🧀 Cheese Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="cheese-toggle" onchange="updateRoomSetting('cheeseMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(255,190,11,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">40ライン・せり上がり</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>⚡ Blitz Mode</label>
             <label class="toggle-switch" style="width:46px;height:24px">
               <input type="checkbox" id="blitz-toggle" onchange="updateRoomSetting('blitzMode',this.checked)">

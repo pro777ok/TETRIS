@@ -183,6 +183,10 @@ let fortyLineStartTime=0;
 let blitzMode=false;
 let blitzTimer=null;
 let blitzStartTime=0;
+let cheeseMode=false;
+let cheeseHandCount=0;
+let cheeseTimer=null;
+let cheeseStartTime=0;
 let fourWideMode=false; // 4Wideモード（ボード幅4列）
 let puyotetMode=false; // ぷよテトモード
 let isSpectator=false; // 観戦モードフラグ
@@ -599,6 +603,7 @@ function returnToRoom(){
   asState=null; allspinMode=false;
   _stopFortyLineUI(); fortyLineMode=false;
   _stopBlitzUI(); blitzMode=false;
+  _stopCheeseUI(); cheeseMode=false;
   renderer=null;isSpectator=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const prevRoomId = roomId || _lastUsedRoomId;
@@ -628,6 +633,7 @@ function backToLobby(){
   asState=null; allspinMode=false;
   _stopFortyLineUI(); fortyLineMode=false;
   _stopBlitzUI(); blitzMode=false;
+  _stopCheeseUI(); cheeseMode=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   renderer=null;
   const prevRoomId=roomId||_lastUsedRoomId;
@@ -807,7 +813,7 @@ socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,muta
   if(rs){roomSettings={...roomSettings,...rs};}
   document.getElementById('room-id-display').textContent=rid;
   updatePlayerList(players);
-  document.getElementById('start-btn').style.display=isHost&&(players.length>=2||(rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode)&&players.length>=1))?'block':'none';
+  document.getElementById('start-btn').style.display=isHost&&(players.length>=2||(rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.cheeseMode)&&players.length>=1))?'block':'none';
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
   const mrow=document.getElementById('mutation-row-wrap');
   if(mrow)mrow.style.display=isHost?'flex':'none';
@@ -859,7 +865,7 @@ socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,r
   if(!started)resetRoomInactivityTimer();
   else{if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);_removeInactivityBtn();}
   const total=players.length;
-  const isSoloAllowed=rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode);
+  const isSoloAllowed=rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.cheeseMode);
   const canStart=isHost&&!started&&(total>=2||(isSoloAllowed&&total>=1));
   document.getElementById('start-btn').style.display=canStart?'block':'none';
   const feb=document.getElementById('force-end-waiting-btn');
@@ -936,6 +942,7 @@ function updateRoomSettingsUI(rs){
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
   const flTog=document.getElementById('fortyline-toggle');if(flTog)flTog.checked=!!(rs.fortyLineMode);
+  const chTog=document.getElementById('cheese-toggle');if(chTog)chTog.checked=!!(rs.cheeseMode);
   const blTog=document.getElementById('blitz-toggle');if(blTog)blTog.checked=!!(rs.blitzMode);
   const fwTog=document.getElementById('fourwide-toggle');if(fwTog)fwTog.checked=!!(rs.fourWideMode);
   const ptTog=document.getElementById('puyotet-toggle');if(ptTog)ptTog.checked=!!(rs.puyotetMode);
@@ -979,7 +986,7 @@ function updateRoomSettingsUI(rs){
     const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botLevel===6?'CC':'Lv.'+b.botLevel}`).join(', '):'None';
     const gmLabel=rs.puyotetMode?`×${rs.garbageMultiplier??2}`:'—';
     const md=(rs.multiplierDelayMin??1.6).toFixed(1)+'min';const mi=(rs.multiplierIntervalSec??1).toFixed(1)+'s';const mr=(rs.multiplierRate??0.03).toFixed(3);
-vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
+vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
   }
 }
 function getBotLevelLabel(lvl){
@@ -989,7 +996,7 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','blitzMode','fourWideMode','puyotetMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
@@ -1073,7 +1080,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,boardRows:br,playerModes:pm})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,cheeseMode:chm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,boardRows:br,playerModes:pm})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -1088,6 +1095,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   allspinMode=!!asm;
   fortyLineMode=!!flm;
   blitzMode=!!blm;
+  cheeseMode=!!chm;
   fourWideMode=!!fwm;
   puyotetMode=!!ptm;
   if(pm) playerModes=pm;
@@ -1095,7 +1103,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
   _pieceCounter=0;
   // 通常マルチプレイ: リプレイ記録開始
-  if(!fortyLineMode&&!blitzMode){
+  if(!fortyLineMode&&!cheeseMode&&!blitzMode){
     ReplayRecorder.start({
       players, bagSeed, myId, playerName: myName,
       roomPlayers: [...roomPlayers],
@@ -1109,6 +1117,8 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
     showCountdown(bagSeed,()=>initAllSpinGame(players,bagSeed));
   } else if(fortyLineMode){
     showCountdown(bagSeed,()=>initFortyLineGame(players,bagSeed));
+  } else if(cheeseMode){
+    showCountdown(bagSeed,()=>initCheeseGame(players,bagSeed));
   } else if(blitzMode){
     showCountdown(bagSeed,()=>initBlitzGame(players,bagSeed));
   } else if(myGameMode==='puyo'){
@@ -1120,6 +1130,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(solo)addChatSystem('🎮 SOLO MODE — survive as long as possible!');
   if(asm)addChatSystem('🌀 ALLSPIN MODE — スピンをマスターせよ！');
   if(flm)addChatSystem('📦 40 LINE MODE — 40ラインをできるだけ速くクリア！');
+  if(chm)addChatSystem('🧀 CHEESE MODE — せり上がりゴミに耐えて40ラインクリア！');
   if(blm)addChatSystem('⚡ BLITZ MODE — 2分間でスコアを稼げ！');
   if(fwm)addChatSystem('◼ 4WIDE MODE — 横4列でプレイ！');
   if(ptm)addChatSystem('🍬 PUYOTET MODE — 足し算REN・即時ゴミ！');
@@ -1325,7 +1336,7 @@ class TetrisGame{
     this.alive=true;this.locking=false;
     this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
-    this._wasRotated=false;this._wasKicked=false;
+    this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=false;
     this.garbageQueue=[];
     this._deferredGarbage=[];
     this.gravityMs=0;
@@ -1436,7 +1447,7 @@ class TetrisGame{
       const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
-        this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
+        this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -1444,7 +1455,7 @@ class TetrisGame{
       for(const[kx,ky]of [[-1,0],[1,0],[0,-1],[0,1],[-2,0],[2,0]]){
         const t={...base,x:base.x+kx,y:base.y-ky};
         if(this.isValid(t)){
-          this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
+          this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
           if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
           return true;
         }
@@ -1455,14 +1466,14 @@ class TetrisGame{
     const kicks=this.current.type==='I'?KICK_I[key]:KICK_JLSTZ[key];
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
-      this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
+      this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
       if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
-        this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
+        this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -1522,7 +1533,7 @@ class TetrisGame{
       const kicks180=[[0,0],[-1,0],[1,0],[0,1],[-1,1],[1,1]];
       for(const[kx,ky]of kicks180){
         const t={...base,x:base.x+kx,y:base.y+ky};
-        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;this.tryResetLock();SFX.rotate();
+        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;this._updateLockAfterMove();SFX.rotate();
           renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
           return true;}
       }
@@ -1539,7 +1550,7 @@ class TetrisGame{
       const t={...base,x:base.x+kx,y:base.y+ky};
       if(this.isValid(t)){
         this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;
-        this.tryResetLock();SFX.rotate();
+        this._updateLockAfterMove();SFX.rotate();
         renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);
         renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
         return true;
@@ -1548,9 +1559,18 @@ class TetrisGame{
     return false;
   }
 
+  // Cancel lock timer if piece leaves surface; reset if still on surface
+  _updateLockAfterMove(){
+    if(!this.isValid(this.current,0,1)){
+      this.tryResetLock();
+    } else {
+      this.cancelLock();
+    }
+  }
+
   move(dx){
     if(this.isValid(this.current,dx,0)){
-      this.current.x+=dx;this.lastSpin=null;this.tryResetLock();SFX.move();
+      this.current.x+=dx;this.lastSpin=null;this._updateLockAfterMove();SFX.move();
       return true;
     } else {
       renderer&&renderer.onWallBump(dx);
@@ -1637,6 +1657,17 @@ class TetrisGame{
     }
     else SFX.lock();
     this.clearLines();
+
+    // ── チーズモード: ロック後にゴミをせり上げる ──────────────
+    if (cheeseMode && this.alive) {
+      cheeseHandCount++;
+      const cols = getGameCols();
+      const hole = Math.floor(Math.random() * cols);
+      const garbageRow = Array(cols).fill('G');
+      garbageRow[hole] = 0;
+      this.board.shift();
+      this.board.push(garbageRow);
+    }
   }
 
   clearLines(){
@@ -1709,9 +1740,12 @@ class TetrisGame{
           else if (this.b2bCount >= 3) b2bBonus = 2;
           attack += b2bBonus;
         }
-        // B2B Break: max(0, b2bCount - 3) lines are sent/cancelled
-        if (wasB2B && !isB2Bable && count > 0) {
-          attack += Math.max(0, this.b2bCount - 3);
+        // B2B Break: accumulated b2bCount sent as lines (with 3 holes)
+        if (wasB2B && !isB2Bable && count > 0 && this.b2bCount >= 4) {
+          attack += this.b2bCount;
+          this._b2bBreakHoles3 = true;
+        } else {
+          this._b2bBreakHoles3 = false;
         }
       }
 
@@ -1770,9 +1804,9 @@ class TetrisGame{
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
 
-      if(attack>0||fortyLineMode){
+      if(attack>0||fortyLineMode||cheeseMode){
         this.totalAttackSent += attack;
-        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
+        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined});
       }
       // 相手に視覚エフェクトを送信
       const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack};
@@ -1900,7 +1934,7 @@ class TetrisGame{
       apm: this.apm,
       vs: this.vs,
       garbageQueue: this.garbageQueue,
-      // リプレイ傾き再現用
+      cheeseHandCount: cheeseMode ? cheeseHandCount : undefined,
       tiltAngle: renderer ? (renderer.tiltAngle||0) : 0,
       shakePower: renderer ? (renderer.shakePower||0) : 0,
       boardOffsetY: renderer ? (renderer.boardOffsetY||0) : 0,
@@ -1959,28 +1993,13 @@ class TetrisGame{
     ReplayRecorder.record('piece_update',{currentPiece:{...this.current}});
   }
 
-  queueGarbage(lines,fromId){
+  queueGarbage(lines,fromId,holes3){
     const readyAt=performance.now()+(puyotetMode?0:3000);
     if(!puyotetMode&&lines>10){
-      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol});lines-=chunk;}
-    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol});}
+      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:!!holes3});lines-=chunk;}
+    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:!!holes3});}
     renderer&&renderer.onGarbageIncoming(lines,fromId);
-
-    // If total queued garbage exceeds 20 lines, force oldest to ready immediately
-    const total=this.garbageQueue.reduce((s,g)=>s+g.lines,0);
-    if(total>20){
-      const overflow=total-20;
-      let remaining=overflow;
-      for(const g of this.garbageQueue){
-        if(remaining<=0)break;
-        const take=Math.min(g.lines,remaining);
-        g.lines-=take;
-        remaining-=take;
-        g.readyAt=performance.now();
-      }
-      this.garbageQueue=this.garbageQueue.filter(g=>g.lines>0);
-      // 強制readyになったゴミは次のlockPieceで適用される
-    }
+    // ゴミはreadyAtに従って自然に適用される（ゲージが溢れても強制出現しない）
   }
 
   calcScore(count,isTSpin,isMini,isB2B,combo){
@@ -2813,6 +2832,135 @@ socket.on('forty_line_clear', ({ playerName, elapsedMs }) => {
 });
 
 // =====================================================
+// ===== CHEESE MODE ====================================
+// 40ラインクリアを目指すモード。ピースを置くたびに
+// 下から1マス穴のゴミがせり上がる。
+// =====================================================
+
+function initCheeseGame(players, bagSeed) {
+  setupInput();
+
+  cheeseStartTime = performance.now();
+  cheeseMode = true;
+  cheeseHandCount = 0;
+
+  // リプレイ記録開始
+  ReplayRecorder.start({
+    players, bagSeed, myId, playerName: myName,
+    roomPlayers: [...roomPlayers],
+    mode: 'cheese'
+  });
+
+  _createCheeseUI();
+
+  // ボード背後オーバーレイを有効化
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = '40';
+    renderer._modeOverlayText.style.fill = '#ffffff33';
+    renderer._modeOverlayText.visible = true;
+    if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.text = 'HANDS: 0'; renderer._modeOverlaySubText.visible = true; }
+  }
+
+  // タイマー更新ループ
+  cheeseTimer = setInterval(() => {
+    if (!cheeseMode || !gameState || !gameState.alive) return;
+    _updateCheeseUI();
+  }, 16);
+
+  let lastTime = performance.now();
+  let lastEmit = 0;
+  const EMIT_INTERVAL = 50;
+  gameApp.ticker.add(() => {
+    const now = performance.now();
+    const rawDt = Math.min(now - lastTime, 100);
+    lastTime = now;
+    if (gameState && gameState.alive) {
+      gameState.updateGravity(rawDt);
+      if (now - lastEmit >= EMIT_INTERVAL) {
+        lastEmit = now;
+        gameState._emitCurrentPiece();
+      }
+    }
+    renderer && renderer.update(rawDt * ANIM_SPEED);
+  });
+}
+
+function _createCheeseUI() {
+  const old = document.getElementById('cheese-overlay');
+  if (old) old.remove();
+  _updateCheeseUI();
+}
+
+function _updateCheeseUI() {
+  const remaining = Math.max(0, 40 - (gameState ? gameState.lines : 0));
+  const elapsed = performance.now() - cheeseStartTime;
+  const mins = Math.floor(elapsed / 60000);
+  const secs = Math.floor((elapsed % 60000) / 1000);
+  const tenths = Math.floor((elapsed % 1000) / 100);
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = String(remaining).padStart(2, '0');
+    const a = _getOverlayAlpha();
+    const aHi = Math.min(255, Math.round(parseInt(a,16)*1.5)).toString(16).padStart(2,'0');
+    const fillCol = remaining <= 10 ? `#ff006e${aHi}` : remaining <= 20 ? `#ffffff${aHi}` : `#ffffff${a}`;
+    renderer._modeOverlayText.style = new PIXI.TextStyle({
+      fontFamily: 'Orbitron, sans-serif',
+      fontSize: Math.round(BOARD_W * 0.55),
+      fill: fillCol,
+      fontWeight: '900',
+      align: 'center',
+    });
+    renderer._modeOverlayText.anchor.set(0.5);
+    if (renderer._modeOverlaySubText) {
+      renderer._modeOverlaySubText.text = `HANDS: ${cheeseHandCount}  ${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${tenths}`;
+    }
+  }
+  if (remaining <= 0 && cheeseTimer) {
+    clearInterval(cheeseTimer);
+    cheeseTimer = null;
+  }
+}
+
+function _stopCheeseUI() {
+  if (cheeseTimer) { clearInterval(cheeseTimer); cheeseTimer = null; }
+  if (renderer && renderer._modeOverlayText) {
+    try { renderer._modeOverlayText.visible = false; } catch(e) {}
+  }
+}
+
+// サーバーからチーズモード達成通知を受信
+socket.on('cheese_clear', ({ playerName, elapsedMs, handCount }) => {
+  _stopCheeseUI();
+  cheeseMode = false;
+  cheeseHandCount = handCount || 0;
+
+  ReplayRecorder.stop(elapsedMs, undefined, handCount || 0);
+
+  const mins = Math.floor(elapsedMs / 60000);
+  const secs = Math.floor((elapsedMs % 60000) / 1000);
+  const ms = Math.floor((elapsedMs % 1000) / 10);
+  const timeStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`;
+
+  const flash = document.createElement('div');
+  flash.style.cssText = `
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:rgba(0,0,0,0.85);z-index:10000;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-family:monospace;color:#fff;pointer-events:none;
+  `;
+  flash.innerHTML = `
+    <div style="font-size:44px;font-weight:bold;color:#ffbe0b;letter-spacing:4px;">🧀 CHEESE MODE CLEAR!</div>
+    <div style="font-size:28px;color:#ffd700;margin-top:16px;">${timeStr}</div>
+    <div style="font-size:18px;color:#aaa;margin-top:8px;">HANDS: ${handCount}</div>
+    <div style="font-size:16px;color:#aaa;margin-top:4px;">${playerName}</div>
+  `;
+  document.body.appendChild(flash);
+  setTimeout(() => {
+    flash.remove();
+    showReplayUI(ReplayRecorder.export(), elapsedMs, playerName);
+  }, 3000);
+});
+
+// =====================================================
 // ===== BLITZ MODE ====================================
 // 2分間でスコアを競うタイムアタックモード
 // =====================================================
@@ -3038,11 +3186,12 @@ const ReplayRecorder = (() => {
     _events.push({ t: performance.now() - _startTime, type, data });
   }
 
-  function stop(elapsedMs, finalScore) {
+  function stop(elapsedMs, finalScore, handCount) {
     _recording = false;
     _meta.elapsedMs = elapsedMs;
     if (finalScore !== undefined) _meta.finalScore = finalScore;
     else if (gameState) _meta.finalScore = gameState.score;
+    if (handCount !== undefined) _meta.handCount = handCount;
   }
 
   function export_() {
@@ -3174,7 +3323,9 @@ const ReplayPlayer = (() => {
 
 // リプレイUIを表示
 function showReplayUI(replayData, elapsedMs, playerName) {
-  // result-overlayを流用してリプレイUIを表示
+  const isCheese = replayData && replayData.meta && replayData.meta.mode === 'cheese';
+  const handCount = replayData && replayData.meta && replayData.meta.handCount || 0;
+
   const o = document.getElementById('result-overlay');
   const rc = o.querySelector('.result-card');
 
@@ -3183,7 +3334,26 @@ function showReplayUI(replayData, elapsedMs, playerName) {
   const ms = Math.floor((elapsedMs % 1000) / 10);
   const timeStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`;
 
-  rc.innerHTML = `
+  rc.innerHTML = isCheese ? `
+    <div class="result-title" style="color:#ffbe0b">🧀 CHEESE MODE CLEAR</div>
+    <div class="result-winner" style="color:#ffd700;font-size:1.8rem;margin:0.5rem 0">${timeStr}</div>
+    <div style="font-size:1.1rem;color:#ffbe0b;margin-bottom:0.5rem">HANDS: ${handCount}</div>
+    <div style="color:#aaa;font-size:0.8rem;margin-bottom:1rem">${playerName}</div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:1rem">
+      <button class="btn btn-secondary" onclick="ReplayUI.watchReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">▶ リプレイを見る</button>
+      <button class="btn btn-secondary" onclick="ReplayUI.saveReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">💾 保存</button>
+      <label class="btn btn-secondary" style="font-size:0.75rem;padding:0.5rem 1rem;cursor:pointer">
+        📂 読み込む
+        <input type="file" accept=".tetreplay,.json" style="display:none" onchange="ReplayUI.loadFromFile(this)">
+      </label>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="returnToRoom()" style="font-size:0.75rem">RETURN TO ROOM</button>
+      <button class="btn btn-secondary" onclick="backToLobby()" style="font-size:0.75rem">BACK TO LOBBY</button>
+    </div>
+  ` : `
     <div class="result-title" style="color:#00f5ff">🏁 40 LINE CLEAR</div>
     <div class="result-winner" style="color:#ffd700;font-size:1.8rem;margin:0.5rem 0">${timeStr}</div>
     <div style="color:#aaa;font-size:0.8rem;margin-bottom:1rem">${playerName}</div>
@@ -3204,7 +3374,6 @@ function showReplayUI(replayData, elapsedMs, playerName) {
   `;
   o.classList.add('open');
 
-  // グローバルにリプレイデータを保持
   window._lastReplayData = replayData;
 }
 
@@ -3228,7 +3397,7 @@ const ReplayUI = {
     const mins = String(Math.floor(elMs/60000)).padStart(2,'0');
     const secs = String(Math.floor((elMs%60000)/1000)).padStart(2,'0');
     const ms = String(Math.floor((elMs%1000)/10)).padStart(2,'0');
-    const modeLabel = meta.mode === 'blitz' ? 'blitz' : meta.mode === 'fortyline' ? '40line' : 'multi';
+    const modeLabel = meta.mode === 'blitz' ? 'blitz' : meta.mode === 'fortyline' ? '40line' : meta.mode === 'cheese' ? 'cheese' : 'multi';
     a.href = url; a.download = `tetrix_${modeLabel}_${mins}${secs}${ms}.tetreplay`;
     a.click(); URL.revokeObjectURL(url);
   },
@@ -3292,6 +3461,7 @@ function openReplayViewer(replayData, mode) {
   // モード判定（applyEventクロージャで参照）
   const isBlitzReplay = mode === 'blitz' || (meta && meta.mode === 'blitz');
   const isFortyLineReplay = !isBlitzReplay && (mode === 'fortyline' || (meta && meta.mode === 'fortyline'));
+  const isCheeseReplay = !isBlitzReplay && !isFortyLineReplay && (mode === 'cheese' || (meta && meta.mode === 'cheese'));
 
   // モード別ボード背後オーバーレイ
   if (renderer && renderer._modeOverlayText) {
@@ -3307,6 +3477,12 @@ function openReplayViewer(replayData, mode) {
       renderer._modeOverlayText.anchor.set(0.5);
       renderer._modeOverlayText.visible = true;
       if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.visible = true; }
+    } else if (isCheeseReplay) {
+      renderer._modeOverlayText.text = '40';
+      renderer._modeOverlayText.style = new PIXI.TextStyle({ fontFamily: 'Orbitron, sans-serif', fontSize: Math.round(BOARD_W * 0.55), fill: '#ffffff33', fontWeight: '900', align: 'center' });
+      renderer._modeOverlayText.anchor.set(0.5);
+      renderer._modeOverlayText.visible = true;
+      if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.text = 'HANDS: 0'; renderer._modeOverlaySubText.visible = true; }
     }
   }
   let _replayLastTime = performance.now();
@@ -3349,7 +3525,15 @@ function openReplayViewer(replayData, mode) {
         if (data.shakePower !== undefined) renderer.shakePower = Math.max(renderer.shakePower, data.shakePower);
         if (data.boardOffsetY !== undefined) renderer.boardOffsetY = Math.max(renderer.boardOffsetY, data.boardOffsetY);
         // カウンター更新
-        _updateReplayFortyLineCounter(data.lines || 0, isBlitzReplay ? 'blitz' : 'fortyline');
+        _updateReplayFortyLineCounter(data.lines || 0, isBlitzReplay ? 'blitz' : isCheeseReplay ? 'cheese' : 'fortyline');
+        // チーズモード: ハンド数表示
+        if (isCheeseReplay && data.cheeseHandCount !== undefined) {
+          if (renderer && renderer._modeOverlaySubText) {
+            renderer._modeOverlaySubText.text = `HANDS: ${data.cheeseHandCount}`;
+          }
+          const handsEl = document.getElementById('replay-cheese-hands');
+          if (handsEl) handsEl.textContent = `HANDS: ${data.cheeseHandCount}`;
+        }
         // Blitzスコア・タイム更新
         const blitzScoreEl = document.getElementById('replay-blitz-score');
         if (blitzScoreEl) blitzScoreEl.textContent = (data.score || 0).toLocaleString();
@@ -3594,6 +3778,8 @@ function _replayB2bBreak(rend, b2bCount) {
 }
 
 function _updateReplayFortyLineCounter(lines, mode) {
+  const isCheese = mode === 'cheese';
+  const isBlitz = mode === 'blitz';
   // コントロールパネルのDOM要素（40ラインモード）
   const el = document.getElementById('replay-fortyliner-remaining');
   if (el) {
@@ -3603,8 +3789,10 @@ function _updateReplayFortyLineCounter(lines, mode) {
   }
   // ボード後ろのオーバーレイテキスト
   if (renderer && renderer._modeOverlayText && renderer._modeOverlayText.visible) {
-    const isBlitz = mode === 'blitz';
-    if (!isBlitz) {
+    if (!isBlitz && !isCheese) {
+      const rem = Math.max(0, 40 - lines);
+      renderer._modeOverlayText.text = String(rem).padStart(2,'0');
+    } else if (isCheese) {
       const rem = Math.max(0, 40 - lines);
       renderer._modeOverlayText.text = String(rem).padStart(2,'0');
     }
@@ -3618,17 +3806,23 @@ function _createReplayControlPanel(meta, mode) {
 
   const elMs = meta && meta.elapsedMs ? meta.elapsedMs : 0;
   const isBlitz = mode === 'blitz' || (meta && meta.mode === 'blitz');
+  const isCheese = mode === 'cheese' || (meta && meta.mode === 'cheese');
   const mins = String(Math.floor(elMs/60000)).padStart(2,'0');
   const secs = String(Math.floor((elMs%60000)/1000)).padStart(2,'0');
   const ms = String(Math.floor((elMs%1000)/10)).padStart(2,'0');
   const timeStr = `${mins}:${secs}.${ms}`;
   const totalLabel = isBlitz ? '2:00 BLITZ' : `/ ${timeStr}`;
-  const barColor = isBlitz ? '#ff006e' : '#00f5ff';
+  const barColor = isBlitz ? '#ff006e' : isCheese ? '#ffbe0b' : '#00f5ff';
 
   // モード別情報表示
-  const modeInfo = isBlitz
-    ? `<div style="display:flex;align-items:center;gap:4px"><span style="color:#ff006e;font-size:11px">⚡ BLITZ</span><span id="replay-blitz-score" style="color:#ffd700;font-weight:bold;font-size:14px">0</span></div>`
-    : `<div style="display:flex;align-items:center;gap:4px"><span style="color:#aaa;font-size:11px">残り</span><span id="replay-fortyliner-remaining" style="color:#00f5ff;font-weight:bold;font-size:16px">40</span><span style="color:#aaa;font-size:11px">ライン</span></div>`;
+  let modeInfo;
+  if (isBlitz) {
+    modeInfo = `<div style="display:flex;align-items:center;gap:4px"><span style="color:#ff006e;font-size:11px">⚡ BLITZ</span><span id="replay-blitz-score" style="color:#ffd700;font-weight:bold;font-size:14px">0</span></div>`;
+  } else if (isCheese) {
+    modeInfo = `<div style="display:flex;align-items:center;gap:4px"><span style="color:#ffbe0b;font-size:11px">🧀 CHEESE</span><span id="replay-fortyliner-remaining" style="color:#00f5ff;font-weight:bold;font-size:16px">40</span><span style="color:#aaa;font-size:11px">ライン</span></div>`;
+  } else {
+    modeInfo = `<div style="display:flex;align-items:center;gap:4px"><span style="color:#aaa;font-size:11px">残り</span><span id="replay-fortyliner-remaining" style="color:#00f5ff;font-weight:bold;font-size:16px">40</span><span style="color:#aaa;font-size:11px">ライン</span></div>`;
+  }
 
   const panel = document.createElement('div');
   panel.id = 'replay-ctrl-panel';
@@ -3649,6 +3843,7 @@ function _createReplayControlPanel(meta, mode) {
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <button id="replay-play-btn" data-state="playing" onclick="ReplayUI.togglePlay()" style="background:rgba(0,245,255,0.15);border:1px solid ${barColor};color:${barColor};padding:4px 14px;border-radius:6px;font-size:14px;cursor:pointer">⏸</button>
+      ${isCheese?'<span id="replay-cheese-hands" style="color:#ffbe0b;font-size:12px;margin-left:4px"></span>':''}
       <select id="replay-speed-sel" onchange="ReplayUI.setSpeed(this.value)" style="background:rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:3px 6px;border-radius:6px;font-size:12px">
         <option value="0.25">×0.25</option>
         <option value="0.5">×0.5</option>
@@ -5657,7 +5852,7 @@ class GameRenderer{
       let atkTxt=`⚔ +${this._attackAccum}`;
       if(ren>1)atkTxt+=`  REN x${ren-1}`;
       if(_b2bBreakCount>0)atkTxt+=`  💔 B2B x${_b2bBreakCount}`;
-      const atkSz=Math.min(17+Math.floor(this._attackAccum*3),48);
+      const atkSz=Math.min(20+Math.floor(this._attackAccum*4),64);
       const sc=this._uiScale||1;
       if(!this._atkText||!this._atkText.alive){
         this._attackAccum=attack;
@@ -6312,7 +6507,7 @@ class GameRenderer{
     cont.x=p.x;cont.y=p.y;
     // 前面テキストのみ（塗りつぶし+黒枠線、分身なし）
     this._badgeLayers=[];
-    const fontSize=44;
+    const fontSize=Math.min(36+Math.floor(value*1.2),80);
     const fontFamily="'Arial Black','Impact',sans-serif";
     const faceSt=new PIXI.TextStyle({
       fontFamily,fontSize,fill:0xdddddd,stroke:0x000000,strokeThickness:2.5,fontWeight:'900',letterSpacing:0
@@ -7753,9 +7948,9 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
   d.currentPiece=currentPiece;
 });
 
-socket.on('receive_garbage',({lines,fromId})=>{
-  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
-  ReplayRecorder.record('receive_garbage',{lines,fromId});
+socket.on('receive_garbage',({lines,fromId,holes3})=>{
+  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${!!holes3} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
+  ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:!!holes3});
   if(puyoGameState&&puyoGameState.alive){
     const mult=roomSettings.garbageMultiplier||2;
     console.log(`[RCV GARBAGE] -> puyo convert: ${lines}*${mult}=${lines*mult} ojama`);
@@ -7763,8 +7958,8 @@ socket.on('receive_garbage',({lines,fromId})=>{
     return;
   }
   if(!gameState){console.log('[RCV GARBAGE] -> no gameState, drop');return;}
-  console.log(`[RCV GARBAGE] -> queueGarbage(${lines})`);
-  gameState.queueGarbage(lines,fromId);
+  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${!!holes3}`);
+  gameState.queueGarbage(lines,fromId,!!holes3);
 });
 
 socket.on('player_dead',({id,name})=>{
@@ -7808,11 +8003,11 @@ socket.on('attack_sent',({fromId,toId,attack,clearRows})=>{
   }
 });
 
-socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId})=>{
+socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId,cheeseClear,handCount})=>{
   stopDAS();stopSoftDrop();
   if(gameState)gameState.alive=false;
   if(puyoGameState){ puyoGameState.alive=false; puyoGameState.dropping=false; }
-  // リプレイ記録停止
+  // リプレイ記録停止（チーズモードは既にcheese_clearで停止済み）
   const hadReplay = ReplayRecorder.isRecording();
   if(hadReplay){
     const elapsed = gameState ? performance.now() - gameState.startTime : 0;
@@ -7831,17 +8026,19 @@ socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId})=>{
     addChatSystem(forceEnded?'⚠ Game force-ended by host.':'🏁 Game ended. Returning to room...');
     return;
   }
-  setTimeout(()=>{
-    showResult(winner,winnerName,scores);
-    if(hadReplay && window._lastReplayData){
-      const rb = document.getElementById('result-replay-btns');
-      if(rb) rb.style.display = '';
-    }
-    // 非ホストはホストが戻るのを待つメッセージ表示
-    if(!isHost){
-      addChatSystem('⏳ ホストがルームに戻るまでお待ちください...');
-    }
-  },2000);
+  if(!cheeseClear) {
+    setTimeout(()=>{
+      showResult(winner,winnerName,scores);
+      if(hadReplay && window._lastReplayData){
+        const rb = document.getElementById('result-replay-btns');
+        if(rb) rb.style.display = '';
+      }
+      // 非ホストはホストが戻るのを待つメッセージ表示
+      if(!isHost){
+        addChatSystem('⏳ ホストがルームに戻るまでお待ちください...');
+      }
+    },2000);
+  }
 });
 
 // ホストがルームに戻ったら全員自動でルームへ戻る
