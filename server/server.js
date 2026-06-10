@@ -2203,9 +2203,9 @@ class BotPlayer {
     const isB2B = wasB2B && isB2Bable;
 
     let attack = 0;
-    if (lines === 4) attack = 4;
-    else if (isTSpin && lines === 3) attack = 6;
-    else if (isTSpin && lines === 2) attack = 4;
+    if (lines === 4) attack = 3;
+    else if (isTSpin && lines === 3) attack = 5;
+    else if (isTSpin && lines === 2) attack = 3;
     else if (isTSpin && lines === 1) attack = 2;
     else if (isMini && lines === 2) attack = 1;
     else if (isMini && lines === 1) attack = 0;

@@ -1606,8 +1606,7 @@ class TetrisGame{
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
-    this._applyReadyGarbage();
-    // Re-evaluate spin at lock time (after garbage shift, at current position)
+    // Re-evaluate spin at lock time (at current position)
     if(this._wasRotated){
       const _prev180=this.lastSpin==='180';
       this.checkSpin(0,0,this._wasKicked||false);
@@ -1658,6 +1657,9 @@ class TetrisGame{
     }
     else SFX.lock();
     this.clearLines();
+
+    // 相殺後に残ったゴミを適用（コンボ中はclearLines内の相殺でキャンセルされる）
+    if (this.alive) this._applyReadyGarbage();
 
     // ── チーズモード: ハンドカウント ─────────────────────────
     if (cheeseMode && this.alive) {
@@ -1718,9 +1720,9 @@ class TetrisGame{
         attack=6; // Penta
       }
       else{
-        if(isTSpin && !isMini) attack={1:2,2:4,3:6}[count]||0;
+        if(isTSpin && !isMini) attack={1:2,2:3,3:5}[count]||0;
         else if(isMini) attack={1:0,2:1}[count]||0; // TSM-S:0, TSM-D:1 (TETR.IO)
-        else attack={1:0,2:1,3:2,4:4}[count]||0;
+        else attack={1:0,2:1,3:2,4:3}[count]||0;
       }
 
       // B2B (PuyoTet: fixed +1, no chain/break)
