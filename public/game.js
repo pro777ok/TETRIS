@@ -1609,7 +1609,8 @@ class TetrisGame{
     // Re-evaluate spin at lock time (at current position)
     if(this._wasRotated){
       const _prev180=this.lastSpin==='180';
-      this.checkSpin(0,0,this._wasKicked||false);
+      // 水平移動でスピンがクリアされた場合のみ再評価
+      if(!this.lastSpin)this.checkSpin(0,0,this._wasKicked||false);
       // Preserve SPIN180 if 3-corner / other spin didn't trigger
       if(_prev180&&!this.lastSpin){this.lastSpin='180';this.lastSpinType='SPIN180';}
     } else {

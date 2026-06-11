@@ -2226,8 +2226,9 @@ class BotPlayer {
         else if (this.b2bCount >= 3) b2bBonus = 2;
         attack += b2bBonus;
       }
-      if (wasB2B && !isB2Bable && lines > 0) {
-        attack += Math.max(0, this.b2bCount - 3);
+      if (wasB2B && !isB2Bable && lines > 0 && this.b2bCount >= 4) {
+        attack += this.b2bCount;
+        this._b2bBreakHoles3 = true;
       }
     }
 
@@ -2381,14 +2382,15 @@ class BotPlayer {
 
     if (room && attack > 0) {
       this.totalAttackSent += attack;
+      const holes3 = this._b2bBreakHoles3 || false;
       const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
       for (const t of humanTargets) {
         const hc = Math.floor(Math.random()*this.cols);
-        io.to(t.id).emit('receive_garbage', { lines: attack, fromId: this.id, holeCol: hc });
+        io.to(t.id).emit('receive_garbage', { lines: attack, fromId: this.id, holeCol: hc, holes3 });
         io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack, clearRows: [] });
       }
       const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-      for (const bt of botTargets) bt.queueGarbage(attack, this.id);
+      for (const bt of botTargets) bt.queueGarbage(attack, this.id, holes3);
     }
 
     if (room) {
