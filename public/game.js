@@ -1447,7 +1447,7 @@ class TetrisGame{
       const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
-        this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
+        this.current=base;this._wasRotated=true;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -1466,7 +1466,7 @@ class TetrisGame{
     const kicks=this.current.type==='I'?KICK_I[key]:KICK_JLSTZ[key];
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
-      this.current=base;this._wasRotated=true;this._wasKicked=false;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
+      this.current=base;this._wasRotated=true;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
       if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
