@@ -1346,6 +1346,7 @@ class BotPlayer {
     this.score = 0; this.lines = 0; this.lvl = 1;
     this.combo = -1; this.b2b = false; this.alive = true; this.ren = 0; this.locking = false;
     this.garbageQueue = [];
+    this._lastGarbageHoleCol = -1;
     this.thinkTimer = null;
     this.currentPiece = null;
     // Custom bot code
@@ -2338,14 +2339,22 @@ class BotPlayer {
           this.garbageQueue.unshift({...g, readyAt: now + 500});
           continue;
         }
-        let hc = g.holeCol!==undefined ? g.holeCol : Math.floor(Math.random()*this.cols);
         for (let i=0;i<g.lines;i++){
           if (linesToAdd >= CAP) {
-            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: hc});
+            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0});
             break;
           }
-          const row=Array(this.cols).fill('G');row[hc]=0;this.board.push(row);this.board.shift();
+          // 30%で上の穴と同じ列に（直列）、それ以外はランダム
+          let hc;
+          if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+            hc=this._lastGarbageHoleCol;
+          }else{
+            hc=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*this.cols);
+          }
+          const row=Array(this.cols).fill('G');row[hc]=0;
+          this.board.push(row);this.board.shift();
           linesToAdd++;this.totalGarbageReceived++;
+          this._lastGarbageHoleCol=hc;
         }
       }
       _garbageApplied = linesToAdd > 0;
@@ -2429,7 +2438,7 @@ class BotPlayer {
   queueGarbage(lines, fromId, holes3) {
     const hc = Math.floor(Math.random()*this.cols);
     const room = rooms[this.roomId];
-    const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 3000;
+    const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000;
     this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: !!holes3 });
   }
 

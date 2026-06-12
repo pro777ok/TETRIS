@@ -1339,6 +1339,7 @@ class TetrisGame{
     this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=false;
     this.garbageQueue=[];
     this._deferredGarbage=[];
+    this._lastGarbageHoleCol=-1;
     this.gravityMs=0;
     renSemitone=0;
 
@@ -1606,6 +1607,8 @@ class TetrisGame{
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
+    // B2B値を保存（clearLines内でリセットされる前に）
+    this._b2bCancelRemain = this.b2bCount || 0;
     // Re-evaluate spin at lock time (at current position)
     if(this._wasRotated){
       const _prev180=this.lastSpin==='180';
@@ -1915,7 +1918,20 @@ class TetrisGame{
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
       const rows=[];
-      for(let i=0;i<g.count;i++){const row=Array(getGameCols()).fill('G');row[g.col]=0;rows.push(row);}
+      for(let i=0;i<g.count;i++){
+        const cols=getGameCols();
+        // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
+        let holeCol;
+        if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+          holeCol=this._lastGarbageHoleCol;
+        }else{
+          holeCol=g.col;
+        }
+        const row=Array(cols).fill('G');
+        row[holeCol]=0;
+        rows.push(row);
+        this._lastGarbageHoleCol=holeCol;
+      }
       return rows;
     });
     let idx=0;
@@ -1968,13 +1984,19 @@ class TetrisGame{
       if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+500});continue;}
       const canAdd=Math.min(g.lines,cap-linesToAdd);
       if(canAdd>0){
-        const col=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*getGameCols());
+        const cols=getGameCols();
         for(let i=0;i<canAdd;i++){
-          const row=Array(getGameCols()).fill('G');
-          row[col]=0;
+          // 30%で上の穴と同じ列に（直列）、それ以外はランダム
+          let holeCol;
+          if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+            holeCol=this._lastGarbageHoleCol;
+          }else{
+            holeCol=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*cols);
+          }
+          const row=Array(cols).fill('G');
+          row[holeCol]=0;
           if(g.holes3){
-            const cols=getGameCols();
-            const holes=[col];
+            const holes=[holeCol];
             while(holes.length<3){
               const h=Math.floor(Math.random()*cols);
               if(!holes.includes(h))holes.push(h);
@@ -1985,6 +2007,7 @@ class TetrisGame{
           this.totalGarbageReceived++;
           if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
           linesToAdd++;
+          this._lastGarbageHoleCol=holeCol;
         }
       }
       if(canAdd<g.lines)backToQueue.push({lines:g.lines-canAdd,fromId:g.fromId,readyAt:now+500,holeCol:g.holeCol,holes3:g.holes3});
@@ -2006,7 +2029,7 @@ class TetrisGame{
   }
 
   queueGarbage(lines,fromId,holes3){
-    const readyAt=performance.now()+(puyotetMode?0:3000);
+    const readyAt=performance.now()+(puyotetMode?0:1000);
     if(!puyotetMode&&lines>10){
       while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:!!holes3});lines-=chunk;}
     }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:!!holes3});}
@@ -4352,6 +4375,12 @@ class GameRenderer{
     this.gMeterCont.x=-BOARD_W/2-16;this.gMeterCont.y=-BOARD_H/2;
     this.boardWrap.addChild(this.gMeterCont);
     this.gMeterGfx=new PIXI.Graphics();this.gMeterCont.addChild(this.gMeterGfx);
+    this.gMeterTxt=new PIXI.Text('',new PIXI.TextStyle({
+      fontFamily:'Share Tech Mono',fontSize:Math.round(10),fill:0xffffff,fontWeight:'700'
+    }));
+    this.gMeterTxt.anchor.set(0.5,0);
+    this.gMeterTxt.x=5;
+    this.gMeterCont.addChild(this.gMeterTxt);
   }
 
   buildSideUI(){
@@ -4937,7 +4966,7 @@ class GameRenderer{
     let readyLines=0;
     for(const item of queue){
       const h=Math.min(item.lines*(CELL*0.85),y);y-=h;
-      const pct=Math.max(0,(item.readyAt-now)/3000);
+      const pct=Math.max(0,(item.readyAt-now)/1000);
       const col=0xff006e;
       g.beginFill(col,0.85);g.drawRect(0,y,10,h);g.endFill();
       if(pct<=0){
@@ -4980,14 +5009,20 @@ class GameRenderer{
     if(!this.gMeterGfx)return;
     this.gMeterGfx.clear();
     const queue = this.gs.garbageQueue || [];
-    if(!queue.length) return;
     
     const now = performance.now();
     let totalLines = 0;
     const MAX_VISIBLE = 20;
+    for(const g of queue) totalLines += g.lines;
+    
+    if(!queue.length){
+      if(this.gMeterTxt) this.gMeterTxt.text='';
+      return;
+    }
     
     // 下から積み上げるように描画
     let currentY = BOARD_H;
+    let drawnLines = 0;
     for (const g of queue) {
       const lines = g.lines;
       const h = lines * CELL;
@@ -4995,8 +5030,8 @@ class GameRenderer{
       // 色の決定
       let col = 0xcccccc; // default: gray
       const timeLeft = g.readyAt - now;
-      if (timeLeft <= 500) col = 0xff006e; // red
-      else if (timeLeft <= 1500) col = 0xffbe0b; // yellow
+      if (timeLeft <= 200) col = 0xff006e; // red
+      else if (timeLeft <= 600) col = 0xffbe0b; // yellow
       
       this.gMeterGfx.beginFill(col, 0.85);
       this.gMeterGfx.drawRect(0, currentY - h, 6, h);
@@ -5008,9 +5043,12 @@ class GameRenderer{
       this.gMeterGfx.lineStyle(0);
       
       currentY -= h;
-      totalLines += lines;
-      if (totalLines >= MAX_VISIBLE) break;
+      drawnLines += lines;
+      if (drawnLines >= MAX_VISIBLE) break;
     }
+    
+    // ゲージのライン数表示
+    if(this.gMeterTxt) this.gMeterTxt.text=totalLines.toString();
   }
 
   updateScoreUI(){
@@ -7654,8 +7692,8 @@ class SpectatorRenderer{
           const h = lines * gutterPerLine;
           let col = 0xcccccc;
           const timeLeft = queueItem.readyAt - now;
-          if (timeLeft <= 500) col = 0xff006e;
-          else if (timeLeft <= 1500) col = 0xffbe0b;
+          if (timeLeft <= 200) col = 0xff006e;
+          else if (timeLeft <= 600) col = 0xffbe0b;
           d.gMeterGfx.beginFill(col, 0.85);
           d.gMeterGfx.drawRect(0, currentY - h, 2, h);
           d.gMeterGfx.endFill();
@@ -8986,7 +9024,7 @@ class PuyoGame {
     const ready=[];
     const waiting=[];
     for(const v of this.ojamaQueue){
-      if(now-(v.time||0)>=3000) ready.push(v.amount);
+      if(now-(v.time||0)>=1000) ready.push(v.amount);
       else waiting.push(v);
     }
     this.ojamaQueue=waiting;
@@ -9733,7 +9771,7 @@ class PuyoRenderer {
     const now2=performance.now();
     let oWaiting=0, oReady=0;
     for(const v of game.ojamaQueue){
-      if(now2-(v.time||0)>=3000) oReady+=v.amount;
+      if(now2-(v.time||0)>=1000) oReady+=v.amount;
       else oWaiting+=v.amount;
     }
     const oTotal=oWaiting+oReady;
@@ -9749,7 +9787,7 @@ class PuyoRenderer {
       }
     }
 
-    // ─ ゴミゲージ（上から溜まり、3秒で黄色→赤）─
+    // ─ ゴミゲージ（上から溜まり、1秒で黄色→赤）─
     if(this._myGarbageGfx){
       this._myGarbageGfx.clear();
       const gW=Math.floor(6*this._sc);
@@ -10893,7 +10931,7 @@ socket.on('opponent_puyo_update',(data)=>{
       const totalOjama=rest.ojamaQueue;
       const lines=Math.ceil(totalOjama/6);
       d.garbageLines=lines;
-      d.garbageQueue=[{lines,readyAt:performance.now()+3000}];
+      d.garbageQueue=[{lines,readyAt:performance.now()+1000}];
     }
     // Store chain/combo for display
     if(rest.chain!==undefined) d._puyoChain=rest.chain;
