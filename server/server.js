@@ -149,7 +149,7 @@ function clearLines(board) {
     if (b[r].every(c => c !== 0)) cleared.push(r);
   }
   for (const r of [...cleared].sort((a,v)=>v-a)) { b.splice(r,1); b.unshift(Array(cols).fill(0)); }
-  return { board: b, lines: cleared.length };
+  return { board: b, lines: cleared.length, clearedRows: cleared };
 }
 
 function detectTspin(board, type, rot, x, y) {
@@ -2195,7 +2195,45 @@ class BotPlayer {
     }
     this.totalGarbageCleared += garbageCountInClear;
 
-    const { board: cleared, lines } = clearLines(b);
+    const { board: clearedBoard, lines, clearedRows } = clearLines(b);
+
+    // ── Bomb mode: detect bombs on original board before line clears ──
+    let bombAttack = 0;
+    const bombExplodedCells = [];
+    const _bombRoom = rooms[this.roomId];
+    const _bombMode = _bombRoom && _bombRoom.roomSettings && _bombRoom.roomSettings.bombMode;
+    let _bombQueue = null;
+    if (_bombMode) {
+      const shape = getShape(type, rot);
+      const bombSet = new Set();
+      for (let r = 0; r < shape.length; r++) {
+        for (let c = 0; c < shape[r].length; c++) {
+          if (!shape[r][c]) continue;
+          const py = y + r, px = x + c;
+          for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+            const nx = px + dx, ny = py + dy;
+            if (ny >= 0 && ny < ROWS+HIDDEN && nx >= 0 && nx < this.cols) {
+              if (this.board[ny][nx] === 0 && this.board[ny].some(c => c === 'G')) {
+                bombSet.add(`${nx},${ny}`);
+              }
+            }
+          }
+        }
+      }
+      if (bombSet.size > 0) {
+        const bombCells = Array.from(bombSet).map(s => {
+          const [col, row] = s.split(',').map(Number);
+          return { col, row };
+        });
+        _bombQueue = bombCells.map(cell => {
+          const cAbove = clearedRows ? clearedRows.filter(r => r < cell.row).length : 0;
+          const adjustedRow = cell.row - cAbove + lines;
+          if (adjustedRow < 0 || adjustedRow >= ROWS+HIDDEN) return null;
+          return { col: cell.col, row: adjustedRow };
+        }).filter(Boolean);
+      }
+    }
+
     const spin = detectSpin(this.board, type, rot, x, y, false); // BOT placement: kick tracking simplified
     const isTSpin = spin === 'TSPIN';
     const isMini = spin === 'MINI_TSPIN';
@@ -2254,10 +2292,48 @@ class BotPlayer {
       }
     }
 
-    this.board = cleared;
+    this.board = clearedBoard;
     this.lines += lines;
     this.lvl = Math.floor(this.lines/10)+1;
     this.score += lines*100*this.lvl + (isTSpin?lines*200:0);
+
+    // ── Bomb mode: process bombs on cleared board ──
+    if (_bombQueue && _bombQueue.length > 0) {
+      try {
+        while (_bombQueue.length > 0) {
+          const { col, row } = _bombQueue.shift();
+          if (row < 0 || row >= this.board.length) continue;
+          bombExplodedCells.push({ col, row });
+          for (let c = 0; c < this.cols; c++) {
+            if (this.board[row][c] === 'G') {
+              this.board[row][c] = 0;
+              bombAttack++;
+            }
+          }
+          const nr = row + 1;
+          if (nr < this.board.length && this.board[nr][col] === 0 && this.board[nr].some(c => c === 'G')) {
+            _bombQueue.push({ col, row: nr });
+          }
+        }
+        // Remove empty rows created by bomb clearing
+        if (bombAttack > 0) {
+          const emptyRows = [];
+          for (let r = 0; r < this.board.length; r++) {
+            if (this.board[r].every(c => c === 0)) emptyRows.push(r);
+          }
+          if (emptyRows.length > 0) {
+            for (const idx of emptyRows.sort((a,b)=>b-a)) {
+              this.board.splice(idx, 1);
+            }
+            for (let i = 0; i < emptyRows.length; i++) {
+              this.board.unshift(Array(this.cols).fill(0));
+            }
+          }
+        }
+      } catch(e) {
+        console.error(`[BOT BOMB ERROR] ${this.name}:`, e.message);
+      }
+    }
 
     // ── Perfect Clear ──────────────────────────────────
     const allClear = this.board.every(r=>r.every(c=>c===0));
@@ -2306,6 +2382,9 @@ class BotPlayer {
     if (this.isBot && lines > 0) {
       //console.log(`[BOT ATK] ${this.name}: lines=${lines} spin=${spin} ren=${this.ren} b2b=${this.b2b} b2bCount=${this.b2bCount} allClear=${allClear} atkBefore=${attackBeforeNerf} atkAfter=${attack}`);
     }
+
+    // Add bomb attack to total for garbage cancellation
+    if (bombAttack > 0) attack += bombAttack;
 
     // ── Garbage cancellation logic ──────────────────────────────────
     // 相殺: Pendingのゴミ（queue全体）を対象にする
@@ -2391,7 +2470,13 @@ class BotPlayer {
     }
 
     if (room && attack > 0) {
-      this.totalAttackSent += attack;
+      if (bombAttack > 0) {
+        const lineClearAtk = Math.max(0, attack - bombAttack);
+        if (lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
+        this.totalGarbageSent += bombAttack;
+      } else {
+        this.totalAttackSent += attack;
+      }
       const holes3 = this._b2bBreakHoles3 || false;
       const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
       for (const t of humanTargets) {
@@ -2421,7 +2506,8 @@ class BotPlayer {
         garbageLines,
         pps: this.pps,
         apm: this.apm,
-        garbageQueue: this.garbageQueue
+        garbageQueue: this.garbageQueue,
+        bombExplodedCells: bombAttack > 0 ? bombExplodedCells : undefined
       });
     }
 

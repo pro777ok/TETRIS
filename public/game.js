@@ -1181,8 +1181,7 @@ function showCountdown(bagSeed,cb){
   _applyBgImage();
   gameState=new TetrisGame(bagSeed);
   gameState._defeatCallback = (result) => {
-    const resultEl = document.getElementById('defeat-result');
-    if(resultEl) resultEl.textContent = 'GAME OVER — ' + (result === 'win' ? 'YOU WIN!' : 'YOU LOSE!');
+    addChatSystem('🔥 ' + (result === 'win' ? 'YOU DEFEATED THE OPPONENT!' : 'YOU WERE DEFEATED!'));
   };
   renderer=new GameRenderer(gameApp,roomPlayers,gameState);
   renderer.drawBoard();renderer.drawGhost();renderer.drawCurrent();
@@ -1378,7 +1377,7 @@ class TetrisGame{
     this.vs = 0;
     this._garbagePushY = 0;
     this._lockHalf = false;
-    this._bombColumns = null;
+    this._bombCells = null;
 
     this.spawnPiece();
   }
@@ -1674,18 +1673,23 @@ class TetrisGame{
       for(let i=0;i<shift;i++)this.board.unshift(Array(cols).fill(0));
       this.current.y+=shift;
     }
-    // Bomb mode: 設置前に爆弾穴に触れるか検出
+    // Bomb mode: 設置ミノの隣接マスに爆弾穴(空+Gあり)があれば検出
     if(bombMode){
-      this._bombColumns=new Set();
+      this._bombCells=[];
+      const dirs=[[0,1],[0,-1],[1,0],[-1,0]];
       for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;
         const ny=this.current.y+r,nx=this.current.x+c;
-        if(ny>=0&&ny<this.board.length&&nx>=0&&nx<cols){
-          if(this.board[ny][nx]===0&&this.board[ny].some(cell=>cell==='G')){
-            this._bombColumns.add(nx);
+        for(const [dx,dy] of dirs){
+          const bx=nx+dx,by=ny+dy;
+          if(by<0||by>=this.board.length||bx<0||bx>=cols)continue;
+          if(this.board[by][bx]===0&&this.board[by].some(cell=>cell==='G')){
+            if(!this._bombCells.find(b=>b.col===bx&&b.row===by))
+              this._bombCells.push({col:bx,row:by});
           }
         }
       }
+      if(this._bombCells.length===0)this._bombCells=null;
     }
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
@@ -1810,19 +1814,55 @@ class TetrisGame{
         attack = Math.floor(attack * (1 + steps * rate));
       }
 
-      // ── Bomb mode: clear 'G' cells in bomb columns ──────────────
+      // ── Bomb mode: 爆弾の行を全消去 + 下方向へ連鎖 ──────────
+      // 先にbombCellの行インデックスを補正 (remove/unshift後)
       let bombAttack = 0;
-      if(bombMode && this._bombColumns && this._bombColumns.size > 0){
-        for(const col of this._bombColumns){
-          for(let r=0;r<this.board.length;r++){
-            if(this.board[r][col]==='G'){
-              this.board[r][col]=0;
+      const bombExplodedCells=[];
+      if(bombMode && this._bombCells && this._bombCells.length > 0){
+        const bombQueue=[];
+        for(const cell of this._bombCells){
+          const cAbove=cleared.filter(r=>r<cell.row).length;
+          const adjustedRow=cell.row-cAbove+count;
+          if(adjustedRow>=0&&adjustedRow<this.board.length){
+            bombQueue.push({col:cell.col,row:adjustedRow});
+          }
+        }
+        while(bombQueue.length>0){
+          const {col,row}=bombQueue.shift();
+          if(row<0||row>=this.board.length)continue;
+          bombExplodedCells.push({col,row});
+          for(let c=0;c<this.board[row].length;c++){
+            if(this.board[row][c]==='G'){
+              this.board[row][c]=0;
               bombAttack++;
             }
           }
+          const nr=row+1;
+          if(nr<this.board.length && this.board[nr][col]===0 && this.board[nr].some(c=>c==='G')){
+            bombQueue.push({col,row:nr});
+          }
         }
         this.totalGarbageSent += bombAttack;
-        this._bombColumns = null;
+        this._bombCells = null;
+        // Collapse empty rows created by bomb clearing; blocks above fall down
+        if(bombAttack > 0){
+          const emptyRows=[];
+          for(let r=0;r<this.board.length;r++){
+            if(this.board[r].every(c=>c===0)){
+              emptyRows.push(r);
+            }
+          }
+          if(emptyRows.length>0){
+            const cols=getGameCols();
+            for(const idx of emptyRows.sort((a,b)=>b-a)){
+              this.board.splice(idx,1);
+            }
+            for(let i=0;i<emptyRows.length;i++){
+              this.board.unshift(Array(cols).fill(0));
+            }
+          }
+          renderer&&renderer.onBombExplode(bombExplodedCells);
+        }
       }
 
       // Add bomb attack to total attack for cancellation
@@ -1881,20 +1921,46 @@ class TetrisGame{
 
       renderer&&renderer.onLineClear(cleared,count,spinType,isB2B,this.combo,this.ren,allClear,attack,this.b2bCount);
     } else {
-      // Bomb mode: even with no line clears, process bomb columns
+      // Bomb mode: ライン消去なし、爆弾の行を全消去 + 下連鎖
       let bombAttack = 0;
-      if(bombMode && this._bombColumns && this._bombColumns.size > 0){
-        for(const col of this._bombColumns){
-          for(let r=0;r<this.board.length;r++){
-            if(this.board[r][col]==='G'){
-              this.board[r][col]=0;
+      const bombExplodedCells=[];
+      if(bombMode && this._bombCells && this._bombCells.length > 0){
+        const bombQueue=[...this._bombCells];
+        while(bombQueue.length>0){
+          const {col,row}=bombQueue.shift();
+          if(row<0||row>=this.board.length)continue;
+          bombExplodedCells.push({col,row});
+          for(let c=0;c<this.board[row].length;c++){
+            if(this.board[row][c]==='G'){
+              this.board[row][c]=0;
               bombAttack++;
             }
           }
+          const nr=row+1;
+          if(nr<this.board.length && this.board[nr][col]===0 && this.board[nr].some(c=>c==='G')){
+            bombQueue.push({col,row:nr});
+          }
         }
         this.totalGarbageSent += bombAttack;
-        this._bombColumns = null;
+        this._bombCells = null;
+        // Collapse empty rows created by bomb clearing; blocks above fall down
         if(bombAttack > 0){
+          const emptyRows=[];
+          for(let r=0;r<this.board.length;r++){
+            if(this.board[r].every(c=>c===0)){
+              emptyRows.push(r);
+            }
+          }
+          if(emptyRows.length>0){
+            const cols=getGameCols();
+            for(const idx of emptyRows.sort((a,b)=>b-a)){
+              this.board.splice(idx,1);
+            }
+            for(let i=0;i<emptyRows.length;i++){
+              this.board.unshift(Array(cols).fill(0));
+            }
+          }
+          renderer&&renderer.onBombExplode(bombExplodedCells);
           socket.emit('lines_cleared',{attack:bombAttack,bombDefuse:true});
         }
       }
@@ -1937,16 +2003,10 @@ class TetrisGame{
     this._lockedInDanger=false;
     const _linesCleared=this._lastLinesCleared||0;
     // CLUTCH: 上部ギリギリでラインを消して初めてクラッチ
-    // ── Defeat check: totalGarbageSent + totalAttackSent >= 20 ──
+    // ── Defeat notification (just a message, no game over) ──
     if(!this.defeated && (this.totalGarbageSent + this.totalAttackSent) >= 20){
       this.defeated = true;
       if(this._defeatCallback) this._defeatCallback('win');
-    }
-    if(this.defeated){
-      this.alive = false;
-      this._pendingGameOver = false;
-      this._showDefeatScreen();
-      return;
     }
     this._clutchSpawnBoost=(wasInDanger&&_linesCleared>0)?10:0;
     this.spawnPiece();
@@ -2121,28 +2181,6 @@ class TetrisGame{
     }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:!!holes3});}
     renderer&&renderer.onGarbageIncoming(lines,fromId);
     // ゴミはreadyAtに従って自然に適用される（ゲージが溢れても強制出現しない）
-  }
-
-  _showDefeatScreen(){
-    this.alive = false;
-    // Disable controls
-    stopDAS();
-    const overlay = document.getElementById('defeat-overlay');
-    if(overlay) overlay.style.display = 'flex';
-    const resultEl = document.getElementById('defeat-result');
-    if(resultEl) resultEl.textContent = 'GAME OVER — YOU WIN!';
-    const explosionEl = document.getElementById('defeat-explosion');
-    if(explosionEl) explosionEl.style.display = 'block';
-    // Explosion animation via CSS
-    setTimeout(() => {
-      if(explosionEl) explosionEl.style.display = 'none';
-    }, 1500);
-    if(renderer) renderer.onGameOver();
-    if(!isOfflineSolo){
-      socket.emit('game_over',{totalAttackSent:this.totalAttackSent,totalGarbageSent:this.totalGarbageSent,totalGarbageReceived:this.totalGarbageReceived});
-      _enterSpectateOnDeath();
-    }
-    _offlineSoloGameOverAutoReturn();
   }
 
   calcScore(count,isTSpin,isMini,isB2B,combo){
@@ -5731,6 +5769,45 @@ class GameRenderer{
     if(settings.shake==='on')this.shakePower=Math.max(this.shakePower,20);
   }
 
+  // 爆弾爆発エフェクト: オレンジ/黄色の破裂パーティクル + 短いシェイク
+  onBombExplode(cells){
+    if(settings.particles==='off'||settings.quality==='minimum')return;
+    const colors=[0xFF8800,0xFFCC00,0xFF4400,0xFFAA00,0xFFFF00,0xFF6600];
+    for(const cell of cells){
+      const cx=this.mainBX+cell.col*CELL+CELL/2;
+      const cy=this.mainBY+(cell.row-HIDDEN)*CELL+CELL/2;
+      const n=settings.particles==='high'?10:5;
+      for(let i=0;i<n;i++){
+        const g=new PIXI.Graphics();
+        const sz=Math.random()*3+1.5;
+        const color=colors[Math.floor(Math.random()*colors.length)];
+        g.beginFill(color,0.9);
+        g.drawCircle(0,0,sz);
+        g.endFill();
+        g.x=cx+(Math.random()-0.5)*CELL;
+        g.y=cy+(Math.random()-0.5)*CELL;
+        this.effectsLayer.addChild(g);
+        const angle=Math.random()*Math.PI*2;
+        const speed=Math.random()*7+3;
+        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-2,life:1,decay:0.025+Math.random()*0.02,rot:(Math.random()-0.5)*0.2});
+      }
+      for(let i=0;i<3;i++){
+        const g=new PIXI.Graphics();
+        const sz=Math.random()*2+1;
+        g.beginFill(0xFFFFFF,1);
+        g.drawCircle(0,0,sz);
+        g.endFill();
+        g.x=cx+(Math.random()-0.5)*CELL*0.5;
+        g.y=cy+(Math.random()-0.5)*CELL*0.5;
+        this.effectsLayer.addChild(g);
+        const angle=Math.random()*Math.PI*2;
+        const speed=Math.random()*10+5;
+        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-3,life:0.7,decay:0.04+Math.random()*0.03,rot:(Math.random()-0.5)*0.3});
+      }
+    }
+    if(settings.shake==='on')this.shakePower=Math.max(this.shakePower,4);
+  }
+
   // B2B解除時のボーナス攻撃エフェクト: 白い塊が分裂して相手に飛ぶ
   onB2bBreakAttack(bonusAtk,b2bCount){
     if(settings.particles==='off')return;
@@ -7160,6 +7237,51 @@ class GameRenderer{
       this._allClearTexts.push({gfx:txt,timer:0,bg});
     }
   }
+
+  // 相手Botの爆弾爆発エフェクト: オレンジ/黄色の破裂パーティクル + 短いシェイク
+  onOpponentBombExplode(pid,cells){
+    const d=this.opBoardData[pid];if(!d||d.dead)return;
+    if(settings.particles==='off'||settings.quality==='minimum')return;
+    const csx=d.cont.scale.x||1,csy=d.cont.scale.y||1;
+    const cellSize=d.cell,sa=d.showAbove||0;
+    const colors=[0xFF8800,0xFFCC00,0xFF4400,0xFFAA00,0xFFFF00,0xFF6600];
+    for(const cell of cells){
+      const sx=d.origX+(cell.col*cellSize)*csx+cellSize*csx/2;
+      const sy=d.origY+((cell.row+sa)*cellSize)*csy+cellSize*csy/2;
+      const n=settings.particles==='high'?8:4;
+      for(let i=0;i<n;i++){
+        const g=new PIXI.Graphics();
+        const sz=Math.random()*3+1.5;
+        const color=colors[Math.floor(Math.random()*colors.length)];
+        g.beginFill(color,0.9);
+        g.drawCircle(0,0,sz);
+        g.endFill();
+        g.x=sx+(Math.random()-0.5)*cellSize*csx;
+        g.y=sy+(Math.random()-0.5)*cellSize*csy;
+        this.effectsLayer.addChild(g);
+        const angle=Math.random()*Math.PI*2;
+        const speed=Math.random()*6+2;
+        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-2,life:1,decay:0.025+Math.random()*0.02,rot:(Math.random()-0.5)*0.2});
+      }
+      for(let i=0;i<2;i++){
+        const g=new PIXI.Graphics();
+        const sz=Math.random()*2+1;
+        g.beginFill(0xFFFFFF,1);
+        g.drawCircle(0,0,sz);
+        g.endFill();
+        g.x=sx+(Math.random()-0.5)*cellSize*csx*0.5;
+        g.y=sy+(Math.random()-0.5)*cellSize*csy*0.5;
+        this.effectsLayer.addChild(g);
+        const angle=Math.random()*Math.PI*2;
+        const speed=Math.random()*8+3;
+        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-3,life:0.7,decay:0.04+Math.random()*0.03,rot:(Math.random()-0.5)*0.3});
+      }
+    }
+    if(settings.shake==='on'&&d.shakeX!==undefined){
+      d.shakeX=Math.max(Math.abs(d.shakeX||0),4)*(d.shakeX<0?-1:1);
+    }
+  }
+
   updateBoardAnim(dt){
     if(this.boardOffsetY>0){this.boardOffsetY*=0.95;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
     // T-spin afterimage fade
@@ -8144,7 +8266,7 @@ socket.on('opponent_update',(data)=>{
 
 // BOT board update (same structure as opponent_update)
 socket.on('bot_update',(data)=>{
-  const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue}=data;
+  const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue,bombExplodedCells}=data;
   if(renderer&&renderer.onOpponentUpdate) renderer.onOpponentUpdate(id, data);
   if(!renderer||!renderer.opBoardData)return;
   ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
@@ -8159,12 +8281,18 @@ socket.on('bot_update',(data)=>{
   if(apm!==undefined) d.apm=apm;
   if(vs!==undefined) d.vs=vs;
   if(garbageQueue!==undefined) d.garbageQueue=garbageQueue;
+  if(bombExplodedCells!==undefined) d.bombExplodedCells=bombExplodedCells;
 
   if(d.scoreTxt)d.scoreTxt.text=(score||0).toString().padStart(7,'0');
   
   if(isSpectator)return;
   renderer.updateVisibleOpponents&&renderer.updateVisibleOpponents();
   renderer.drawOpponentBoard(id);
+  // Trigger bomb explosion effects on opponent board
+  if(bombExplodedCells&&bombExplodedCells.length>0&&renderer.onOpponentBombExplode){
+    renderer.onOpponentBombExplode(id,bombExplodedCells);
+    delete d.bombExplodedCells;
+  }
 });
 
 // BOT piece motion update
