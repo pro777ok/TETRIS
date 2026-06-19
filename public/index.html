@@ -1142,6 +1142,16 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>💣 Bomb Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="bomb-toggle" onchange="updateRoomSetting('bombMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(255,100,0,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,100,0,0.5)">穴に設置 → 縦列ゴミを消して相手へ</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>📏 Board Height</label>
             <input type="range" id="board-rows-input" min="20" max="60" value="20"
               oninput="document.getElementById('board-rows-val').textContent=this.value;updateRoomSetting('boardRows',this.value)"
@@ -1238,6 +1248,25 @@
   <!-- GAME -->
   <div id="game" class="screen">
     <div id="pixi-container"></div>
+
+    <!-- Defeat overlay -->
+    <div id="defeat-overlay" style="display:none;position:absolute;inset:0;z-index:100;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+      <div id="defeat-explosion" style="display:none;position:absolute;inset:0;background:radial-gradient(circle,#ff4400,#ffaa00 40%,transparent 70%);animation:explode 0.5s ease-out"></div>
+      <div id="defeat-result" style="font-family:'Orbitron',sans-serif;font-size:2.5rem;font-weight:900;color:#ff4400;text-shadow:0 0 40px #ff4400;z-index:101"></div>
+    </div>
+
+    <!-- Countdown restart overlay -->
+    <div id="countdown-restart-overlay" style="display:none;position:absolute;inset:0;z-index:99;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+      <div id="countdown-restart-num" style="font-family:'Orbitron',sans-serif;font-size:6rem;font-weight:900;color:#00f5ff;text-shadow:0 0 60px #00f5ff;"></div>
+      <div style="font-family:'Orbitron',sans-serif;font-size:1rem;color:rgba(255,255,255,0.6);margin-top:0.5rem">RESTARTING...</div>
+    </div>
+
+    <!-- Admin send20lines button (only visible to host during game) -->
+    <button id="send20lines-btn" style="display:none;position:absolute;bottom:10px;left:10px;z-index:50;padding:0.4rem 0.8rem;font-size:0.7rem;background:rgba(255,68,0,0.2);border:1px solid rgba(255,68,0,0.5);color:#ff4400;border-radius:6px;cursor:pointer;font-family:'Orbitron',sans-serif" onclick="send20Lines()">💣 Send 20 Lines</button>
+
+    <style>
+      @keyframes explode { 0%{opacity:0;transform:scale(0.3)} 50%{opacity:1;transform:scale(1.2)} 100%{opacity:0;transform:scale(1.5)} }
+    </style>
   </div>
 </div>
 

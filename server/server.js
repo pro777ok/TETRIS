@@ -1376,6 +1376,7 @@ class BotPlayer {
     this.startTime = Date.now();
     this.pieceCount = 0;
     this.totalAttackSent = 0;
+    this.totalGarbageSent = 0;
     this.totalGarbageCleared = 0;
     this.totalGarbageReceived = 0;
     this.pps = 0;
@@ -2483,6 +2484,7 @@ function createRoom(roomId) {
       fourWideMode: false,      // 4Wideモード（ボード幅4列）
       cheeseMode: false,         // チーズモード（せり上がりゴミ）
       puyotetMode: false,        // ぷよテトモード（足し算REN・即時ゴミ・B2B固定+1）
+      bombMode: false,           // ボムモード（穴にミノを設置すると縦列のゴミが消えて相手へ）
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
       multiplierDelayMin: 1.6,   // 火力倍率開始までの時間(分)
@@ -2716,6 +2718,7 @@ io.on('connection', (socket) => {
     if (ns.blitzMode!==undefined) rs.blitzMode=!!ns.blitzMode;
     if (ns.fourWideMode!==undefined) rs.fourWideMode=!!ns.fourWideMode;
     if (ns.puyotetMode!==undefined) rs.puyotetMode=!!ns.puyotetMode;
+    if (ns.bombMode!==undefined) rs.bombMode=!!ns.bombMode;
     if (ns.boardRows!==undefined) rs.boardRows=Math.max(20,Math.min(100,parseInt(ns.boardRows)||20));
     if (ns.garbageMultiplier!==undefined) rs.garbageMultiplier=Math.max(1,Math.min(10,parseInt(ns.garbageMultiplier)||2));
     if (ns.multiplierDelayMin!==undefined) rs.multiplierDelayMin=Math.max(0,Math.min(10,parseFloat(ns.multiplierDelayMin)||0));
@@ -2729,7 +2732,7 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode) ? 1 : 2;
+    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
       socket.emit('error',{msg: (rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
@@ -2802,6 +2805,7 @@ io.on('connection', (socket) => {
       blitzMode:!!(room.roomSettings&&room.roomSettings.blitzMode),
       fourWideMode:!!(room.roomSettings&&room.roomSettings.fourWideMode),
       puyotetMode:!!(room.roomSettings&&room.roomSettings.puyotetMode),
+      bombMode:!!(room.roomSettings&&room.roomSettings.bombMode),
       boardRows:room.roomSettings?room.roomSettings.boardRows:20,
       playerModes:room.playerModes||{}
     });
@@ -3086,6 +3090,29 @@ io.on('connection', (socket) => {
     addChatSys(socket.roomId,'⚠ Game force-ended by host.');
   });
 
+  socket.on('send20lines', () => {
+    const room=getRoom(socket.roomId);
+    if (!room||socket.id!==room.host||!room.started) return;
+    const sender=room.players.find(p=>p.id===socket.id)||room.bots.find(b=>b.id===socket.id);
+    if(sender) sender.totalGarbageSent = (sender.totalGarbageSent||0) + 20;
+    const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
+    const hc=Math.floor(Math.random()*10);
+    others.forEach(p=>{
+      if(p.isBot && p.queueGarbage){
+        p.queueGarbage(20, socket.id);
+      } else {
+        io.to(p.id).emit('receive_garbage',{lines:20,fromId:socket.id,holeCol:hc});
+      }
+    });
+    addChatSys(socket.roomId,`💣 Admin sent 20 lines to everyone!`);
+  });
+
+  socket.on('COUNTDOWN_RESTART', ({seconds}) => {
+    const room=getRoom(socket.roomId);
+    if (!room||socket.id!==room.host||!room.started) return;
+    io.to(socket.roomId).emit('COUNTDOWN_RESTART',{seconds:seconds||5});
+  });
+
   socket.on('game_over', (stats) => {
     const room=getRoom(socket.roomId); if (!room) return;
     const player=room.players.find(p=>p.id===socket.id);
@@ -3093,6 +3120,7 @@ io.on('connection', (socket) => {
       player.alive=false;
       if(stats){
         player.totalAttackSent=(player.totalAttackSent||0)+(stats.totalAttackSent||0);
+        player.totalGarbageSent=(player.totalGarbageSent||0)+(stats.totalGarbageSent||0);
         player.totalGarbageReceived=(player.totalGarbageReceived||0)+(stats.totalGarbageReceived||0);
       }
     }

@@ -1,6 +1,13 @@
 // ===== TETRIX ONLINE =====
 
 // ---- Settings ----
+let _gameTickerFn = null; // stored game ticker callback for cleanup
+function _addGameTicker(fn) {
+  if (_gameTickerFn) gameApp.ticker.remove(_gameTickerFn);
+  _gameTickerFn = fn;
+  gameApp.ticker.add(fn);
+}
+
 let mobileControlsEnabled = false; // Mobile controls toggle
 let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,
   overlayOpacity:33,
@@ -189,6 +196,7 @@ let cheeseTimer=null;
 let cheeseStartTime=0;
 let fourWideMode=false; // 4Wideモード（ボード幅4列）
 let puyotetMode=false; // ぷよテトモード
+let bombMode=false; // ボムモード
 let isSpectator=false; // 観戦モードフラグ
 let myGameMode='tetris'; // 'tetris' or 'puyo' - this player's chosen mode
 let playerModes={}; // map of playerId -> 'tetris'|'puyo'
@@ -358,6 +366,7 @@ function _enterSpectateOnDeath(){
       });
       renderer.drawAll();
       let _specLast2=performance.now();
+      if(_gameTickerFn){gameApp.ticker.remove(_gameTickerFn);_gameTickerFn=null;}
       gameApp.ticker.add(()=>{const _now2=performance.now();const _dt2=Math.min(_now2-_specLast2,50);_specLast2=_now2;renderer.update(_dt2);});
       // スペクテーターバナーを表示
       const existing=document.getElementById('spectate-banner');
@@ -604,6 +613,7 @@ function returnToRoom(){
   _stopFortyLineUI(); fortyLineMode=false;
   _stopBlitzUI(); blitzMode=false;
   _stopCheeseUI(); cheeseMode=false;
+  bombMode=false;
   renderer=null;isSpectator=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const prevRoomId = roomId || _lastUsedRoomId;
@@ -634,6 +644,7 @@ function backToLobby(){
   _stopFortyLineUI(); fortyLineMode=false;
   _stopBlitzUI(); blitzMode=false;
   _stopCheeseUI(); cheeseMode=false;
+  bombMode=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   renderer=null;
   const prevRoomId=roomId||_lastUsedRoomId;
@@ -946,6 +957,7 @@ function updateRoomSettingsUI(rs){
   const blTog=document.getElementById('blitz-toggle');if(blTog)blTog.checked=!!(rs.blitzMode);
   const fwTog=document.getElementById('fourwide-toggle');if(fwTog)fwTog.checked=!!(rs.fourWideMode);
   const ptTog=document.getElementById('puyotet-toggle');if(ptTog)ptTog.checked=!!(rs.puyotetMode);
+  const bmTog=document.getElementById('bomb-toggle');if(bmTog)bmTog.checked=!!(rs.bombMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const brInput=document.getElementById('board-rows-input');
   const brVal=document.getElementById('board-rows-val');
@@ -996,7 +1008,7 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
@@ -1098,6 +1110,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   cheeseMode=!!chm;
   fourWideMode=!!fwm;
   puyotetMode=!!ptm;
+  bombMode=!!(rs&&rs.bombMode);
   if(pm) playerModes=pm;
   if(rs)roomSettings={...roomSettings,...rs};
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
@@ -1113,6 +1126,8 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   showScreen('game');
   showDpad(true);
   setupDpadButtons();
+  const s20Btn=document.getElementById('send20lines-btn');
+  if(s20Btn)s20Btn.style.display=isHost?'block':'none';
   if(allspinMode){
     showCountdown(bagSeed,()=>initAllSpinGame(players,bagSeed));
   } else if(fortyLineMode){
@@ -1134,6 +1149,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(blm)addChatSystem('⚡ BLITZ MODE — 2分間でスコアを稼げ！');
   if(fwm)addChatSystem('◼ 4WIDE MODE — 横4列でプレイ！');
   if(ptm)addChatSystem('🍬 PUYOTET MODE — 足し算REN・即時ゴミ！');
+  if(rs&&rs.bombMode)addChatSystem('💣 BOMB MODE — 穴にミノを置いて縦列のゴミを消して相手へ送れ！');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
   if(_hasCustomBotCode)addChatSystem('🤖 Bots are running CUSTOM AI code!');
 });
@@ -1154,6 +1170,7 @@ function seededRng(seed){
 
 function showCountdown(bagSeed,cb){
   _recalcBoardSize(); // 4wideモードに応じてBOARD_W/Hを更新
+  if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const container=document.getElementById('pixi-container');
   container.innerHTML='';
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
@@ -1163,6 +1180,10 @@ function showCountdown(bagSeed,cb){
   container.appendChild(gameApp.view);
   _applyBgImage();
   gameState=new TetrisGame(bagSeed);
+  gameState._defeatCallback = (result) => {
+    const resultEl = document.getElementById('defeat-result');
+    if(resultEl) resultEl.textContent = 'GAME OVER — ' + (result === 'win' ? 'YOU WIN!' : 'YOU LOSE!');
+  };
   renderer=new GameRenderer(gameApp,roomPlayers,gameState);
   renderer.drawBoard();renderer.drawGhost();renderer.drawCurrent();
   renderer.drawNextPieces();renderer.drawHold();renderer.updateScoreUI();
@@ -1347,13 +1368,17 @@ class TetrisGame{
     this.startTime = performance.now();
     this.pieceCount = 0;
     this.totalAttackSent = 0;
+    this.totalGarbageSent = 0;
     this.totalGarbageCleared = 0;
     this.totalGarbageReceived = 0;
+    this.defeated = false;
+    this._defeatCallback = null;
     this.pps = 0;
     this.apm = 0;
     this.vs = 0;
     this._garbagePushY = 0;
     this._lockHalf = false;
+    this._bombColumns = null;
 
     this.spawnPiece();
   }
@@ -1649,6 +1674,19 @@ class TetrisGame{
       for(let i=0;i<shift;i++)this.board.unshift(Array(cols).fill(0));
       this.current.y+=shift;
     }
+    // Bomb mode: 設置前に爆弾穴に触れるか検出
+    if(bombMode){
+      this._bombColumns=new Set();
+      for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+        if(!shape[r][c])continue;
+        const ny=this.current.y+r,nx=this.current.x+c;
+        if(ny>=0&&ny<this.board.length&&nx>=0&&nx<cols){
+          if(this.board[ny][nx]===0&&this.board[ny].some(cell=>cell==='G')){
+            this._bombColumns.add(nx);
+          }
+        }
+      }
+    }
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const ny=this.current.y+r,nx=this.current.x+c;
@@ -1772,6 +1810,24 @@ class TetrisGame{
         attack = Math.floor(attack * (1 + steps * rate));
       }
 
+      // ── Bomb mode: clear 'G' cells in bomb columns ──────────────
+      let bombAttack = 0;
+      if(bombMode && this._bombColumns && this._bombColumns.size > 0){
+        for(const col of this._bombColumns){
+          for(let r=0;r<this.board.length;r++){
+            if(this.board[r][col]==='G'){
+              this.board[r][col]=0;
+              bombAttack++;
+            }
+          }
+        }
+        this.totalGarbageSent += bombAttack;
+        this._bombColumns = null;
+      }
+
+      // Add bomb attack to total attack for cancellation
+      attack += bombAttack;
+
       // ── Garbage Cancellation ────────────────────────────────────
       // 相殺: Pendingのゴミ（queue全体）を対象にする
       let cancelPower = attack;
@@ -1806,7 +1862,8 @@ class TetrisGame{
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
 
       if(attack>0||fortyLineMode||cheeseMode){
-        this.totalAttackSent += attack;
+        const lineClearAtk = Math.max(0, attack - bombAttack);
+        if(lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
         socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined});
       }
       // 相手に視覚エフェクトを送信
@@ -1824,6 +1881,24 @@ class TetrisGame{
 
       renderer&&renderer.onLineClear(cleared,count,spinType,isB2B,this.combo,this.ren,allClear,attack,this.b2bCount);
     } else {
+      // Bomb mode: even with no line clears, process bomb columns
+      let bombAttack = 0;
+      if(bombMode && this._bombColumns && this._bombColumns.size > 0){
+        for(const col of this._bombColumns){
+          for(let r=0;r<this.board.length;r++){
+            if(this.board[r][col]==='G'){
+              this.board[r][col]=0;
+              bombAttack++;
+            }
+          }
+        }
+        this.totalGarbageSent += bombAttack;
+        this._bombColumns = null;
+        if(bombAttack > 0){
+          socket.emit('lines_cleared',{attack:bombAttack,bombDefuse:true});
+        }
+      }
+
       if(this.ren>0){SFX.renReset();}
       this.combo=-1;this.ren=0;
       renderer&&renderer.endComboLabel();
@@ -1862,6 +1937,17 @@ class TetrisGame{
     this._lockedInDanger=false;
     const _linesCleared=this._lastLinesCleared||0;
     // CLUTCH: 上部ギリギリでラインを消して初めてクラッチ
+    // ── Defeat check: totalGarbageSent + totalAttackSent >= 20 ──
+    if(!this.defeated && (this.totalGarbageSent + this.totalAttackSent) >= 20){
+      this.defeated = true;
+      if(this._defeatCallback) this._defeatCallback('win');
+    }
+    if(this.defeated){
+      this.alive = false;
+      this._pendingGameOver = false;
+      this._showDefeatScreen();
+      return;
+    }
     this._clutchSpawnBoost=(wasInDanger&&_linesCleared>0)?10:0;
     this.spawnPiece();
     this._clutchSpawnBoost=0;
@@ -2037,6 +2123,28 @@ class TetrisGame{
     // ゴミはreadyAtに従って自然に適用される（ゲージが溢れても強制出現しない）
   }
 
+  _showDefeatScreen(){
+    this.alive = false;
+    // Disable controls
+    stopDAS();
+    const overlay = document.getElementById('defeat-overlay');
+    if(overlay) overlay.style.display = 'flex';
+    const resultEl = document.getElementById('defeat-result');
+    if(resultEl) resultEl.textContent = 'GAME OVER — YOU WIN!';
+    const explosionEl = document.getElementById('defeat-explosion');
+    if(explosionEl) explosionEl.style.display = 'block';
+    // Explosion animation via CSS
+    setTimeout(() => {
+      if(explosionEl) explosionEl.style.display = 'none';
+    }, 1500);
+    if(renderer) renderer.onGameOver();
+    if(!isOfflineSolo){
+      socket.emit('game_over',{totalAttackSent:this.totalAttackSent,totalGarbageSent:this.totalGarbageSent,totalGarbageReceived:this.totalGarbageReceived});
+      _enterSpectateOnDeath();
+    }
+    _offlineSoloGameOverAutoReturn();
+  }
+
   calcScore(count,isTSpin,isMini,isB2B,combo){
     const base={1:100,2:300,3:500,4:800};
     const ts={0:400,1:800,2:1200,3:1600};
@@ -2123,7 +2231,7 @@ function initGame(players,bagSeed){
   let lastTime=performance.now();
   let lastEmit=0;
   const EMIT_INTERVAL=50; // 50ms = 20fps で現在ミノ位置を送信
-  gameApp.ticker.add(()=>{
+  _addGameTicker(()=>{
     const now=performance.now();
     const rawDt=Math.min(now-lastTime,100);
     lastTime=now;
@@ -2764,7 +2872,7 @@ function initFortyLineGame(players, bagSeed) {
   let lastTime = performance.now();
   let lastEmit = 0;
   const EMIT_INTERVAL = 50;
-  gameApp.ticker.add(() => {
+  _addGameTicker(() => {
     const now = performance.now();
     const rawDt = Math.min(now - lastTime, 100);
     lastTime = now;
@@ -2922,7 +3030,7 @@ function initCheeseGame(players, bagSeed) {
   let lastTime = performance.now();
   let lastEmit = 0;
   const EMIT_INTERVAL = 50;
-  gameApp.ticker.add(() => {
+  _addGameTicker(() => {
     const now = performance.now();
     const rawDt = Math.min(now - lastTime, 100);
     lastTime = now;
@@ -3055,7 +3163,7 @@ function initBlitzGame(players, bagSeed) {
   let lastTime = performance.now();
   let lastEmit = 0;
   const EMIT_INTERVAL = 50;
-  gameApp.ticker.add(() => {
+  _addGameTicker(() => {
     const now = performance.now();
     const rawDt = Math.min(now - lastTime, 100);
     lastTime = now;
@@ -3538,7 +3646,7 @@ function openReplayViewer(replayData, mode) {
     }
   }
   let _replayLastTime = performance.now();
-  gameApp.ticker.add(() => {
+  _addGameTicker(() => {
     const now = performance.now();
     const dt = Math.min(now - _replayLastTime, 50);
     _replayLastTime = now;
@@ -3987,7 +4095,7 @@ function initAllSpinGame(players, bagSeed) {
   let lastTime = performance.now();
   let lastEmit = 0;
   const EMIT_INTERVAL = 50;
-  gameApp.ticker.add(()=>{
+  _addGameTicker(()=>{
     const now = performance.now();
     const rawDt = Math.min(now-lastTime, 100);
     lastTime = now;
@@ -4493,12 +4601,38 @@ class GameRenderer{
     if(lockFlash>0){gfx.beginFill(0xffffff,alpha*lockFlash*0.55);gfx.drawRect(x+1,y+1,s-1,s-1);gfx.endFill();}
   }
 
+  drawBombHole(gfx,x,y,size){
+    const s=size-2;
+    gfx.beginFill(0xff4400,0.4);
+    gfx.drawRect(x+1,y+1,s-1,s-1);
+    gfx.endFill();
+    gfx.beginFill(0xffaa00,0.6);
+    const ins=Math.floor(size*0.22);
+    gfx.drawRect(x+ins,y+ins,size-2*ins-1,size-2*ins-1);
+    gfx.endFill();
+    gfx.beginFill(0xffffff,0.5);
+    gfx.drawRect(x+size/2-1,y+size/2-1,3,3);
+    gfx.endFill();
+    gfx.lineStyle(1,0xff6600,0.5);
+    gfx.drawRect(x+1,y+1,s-1,s-1);
+    gfx.lineStyle(0);
+  }
+
   drawBoard(){
     const g=this.boardGfx;g.clear();
-    for(let r=0;r<ROWS+HIDDEN;r++)for(let c=0;c<getGameCols();c++){
-      const v=this.gs.board[r][c];if(!v)continue;
-      const dy=(r-HIDDEN)*CELL;
-      this.drawCell(g,c*CELL,dy,CELL,v,r<HIDDEN?0.55:1);
+    const cols=getGameCols();
+    for(let r=0;r<ROWS+HIDDEN;r++){
+      const row=this.gs.board[r];
+      const isGarbageRow=row&&row.some(c=>c==='G');
+      for(let c=0;c<cols;c++){
+        const v=row[c];
+        if(!v){
+          if(bombMode&&isGarbageRow)this.drawBombHole(g,c*CELL,(r-HIDDEN)*CELL,CELL);
+          continue;
+        }
+        const dy=(r-HIDDEN)*CELL;
+        this.drawCell(g,c*CELL,dy,CELL,v,r<HIDDEN?0.55:1);
+      }
     }
     
     // Danger Warning: 10ライン以上でおじゃまが迫っている場合
@@ -4683,26 +4817,28 @@ class GameRenderer{
         g.beginFill(0x000000,0.6);
         g.drawRoundedRect(oBW/2-60,-2,120,18,4);
         g.endFill();
-        const tCanvas=document.createElement('canvas');
-        tCanvas.width=120; tCanvas.height=18;
-        const tCtx=tCanvas.getContext('2d');
-        tCtx.font='bold 14px Orbitron,sans-serif';
-        tCtx.strokeStyle='#000'; tCtx.lineWidth=3; tCtx.textAlign='center'; tCtx.textBaseline='middle';
-        tCtx.strokeText(puyoInfo,60,9);
-        tCtx.fillStyle='#ff0';
-        tCtx.fillText(puyoInfo,60,9);
-        const tex=PIXI.Texture.from(tCanvas);
-        if(!d._puyoInfoSpr){ d._puyoInfoSpr=new PIXI.Sprite(tex); d._puyoInfoSpr.anchor.set(0.5,0); d.cont.addChild(d._puyoInfoSpr); }
-        else d._puyoInfoSpr.texture=tex;
-        d._puyoInfoSpr.visible=true;
-        d._puyoInfoSpr.x=oBW/2; d._puyoInfoSpr.y=-2;
-        // アニメーション: 値が変わったら拡大開始
+        if(!d._puyoInfoCanvas)puyoInfo='_init'; // force create on first frame
         if(puyoInfo!==d._prevPuyoInfo){
+          const tCanvas=document.createElement('canvas');
+          tCanvas.width=120; tCanvas.height=18;
+          const tCtx=tCanvas.getContext('2d');
+          tCtx.font='bold 14px Orbitron,sans-serif';
+          tCtx.strokeStyle='#000'; tCtx.lineWidth=3; tCtx.textAlign='center'; tCtx.textBaseline='middle';
+          tCtx.strokeText(puyoInfo,60,9);
+          tCtx.fillStyle='#ff0';
+          tCtx.fillText(puyoInfo,60,9);
+          if(d._puyoInfoCanvas)document.body.removeChild(d._puyoInfoCanvas);
+          d._puyoInfoCanvas=tCanvas;
+          const tex=PIXI.Texture.from(tCanvas);
+          if(!d._puyoInfoSpr){ d._puyoInfoSpr=new PIXI.Sprite(tex); d._puyoInfoSpr.anchor.set(0.5,0); d.cont.addChild(d._puyoInfoSpr); }
+          else d._puyoInfoSpr.texture=tex;
           d._prevPuyoInfo=puyoInfo;
           d._puyoInfoTimer=0;
           d._puyoInfoSpr.scale.set(0.3);
           d._puyoInfoSpr.alpha=1;
         }
+        d._puyoInfoSpr.visible=true;
+        d._puyoInfoSpr.x=oBW/2; d._puyoInfoSpr.y=-2;
         // スケールアニメーション
         if(d._puyoInfoTimer!==undefined){
           d._puyoInfoTimer++;
@@ -7721,8 +7857,29 @@ class SpectatorRenderer{
     }
 
     for(let r=HIDDEN_ROWS;r<ROWS+HIDDEN_ROWS;r++){
+      const row=d.board[r];
+      const isGarbageRow=row&&row.some(c=>c==='G');
       for(let c=0;c<getGameCols();c++){
-        const v=d.board[r]&&d.board[r][c];if(!v)continue;
+        const v=row&&row[c];
+        if(!v){
+          if(bombMode&&isGarbageRow){
+            const dy=(r-HIDDEN_ROWS)*cell,dx=c*cell;
+            g.beginFill(0xff4400,0.4);
+            g.drawRect(dx+1,dy+1,cell-3,cell-3);
+            g.endFill();
+            g.beginFill(0xffaa00,0.6);
+            const ins=Math.floor(cell*0.22);
+            g.drawRect(dx+ins,dy+ins,cell-2*ins-1,cell-2*ins-1);
+            g.endFill();
+            g.beginFill(0xffffff,0.5);
+            g.drawRect(dx+cell/2-1,dy+cell/2-1,3,3);
+            g.endFill();
+            g.lineStyle(1,0xff6600,0.5);
+            g.drawRect(dx+1,dy+1,cell-3,cell-3);
+            g.lineStyle(0);
+          }
+          continue;
+        }
         const color=PIECE_COLORS[v]||0x334455;
         const dy=(r-HIDDEN_ROWS)*cell,dx=c*cell,s=cell-1;
         g.beginFill(color,1);g.drawRect(dx+1,dy+1,s-1,s-1);g.endFill();
@@ -7923,7 +8080,15 @@ function startDAS(dir){
       if(!dasActive){stopDAS();return;}
       if(!gameState||!gameState.alive){stopDAS();return;}
       const iv=settings.arrInterval??20;
-      if(iv===0){while(gameState&&gameState.alive&&gameState.move(dir));stopDAS();return;}
+      if(iv===0){
+        while(gameState&&gameState.alive&&gameState.move(dir));
+        arr=setInterval(()=>{
+          if(!gameState||!gameState.alive){stopDAS();return;}
+          if(!dasActive)return;
+          while(gameState&&gameState.alive&&gameState.move(dir));
+        },16);
+        return;
+      }
       arr=setInterval(()=>{
         if(!gameState||!gameState.alive){stopDAS();return;}
         if(!dasActive)return;
@@ -8032,6 +8197,36 @@ socket.on('receive_garbage',({lines,fromId,holes3})=>{
   if(!gameState){console.log('[RCV GARBAGE] -> no gameState, drop');return;}
   console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${!!holes3}`);
   gameState.queueGarbage(lines,fromId,!!holes3);
+});
+
+// Admin: Send 20 lines to all opponents
+function send20Lines(){
+  if(!gameState || !gameState.alive) return;
+  gameState.totalGarbageSent += 20;
+  socket.emit('send20lines');
+}
+
+// COUNTDOWN_RESTART: 5-second countdown for instant rematch
+socket.on('COUNTDOWN_RESTART', ({seconds}) => {
+  const overlay = document.getElementById('countdown-restart-overlay');
+  const numEl = document.getElementById('countdown-restart-num');
+  if(!overlay || !numEl) return;
+  overlay.style.display = 'flex';
+  let remaining = seconds || 5;
+  numEl.textContent = remaining;
+  const iv = setInterval(() => {
+    remaining--;
+    if(remaining <= 0){
+      clearInterval(iv);
+      overlay.style.display = 'none';
+      // Force restart: show countdown then start game
+      if(typeof showCountdown === 'function'){
+        showCountdown(null, () => {});
+      }
+      return;
+    }
+    numEl.textContent = remaining;
+  }, 1000);
 });
 
 socket.on('player_dead',({id,name})=>{
@@ -9846,7 +10041,25 @@ class PuyoRenderer {
             for(let c=0;c<10;c++){
               const tetR=boardStart+r;
               const block=(board&&board[tetR])?board[tetR][c]:0;
-              if(!block)continue;
+              if(!block){
+                if(bombMode&&board&&board[tetR]&&board[tetR].some(cell=>cell==='G')){
+                  const x=c*cell,y=r*cell;
+                  d._tetrisGfx.beginFill(0xff4400,0.4);
+                  d._tetrisGfx.drawRect(x+1,y+1,cell-3,cell-3);
+                  d._tetrisGfx.endFill();
+                  d._tetrisGfx.beginFill(0xffaa00,0.6);
+                  const ins=Math.floor(cell*0.22);
+                  d._tetrisGfx.drawRect(x+ins,y+ins,cell-2*ins-1,cell-2*ins-1);
+                  d._tetrisGfx.endFill();
+                  d._tetrisGfx.beginFill(0xffffff,0.5);
+                  d._tetrisGfx.drawRect(x+cell/2-1,y+cell/2-1,3,3);
+                  d._tetrisGfx.endFill();
+                  d._tetrisGfx.lineStyle(1,0xff6600,0.5);
+                  d._tetrisGfx.drawRect(x+1,y+1,cell-3,cell-3);
+                  d._tetrisGfx.lineStyle(0);
+                }
+                continue;
+              }
               const x=c*cell, y=r*cell, s=cell-1;
               const color=block==='G'?0x445566:(PIECE_COLORS[block]||0x334455);
               d._tetrisGfx.beginFill(color,1);
@@ -10957,7 +11170,7 @@ function initPuyoGame(players, bagSeed){
 
   let lastTime=performance.now();
   let lastEmit=0;
-  gameApp.ticker.add(()=>{
+  _addGameTicker(()=>{
     const now=performance.now();
     const dt=Math.min(now-lastTime,100); lastTime=now;
     if(puyoGameState&&puyoGameState.alive&&!puyoGameState.dropping) puyoGameState.update(dt);
@@ -11068,7 +11281,14 @@ function _puyoStartDas(key,action,interval){
   const entry={active:true,das:null,arr:null};
   entry.das=setTimeout(()=>{
     if(!entry.active)return;
-    if(arrInterval===0){while(entry.active&&action());entry.active=false;clearInterval(entry.arr);clearTimeout(entry.das);return;}
+    if(arrInterval===0){
+      while(entry.active&&action());
+      entry.arr=setInterval(()=>{
+        if(!entry.active)return;
+        while(entry.active&&action());
+      },16);
+      return;
+    }
     entry.arr=setInterval(()=>{
       if(!entry.active)return;
       action();
