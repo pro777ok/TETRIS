@@ -2412,7 +2412,8 @@ class BotPlayer {
     const _puyoGarbage = room && room.roomSettings && room.roomSettings.puyotetMode;
     if (remaining.length > 0 && (_puyoGarbage || this.ren < 1)) {
       let linesToAdd = 0;
-      const CAP = 8;
+      const _slowMode = room && room.roomSettings && room.roomSettings.slowMode;
+      const CAP = _slowMode ? 1 : 8;
       
       for (const g of remaining) {
         if (linesToAdd >= CAP) {
@@ -2571,6 +2572,7 @@ function createRoom(roomId) {
       cheeseMode: false,         // チーズモード（せり上がりゴミ）
       puyotetMode: false,        // ぷよテトモード（足し算REN・即時ゴミ・B2B固定+1）
       bombMode: false,           // ボムモード（穴にミノを設置すると縦列のゴミが消えて相手へ）
+      slowMode: false,           // スローモード（非コンボ時1ラインずつせり上がり）
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
       multiplierDelayMin: 1.6,   // 火力倍率開始までの時間(分)
@@ -2805,6 +2807,7 @@ io.on('connection', (socket) => {
     if (ns.fourWideMode!==undefined) rs.fourWideMode=!!ns.fourWideMode;
     if (ns.puyotetMode!==undefined) rs.puyotetMode=!!ns.puyotetMode;
     if (ns.bombMode!==undefined) rs.bombMode=!!ns.bombMode;
+    if (ns.slowMode!==undefined) rs.slowMode=!!ns.slowMode;
     if (ns.boardRows!==undefined) rs.boardRows=Math.max(20,Math.min(100,parseInt(ns.boardRows)||20));
     if (ns.garbageMultiplier!==undefined) rs.garbageMultiplier=Math.max(1,Math.min(10,parseInt(ns.garbageMultiplier)||2));
     if (ns.multiplierDelayMin!==undefined) rs.multiplierDelayMin=Math.max(0,Math.min(10,parseFloat(ns.multiplierDelayMin)||0));
@@ -2818,9 +2821,9 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode) ? 1 : 2;
+    const minPlayers = (rs.slowMode || rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
-      socket.emit('error',{msg: (rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
+      socket.emit('error',{msg: (rs.slowMode||rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
     room.started=true;
     room.startTime=Date.now();
@@ -2892,7 +2895,8 @@ io.on('connection', (socket) => {
       fourWideMode:!!(room.roomSettings&&room.roomSettings.fourWideMode),
       puyotetMode:!!(room.roomSettings&&room.roomSettings.puyotetMode),
       bombMode:!!(room.roomSettings&&room.roomSettings.bombMode),
-      boardRows:room.roomSettings?room.roomSettings.boardRows:20,
+      slowMode:!!(room.roomSettings&&room.roomSettings.slowMode),
+      boardRows:(rs.slowMode&&rs.fourWideMode)?26:(room.roomSettings?room.roomSettings.boardRows:20),
       playerModes:room.playerModes||{}
     });
 
@@ -2902,6 +2906,9 @@ io.on('connection', (socket) => {
       startRecording(socket.roomId, room.players);
     }
 
+    if (rs.slowMode) {
+      addChatSys(socket.roomId,'🐢 Slow mode — 1 garbage line per non-combo lock');
+    }
     if (isSolo) {
       // ソロモード: ゲーム終了条件はそのプレイヤーが死んだとき
       addChatSys(socket.roomId,'🎮 Solo mode — good luck!');

@@ -197,6 +197,7 @@ let cheeseStartTime=0;
 let fourWideMode=false; // 4Wideモード（ボード幅4列）
 let puyotetMode=false; // ぷよテトモード
 let bombMode=false; // ボムモード
+let slowMode=false; // スローモード
 let isSpectator=false; // 観戦モードフラグ
 let myGameMode='tetris'; // 'tetris' or 'puyo' - this player's chosen mode
 let playerModes={}; // map of playerId -> 'tetris'|'puyo'
@@ -293,7 +294,7 @@ function startSoloOffline(){
   saveName(name);
   isOfflineSolo=true;
   isSoloGame=true;
-  fourWideMode=false; puyotetMode=false;
+  fourWideMode=false; puyotetMode=false; slowMode=false;
   allspinMode=false;
   fortyLineMode=false;
   blitzMode=false;
@@ -958,6 +959,7 @@ function updateRoomSettingsUI(rs){
   const fwTog=document.getElementById('fourwide-toggle');if(fwTog)fwTog.checked=!!(rs.fourWideMode);
   const ptTog=document.getElementById('puyotet-toggle');if(ptTog)ptTog.checked=!!(rs.puyotetMode);
   const bmTog=document.getElementById('bomb-toggle');if(bmTog)bmTog.checked=!!(rs.bombMode);
+  const smTog=document.getElementById('slowmode-toggle');if(smTog)smTog.checked=!!(rs.slowMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const brInput=document.getElementById('board-rows-input');
   const brVal=document.getElementById('board-rows-val');
@@ -1008,7 +1010,7 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
@@ -1111,6 +1113,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   fourWideMode=!!fwm;
   puyotetMode=!!ptm;
   bombMode=!!(rs&&rs.bombMode);
+  slowMode=!!(rs&&rs.slowMode);
   if(pm) playerModes=pm;
   if(rs)roomSettings={...roomSettings,...rs};
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
@@ -1410,12 +1413,8 @@ class TetrisGame{
         _spawnY=SPAWN_Y;
       }
     }else{
-      // ゴミが即座に来る場合は、そのライン数分だけスポーンYを上にずらす
-      const _nowMs=performance.now();
-      const _immGarb=this.garbageQueue
-        .filter(g=>g.readyAt<=_nowMs+200)
-        .reduce((s,g)=>s+g.lines,0);
-      _spawnY=SPAWN_Y - Math.min(_immGarb, 8) - (this._clutchSpawnBoost||0);
+      // 通常: SPAWN_Y基準。クラッチ時のみ上にずらす
+      _spawnY=SPAWN_Y - (this._clutchSpawnBoost||0);
     }
     this._garbagePushY=0;
     this.current={type,rotation:0,x:_spX,y:_spawnY,customShape};
@@ -2123,7 +2122,7 @@ class TetrisGame{
     // コンボ中はゴミを適用しない（次のロックまで待つ）
     if(this.ren>=1&&!puyotetMode)return;
     this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-    const cap=puyotetMode?8:10;
+    const cap=(slowMode&&!puyotetMode)?1:(puyotetMode?8:10);
     let linesToAdd=0;
     const backToQueue=[];
     for(const g of armed){

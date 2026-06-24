@@ -1152,6 +1152,16 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>🐢 Slow Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="slowmode-toggle" onchange="updateRoomSetting('slowMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(6,214,160,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(6,214,160,0.5)">1-line per lock</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>📏 Board Height</label>
             <input type="range" id="board-rows-input" min="20" max="60" value="20"
               oninput="document.getElementById('board-rows-val').textContent=this.value;updateRoomSetting('boardRows',this.value)"
