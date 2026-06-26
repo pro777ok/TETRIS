@@ -4668,7 +4668,7 @@ class GameRenderer{
           continue;
         }
         const dy=(r-HIDDEN)*CELL;
-        this.drawCell(g,c*CELL,dy,CELL,v,r<HIDDEN?0.55:1);
+        this.drawCell(g,c*CELL,dy,CELL,v,1);
       }
     }
     

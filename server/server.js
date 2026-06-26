@@ -1412,9 +1412,10 @@ class BotPlayer {
     const type = this.nextQueue.shift();
     this.nextQueue.push(this.bag.next());
     const spawnX = Math.floor((this.cols - 4) / 2);
-    this.currentPiece = { type, rotation: 0, x: spawnX, y: -2 };
+    const spawnY = HIDDEN - 2;
+    this.currentPiece = { type, rotation: 0, x: spawnX, y: spawnY };
     this.holdUsed = false;
-    if (!isValid(this.board, type, 0, spawnX, -1)) {
+    if (!isValid(this.board, type, 0, spawnX, spawnY)) {
       this.alive = false;
       const room = rooms[this.roomId];
       if (room) {
@@ -1977,7 +1978,7 @@ class BotPlayer {
         const prev = this.holdPiece;
         this.holdPiece = this.currentPiece.type;
         const _hspX = Math.floor((this.cols - 4) / 2);
-        this.currentPiece = { type: prev, rotation: 0, x: _hspX, y: 0 };
+        this.currentPiece = { type: prev, rotation: 0, x: _hspX, y: HIDDEN - 2 };
         this.holdUsed = true;
         // fall-through → currentPiece.type は交換後のピース
       } else {
