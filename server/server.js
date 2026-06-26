@@ -2352,7 +2352,7 @@ class BotPlayer {
       if (isBig) {
         attack = Math.floor(attack * (1 + Math.max(0, this.ren - 1) * 0.25));
       } else {
-        const comboBonus = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5][Math.min(this.ren, 14)] ?? 5;
+        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
         attack = attack + comboBonus;
       }
     }

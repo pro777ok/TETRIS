@@ -1791,8 +1791,15 @@ class TetrisGame{
         }
       }
 
-      // ── Ren bonus (ren count directly added as attack) ────────
-      attack = attack + this.ren;
+      // ── Ren combo bonus (+1 every 4 ren) ─────────────────────
+      {
+        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
+        attack = attack + comboBonus;
+      }
+      // ── 4Wide: spin clear sends current ren as extra attack ────
+      if (fourWideMode && spin && count > 0) {
+        attack += this.ren;
+      }
 
       // ── PC bonus ──────────────────────────────────────────────
       if (allClear) {
