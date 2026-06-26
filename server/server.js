@@ -2357,6 +2357,11 @@ class BotPlayer {
       }
     }
 
+    // ── 4Wide: spin clear sends current ren as extra attack ─────
+    if (room && room.roomSettings && room.roomSettings.fourWideMode && spin && lines > 0) {
+      attack += this.ren;
+    }
+
     if (allClear) {
       if (room && room.roomSettings && room.roomSettings.puyotetMode) {
         attack = 10 + attack; // puyotet: unchanged
