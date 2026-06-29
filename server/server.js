@@ -2255,21 +2255,18 @@ class BotPlayer {
     else if (lines === 2) attack = 1; 
     else if (lines === 1) attack = 0;
     const room = rooms[this.roomId];
-    // B2B 
+    // B2B (fixed +1)
+    this._b2bBreakHoles3 = 0;
     const puyotet = room && room.roomSettings && room.roomSettings.puyotetMode;
     if (puyotet) {
       if (isB2B && attack > 0) attack += 1;
     } else {
       if (isB2B && attack > 0) {
-        let b2bBonus = 1;
-        if (this.b2bCount >= 24) b2bBonus = 4;
-        else if (this.b2bCount >= 8) b2bBonus = 3;
-        else if (this.b2bCount >= 3) b2bBonus = 2;
-        attack += b2bBonus;
+        attack += 1;
       }
       if (wasB2B && !isB2Bable && lines > 0 && this.b2bCount >= 4) {
         attack += this.b2bCount;
-        this._b2bBreakHoles3 = true;
+        this._b2bBreakHoles3 = Math.max(1, Math.floor(this.b2bCount / 3));
       }
     }
 
@@ -2357,8 +2354,8 @@ class BotPlayer {
       }
     }
 
-    // ── 4Wide: spin clear sends current ren as extra attack ─────
-    if (room && room.roomSettings && room.roomSettings.fourWideMode && spin && lines > 0) {
+    // ── Quad/TSD: adds current ren as extra attack ──────────────
+    if (lines === 4 || (isTSpin && lines === 2)) {
       attack += this.ren;
     }
 
@@ -2428,7 +2425,7 @@ class BotPlayer {
         }
         for (let i=0;i<g.lines;i++){
           if (linesToAdd >= CAP) {
-            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0});
+            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0, holes3: g.holes3});
             break;
           }
           // 30%で上の穴と同じ列に（直列）、それ以外はランダム
@@ -2437,6 +2434,12 @@ class BotPlayer {
             hc=this._lastGarbageHoleCol;
           }else{
             hc=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*this.cols);
+          }
+          if (g.holes3) {
+            const shiftInterval = Math.max(1, g.holes3);
+            const phase = Math.floor(linesToAdd / shiftInterval) % 3;
+            const baseCol = g.holeCol !== undefined ? g.holeCol : hc;
+            hc = (baseCol + phase) % this.cols;
           }
           const row=Array(this.cols).fill('G');row[hc]=0;
           this.board.push(row);this.board.shift();
@@ -2484,7 +2487,7 @@ class BotPlayer {
       } else {
         this.totalAttackSent += attack;
       }
-      const holes3 = this._b2bBreakHoles3 || false;
+      const holes3 = this._b2bBreakHoles3 || 0;
       const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
       for (const t of humanTargets) {
         const hc = Math.floor(Math.random()*this.cols);
@@ -2533,7 +2536,7 @@ class BotPlayer {
     const hc = Math.floor(Math.random()*this.cols);
     const room = rooms[this.roomId];
     const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000;
-    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: !!holes3 });
+    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0 });
   }
 
   startAutonomous(extraDelay = 0) {
@@ -3058,7 +3061,7 @@ io.on('connection', (socket) => {
             const ojama = Math.floor(total * mult);
             if (ojama > 0) io.to(p.id).emit('receive_puyo_ojama', {ojama, fromId: socket.id});
           } else if (senderMode === 'tetris' && targetMode === 'tetris') {
-            io.to(p.id).emit('receive_garbage', {lines: total, fromId: socket.id, holes3: holes3||false});
+            io.to(p.id).emit('receive_garbage', {lines: total, fromId: socket.id, holes3: holes3||0});
           }
           // puyo → tetris handled via puyo_attack event below
         }

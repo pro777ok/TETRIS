@@ -1359,7 +1359,7 @@ class TetrisGame{
     this.alive=true;this.locking=false;
     this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
-    this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=false;
+    this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=0;
     this.garbageQueue=[];
     this._deferredGarbage=[];
     this._lastGarbageHoleCol=-1;
@@ -1770,24 +1770,19 @@ class TetrisGame{
         else attack={1:0,2:1,3:2,4:3}[count]||0;
       }
 
-      // B2B (PuyoTet: fixed +1, no chain/break)
+      // B2B (fixed +1)
       if(puyotetMode){
         if(isB2B && attack > 0) attack += 1;
       } else {
-        // B2B Chain Scaling (TETR.IO like)
         if(isB2B && attack > 0) {
-          let b2bBonus = 1;
-          if (this.b2bCount >= 24) b2bBonus = 4;
-          else if (this.b2bCount >= 8) b2bBonus = 3;
-          else if (this.b2bCount >= 3) b2bBonus = 2;
-          attack += b2bBonus;
+          attack += 1;
         }
-        // B2B Break: accumulated b2bCount sent as lines (with 3 holes)
+        // B2B Break: accumulated b2bCount sent as lines
         if (wasB2B && !isB2Bable && count > 0 && this.b2bCount >= 4) {
           attack += this.b2bCount;
-          this._b2bBreakHoles3 = true;
+          this._b2bBreakHoles3 = Math.max(1, Math.floor(this.b2bCount / 3));
         } else {
-          this._b2bBreakHoles3 = false;
+          this._b2bBreakHoles3 = 0;
         }
       }
 
@@ -1796,8 +1791,8 @@ class TetrisGame{
         const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
         attack = attack + comboBonus;
       }
-      // ── 4Wide: spin clear sends current ren as extra attack ────
-      if (fourWideMode && spin && count > 0) {
+      // ── Quad/TSD: adds current ren as extra attack ────────────
+      if (count === 4 || (isTSpin && count === 2)) {
         attack += this.ren;
       }
 
@@ -2145,16 +2140,14 @@ class TetrisGame{
           }else{
             holeCol=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*cols);
           }
+          if(g.holes3){
+            const shiftInterval = Math.max(1, g.holes3);
+            const phase = Math.floor(linesToAdd / shiftInterval) % 3;
+            const baseCol = g.holeCol !== undefined ? g.holeCol : holeCol;
+            holeCol = (baseCol + phase) % cols;
+          }
           const row=Array(cols).fill('G');
           row[holeCol]=0;
-          if(g.holes3){
-            const holes=[holeCol];
-            while(holes.length<3){
-              const h=Math.floor(Math.random()*cols);
-              if(!holes.includes(h))holes.push(h);
-            }
-            for(const h of holes)row[h]=0;
-          }
           this.board.push(row);this.board.shift();
           this.totalGarbageReceived++;
           if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
@@ -2183,8 +2176,8 @@ class TetrisGame{
   queueGarbage(lines,fromId,holes3){
     const readyAt=performance.now()+(puyotetMode?0:1000);
     if(!puyotetMode&&lines>10){
-      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:!!holes3});lines-=chunk;}
-    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:!!holes3});}
+      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
+    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
     renderer&&renderer.onGarbageIncoming(lines,fromId);
     // ゴミはreadyAtに従って自然に適用される（ゲージが溢れても強制出現しない）
   }
@@ -8320,8 +8313,9 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
 });
 
 socket.on('receive_garbage',({lines,fromId,holes3})=>{
-  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${!!holes3} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
-  ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:!!holes3});
+  const h3 = holes3 || 0;
+  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
+  ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:h3});
   if(puyoGameState&&puyoGameState.alive){
     const mult=roomSettings.garbageMultiplier||2;
     console.log(`[RCV GARBAGE] -> puyo convert: ${lines}*${mult}=${lines*mult} ojama`);
@@ -8329,8 +8323,8 @@ socket.on('receive_garbage',({lines,fromId,holes3})=>{
     return;
   }
   if(!gameState){console.log('[RCV GARBAGE] -> no gameState, drop');return;}
-  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${!!holes3}`);
-  gameState.queueGarbage(lines,fromId,!!holes3);
+  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3}`);
+  gameState.queueGarbage(lines,fromId,h3);
 });
 
 // Admin: Send 20 lines to all opponents
