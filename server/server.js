@@ -2345,18 +2345,13 @@ class BotPlayer {
     if (room && room.roomSettings && room.roomSettings.puyotetMode) {
       attack = attack + Math.min(this.ren, 10);
     } else {
-      const isBig = lines === 4 || (isTSpin && (lines === 2 || lines === 3));
-      if (isBig) {
-        attack = Math.floor(attack * (1 + Math.max(0, this.ren - 1) * 0.25));
+      // ── Quad/TSD: adds ren directly (replaces combo bonus) ───
+      if (lines === 4 || (isTSpin && lines === 2)) {
+        attack += this.ren;
       } else {
         const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
         attack = attack + comboBonus;
       }
-    }
-
-    // ── Quad/TSD: adds current ren as extra attack ──────────────
-    if (lines === 4 || (isTSpin && lines === 2)) {
-      attack += this.ren;
     }
 
     if (allClear) {

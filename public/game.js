@@ -1786,14 +1786,13 @@ class TetrisGame{
         }
       }
 
-      // ── Ren combo bonus (+1 every 4 ren) ─────────────────────
-      {
-        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
-        attack = attack + comboBonus;
-      }
-      // ── Quad/TSD: adds current ren as extra attack ────────────
+      // ── Quad/TSD: adds ren directly (replaces combo bonus) ───
       if (count === 4 || (isTSpin && count === 2)) {
         attack += this.ren;
+      } else {
+        // ── Ren combo bonus (+1 every 4 ren) ───────────────────
+        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
+        attack += comboBonus;
       }
 
       // ── PC bonus ──────────────────────────────────────────────
