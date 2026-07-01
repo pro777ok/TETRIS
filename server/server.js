@@ -457,6 +457,9 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     }
   }
 
+  // T-spin setup potential
+  score += evaluateTspinSetup(board, heights);
+
   return score;
 }
 
@@ -468,19 +471,21 @@ function evaluateTspinSetup(board, heights) {
     const lh = heights[c-1], ch = heights[c], rh = heights[c+1];
     const ld = lh - ch, rd = rh - ch;
     if (ld >= 2 && rd >= 2 && ch >= 2) {
-      bonus += 80;
       const bRow = ROWS+HIDDEN - ch;
       if (bRow >= 0 && bRow < ROWS+HIDDEN) {
         const hasL = c > 0      && board[bRow] && board[bRow][c-1];
         const hasR = c < cols-1 && board[bRow] && board[bRow][c+1];
-        if (hasL && hasR) bonus += 180;
-        else if (hasL || hasR) bonus += 80;
+        if (hasL && hasR) bonus += 1200;  // TSD-ready slot
+        else if (hasL || hasR) bonus += 500;
+        else bonus += 200;
+      } else {
+        bonus += 200;
       }
     } else if ((ld >= 2 && rd >= 1) || (ld >= 1 && rd >= 2)) {
-      bonus += 25;
+      bonus += 60;
     }
   }
-  return Math.min(bonus, 400);
+  return Math.min(bonus, 3000);
 }
 
 // SRS wall kick tables
@@ -566,11 +571,11 @@ function getAllPlacementsBFS(board, type) {
   const queue = [];
   const cols = board[0].length;
 
-  const enqueue = (rot, x, y) => {
+  const enqueue = (rot, x, y, wasKicked) => {
     const key = `${rot},${x},${y}`;
     if (visitedStates.has(key)) return;
     visitedStates.add(key);
-    queue.push({ rot, x, y });
+    queue.push({ rot, x, y, wasKicked });
   };
 
   // Compute direct-drop positions (for needsSoftDrop flag)
@@ -584,30 +589,33 @@ function getAllPlacementsBFS(board, type) {
 
   for (let rot = 0; rot < 4; rot++) {
     for (let x = -2; x < cols + 2; x++) {
-      if (isValid(board, type, rot, x, 0)) enqueue(rot, x, 0);
+      if (isValid(board, type, rot, x, 0)) enqueue(rot, x, 0, false);
     }
   }
 
   let qi = 0;
   while (qi < queue.length) {
-    const { rot, x, y } = queue[qi++];
+    const { rot, x, y, wasKicked } = queue[qi++];
     for (const [dx, dy] of [[-1,0],[1,0],[0,1]]) {
       const nx = x+dx, ny = y+dy;
-      if (isValid(board, type, rot, nx, ny)) enqueue(rot, nx, ny);
+      if (isValid(board, type, rot, nx, ny)) enqueue(rot, nx, ny, wasKicked);
     }
     for (const dir of [1, -1]) {
       const res = tryRotate(board, type, rot, x, y, dir);
-      if (res) enqueue(res.rot, res.x, res.y);
+      if (res) {
+        const isKicked = res.x !== x || res.y !== y;
+        enqueue(res.rot, res.x, res.y, wasKicked || isKicked);
+      }
     }
     if (!isValid(board, type, rot, x, y+1)) {
       const lockKey = `${rot},${x},${y}`;
       if (!lockedKeys.has(lockKey)) {
         lockedKeys.add(lockKey);
-        const spin = detectSpin(board, type, rot, x, y, false);
+        const spin = detectSpin(board, type, rot, x, y, wasKicked);
         const placed = placePiece(board, type, rot, x, y);
         const { board: cleared, lines } = clearLines(placed);
         const needsSoftDrop = !directDrop.has(lockKey);
-        results.push({ rot, x, y, board: cleared, lines, spin, type, needsSoftDrop });
+        results.push({ rot, x, y, board: cleared, lines, spin, type, needsSoftDrop, wasKicked });
       }
     }
   }
@@ -1222,9 +1230,14 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       return b;
     }
 
-    // ── T-spin 禁止（botはtspinしない） ────────────────────────
-    if (p.spin === 'TSPIN' || p.spin === 'MINI_TSPIN') {
-      b -= 100000;
+    // ── Spin bonus: actively seek spin shapes ────────────────
+    if (p.spin === 'TSPIN') b += 5000;
+    else if (p.spin === 'MINI_TSPIN') b += 2000;
+    else if (p.spin) b += 3000;
+    // ── T-piece: strongly prefer T-spin when slot exists ────
+    if (p.type === 'T') {
+      if (p.spin === 'TSPIN') b += 50000;
+      else if (p.spin === 'MINI_TSPIN') b += 20000;
     }
 
     // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
@@ -1305,13 +1318,15 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
   let result = p1, resultScore = sc1;
 
   const holdPenalty = botLevel >= 4 ? 0 : botLevel >= 3 ? 40 : 100;
+  let p2 = null, bestPA = null;
 
   if (holdType) {
-    const { bestScore: sc2, bestPlacement: p2 } = evalPlacementsBFS(holdType, true);
+    const { bestScore: sc2, bestPlacement: p2_ } = evalPlacementsBFS(holdType, true);
+    p2 = p2_;
     if (p2 && sc2 - holdPenalty > resultScore) { result = p2; resultScore = sc2 - holdPenalty; }
   } else if (nextTypes.length > 0) {
     const placementsNext = getAllPlacementsBFS(board, nextTypes[0]);
-    let bestScoreA = -Infinity, bestPA = null;
+    let bestScoreA = -Infinity;
     for (const p of placementsNext) {
       const newRen = p.lines > 0 ? (ren||0) + 1 : 0;
       const iB2B = b2b && (p.lines===4||(p.spin&&p.spin!=='MINI_TSPIN'&&p.lines>0));
@@ -1324,6 +1339,32 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     }
     if (bestPA && bestScoreA - holdPenalty > resultScore) {
       result = bestPA;
+    }
+  }
+
+  // ── Survival check: force line clears when death imminent ──
+  {
+    const nextType = nextTypes.length > 1 ? nextTypes[1] : type;
+    const cols = board[0].length;
+    const spawnX = Math.floor((cols - 4) / 2);
+    const spawnY = HIDDEN - 2;
+    const canSpawn = (b) => isValid(b, nextType, 0, spawnX, spawnY);
+
+    if (result && !canSpawn(result.board)) {
+      // Current best leads to death — find a line-clear alternative
+      const alts = [p1, p2, bestPA].filter(p => p && p !== result && p.board);
+      let emergency = null;
+      // Prefer line-clear placements (extend combo → defer garbage)
+      for (const p of alts) {
+        if (p.lines > 0 && (!emergency || p.score > emergency.score)) emergency = p;
+      }
+      // Fallback: any other placement
+      if (!emergency) {
+        for (const p of alts) {
+          if (!emergency || p.score > emergency.score) emergency = p;
+        }
+      }
+      if (emergency) result = emergency;
     }
   }
 
@@ -1995,49 +2036,23 @@ class BotPlayer {
     const type = this.currentPiece.type;
     const targetY = hardDropY(this.board, type, rot, x, 0);
     const needsSoftDrop = placement.needsSoftDrop || false;
+    const wasKicked = placement.wasKicked || false;
 
-    this._animatePlacement(type, rot, x, targetY, needsSoftDrop, () => {
-      this._lockPiece(type, rot, x, targetY);
+    this._animatePlacement(type, rot, x, targetY, needsSoftDrop, wasKicked, () => {
+      this._lockPiece(type, rot, x, targetY, wasKicked);
       if (onDone) onDone();
     });
   }
 
-  // Animated movement with BFS path (uses soft drop only when needed)
-  _animatePlacement(type, rot, x, targetY, needsSoftDrop, done) {
-    let path;
-    // Always try BFS first to ensure we find a valid path
-    // _buildDirectPath can get stuck if the board is tall
-    if (needsSoftDrop) {
-      path = this._findPath(type, rot, x, targetY);
-    } else {
-      path = this._buildDirectPath(type, rot, x, targetY);
-      // Verify the direct path actually lands at the right place
-      // If last step doesn't match target, fall back to BFS
-      const last = path[path.length - 1];
-      if (!last || last.x !== x || last.rot !== rot) {
-        path = this._findPath(type, rot, x, targetY);
-      }
-    }
-
-    const stepDelay = this.moveStepDelay;
-    let si = 0;
-
-    const broadcast = (r, px, py) => {
-      const room = rooms[this.roomId]; if (!room) return;
+  // Warp: broadcast final position immediately, lock is called by executePlacement callback
+  _animatePlacement(type, rot, x, targetY, needsSoftDrop, wasKicked, done) {
+    const room = rooms[this.roomId];
+    if (room) {
       io.to(this.roomId).emit('bot_piece_update', {
-        id: this.id, currentPiece: { type, rotation: r, x: px, y: py, customShape: null }
+        id: this.id, currentPiece: { type, rotation: rot, x, y: targetY, customShape: null }
       });
-    };
-
-    broadcast(0, Math.floor((this.cols - 4) / 2), 0);
-    const tick = () => {
-      if (!rooms[this.roomId] || !this.alive) { done(); return; }
-      if (!path || si >= path.length) { done(); return; }
-      const s = path[si++];
-      broadcast(s.rot, s.x, s.y);
-      setTimeout(tick, stepDelay);
-    };
-    setTimeout(tick, stepDelay);
+    }
+    if (done) done();
   }
 
   // Direct path (hard drop): rotate at top, slide, drop
@@ -2132,7 +2147,7 @@ class BotPlayer {
     return path.slice(1); // skip spawn state
   }
 
-  _lockPiece(type, rot, x, y) {
+  _lockPiece(type, rot, x, y, wasKicked) {
     if (!this.alive) return;
     if (this.locking) return;
     this.locking = true;
@@ -2235,7 +2250,7 @@ class BotPlayer {
       }
     }
 
-    const spin = detectSpin(this.board, type, rot, x, y, false); // BOT placement: kick tracking simplified
+    const spin = detectSpin(this.board, type, rot, x, y, wasKicked);
     const isTSpin = spin === 'TSPIN';
     const isMini = spin === 'MINI_TSPIN';
     const isAnySpin = !!spin && spin !== 'MINI_TSPIN';
