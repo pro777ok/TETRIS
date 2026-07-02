@@ -1555,11 +1555,14 @@ class BotPlayer {
         b2b: !!p.b2b,
         isBot: !!p.isBot
       })) : [];
+    const board = this.board.map(r => [...r]);
+    const cols = this.cols;
+    const spawnX = Math.floor((cols - 4) / 2);
     return {
-      board: this.board.map(r => [...r]),
+      board,
       currentPiece: { ...this.currentPiece },
-      nextPieces: this.nextQueue.slice(0, 5).map(t => t),
-      holdPiece: this.holdPiece,
+      nextQueue: this.nextQueue.slice(0, 5).map(t => t),
+      holdPiece: this.holdPiece ? { type: this.holdPiece } : null,
       combo: Math.max(0, this.combo),
       b2b: this.b2b,
       lines: this.lines,
@@ -1568,9 +1571,23 @@ class BotPlayer {
       ren: this.ren,
       garbageQueue: this.garbageQueue.map(g => ({ ...g })),
       opponents,
-      cols: this.cols,
+      cols,
       rows: ROWS,
-      isFourWide: this.cols <= 4
+      isFourWide: cols <= 4,
+      bagRemaining: [...this.bag.bag],
+      helpers: {
+        getSpawnState: (type) => ({ x: spawnX, y: HIDDEN - 2, rotation: 0 }),
+        canPlace: (type, x, y, rot) => isValid(board, type, rot, x, y),
+        hardDropY: (type, x, rot) => hardDropY(board, type, rot, x, 0),
+        simulateDrop: (type, x, rot) => {
+          const placements = getAllPlacementsBFS(board, type);
+          const r = ((rot % 4) + 4) % 4;
+          const match = placements.find(p => p.rot === r && p.x === x);
+          if (match) return { x: match.x, y: match.y, rotation: match.rot, wasKicked: !!match.wasKicked, spin: match.spin };
+          const y = hardDropY(board, type, rot, x, 0);
+          return { x, y, rotation: rot, wasKicked: false, spin: null };
+        }
+      }
     };
   }
 
@@ -1891,7 +1908,7 @@ class BotPlayer {
       return;
     }
 
-    // ── CUSTOM BOT CODE PATH ──────────────────────────────────────
+    // ── CUSTOM BOT CODE PATH (warp) ─────────────────────────────
     if (this._customFn) {
       try {
         const state = this._buildCustomState();
@@ -1899,26 +1916,16 @@ class BotPlayer {
         if (result && result.x !== undefined && result.rotation !== undefined) {
           const r = ((result.rotation % 4) + 4) % 4;
           const x = result.x;
-          // Verify placement is reachable via BFS from spawn
-          const bfsPlacements = getAllPlacementsBFS(this.board, this.currentPiece.type);
-          const matched = bfsPlacements.find(p => p.rot === r && p.x === x);
-          if (matched) {
-            this.executePlacement({ ...matched, useHold: !!result.useHold }, onDone);
+          if (isValid(this.board, this.currentPiece.type, r, x, 0)) {
+            this.executePlacement({ rot: r, x, useHold: !!result.useHold }, onDone);
             return;
-          } else if (isValid(this.board, this.currentPiece.type, r, x, 0)) {
-            // Fallback: placement is valid at y=0, use BFS path
-            const targetY = hardDropY(this.board, this.currentPiece.type, r, x, 0);
-            this.executePlacement({ rot: r, x, y: targetY, useHold: !!result.useHold, needsSoftDrop: true }, onDone);
-            return;
-          } else {
-            console.warn(`[BOT] Custom placement invalid for ${this.name}: type=${this.currentPiece.type} rot=${r} x=${x}`);
           }
+          console.warn(`[BOT] Custom placement invalid for ${this.name}: type=${this.currentPiece.type} rot=${r} x=${x}`);
         } else {
           console.warn(`[BOT] Custom code returned invalid result for ${this.name}:`, JSON.stringify(result));
         }
       } catch(e) {
         console.warn(`[BOT] Custom code error for ${this.name}:`, e.message);
-        // 実行時エラーをルームへ通知
         io.to(this.roomId).emit('bot_code_error', { type: 'runtime', botName: this.name, message: e.message });
       }
       // Fall through to normal AI if custom code fails/invalid

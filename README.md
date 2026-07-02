@@ -87,22 +87,61 @@ The built-in bot (`server/server.js`) uses BFS placement search with recursive l
 
 ## Bot Custom Code API
 
-In the host panel, enter JavaScript code. The bot calls `decide(state)` each move:
+In the host panel, enter JavaScript code. The bot calls `decide(state)` each move.
+
+**Coordinate system**: Row 0 = top of hidden zone, row 6 = last hidden row, row 7 = top of visible area, row 26 = bottom. Column 0 = leftmost. `state.currentPiece.x/y/rotation` is the spawn position — the bounding-box top-left corner, with the same cell-offset convention as SRS (see `PIECE_SHAPES` in the server).
 
 ```js
 function decide(state) {
-  // state.board: 2D array (rows × cols), 0=empty, 'G'=garbage, letter=piece
-  // state.currentPiece: { type, rotation, x, y }
-  // state.nextQueue: [{ type }, ...]
-  // state.holdPiece: { type } | null
-  // state.b2b: boolean
-  // state.combo: number
-  // state.ren: number
-  // state.level: number
-  // state.cols: number (4 in 4-wide mode, 10 otherwise)
+  // ── Board & dimensions ──────────────────────────────────────
+  // state.board:       2D array (27 rows × cols), 0=empty, string=block
+  // state.cols:        number of columns (4 in 4-wide mode, 10 otherwise)
+  // state.rows:        20 (visible rows; board has 7 extra hidden rows above)
+  // state.isFourWide:  boolean
+
+  // ── Current piece ────────────────────────────────────────────
+  // state.currentPiece:  { type:'T', rotation:0, x:3, y:5 }
+  //   type:    'I'|'O'|'T'|'S'|'Z'|'J'|'L'
+  //   x:       bounding-box left column (spawn = floor((cols-4)/2))
+  //   y:       bounding-box top row    (spawn = HIDDEN-2 = 5)
+  //   rotation: 0|1|2|3 (0=spawn, CW)
+
+  // ── Queue & hold ─────────────────────────────────────────────
+  // state.nextQueue:   [{type:'T'}, {type:'S'}, ...]  (5 future pieces)
+  // state.holdPiece:   { type:'I' } | null
+  // state.bagRemaining: ['S','Z','J']  (pieces left in current 7-bag)
+
+  // ── Game state ───────────────────────────────────────────────
+  // state.combo:  number (consecutive clears, -1 = no clear yet)
+  // state.ren:    number (REN counter, same as combo)
+  // state.b2b:    boolean
+  // state.lines:  number (total lines cleared)
+  // state.score:  number
+  // state.level:  number
+  // state.garbageQueue: [{ lines, holeCol, ... }] (incoming garbage)
+
+  // ── Opponents ────────────────────────────────────────────────
+  // state.opponents: [{ name, board, score, lines, level, alive, combo, b2b, isBot }]
+
+  // ── Helper functions (use server engine directly) ────────────
+  // state.helpers.getSpawnState(type)  → { x, y, rotation }
+  //   Returns the spawn position for a given piece type.
+  //
+  // state.helpers.canPlace(type, x, y, rotation)  → boolean
+  //   True if the piece can exist at (x, y, rotation) without overlap.
+  //
+  // state.helpers.hardDropY(type, x, rotation)  → number
+  //   Y coordinate where the piece lands if hard-dropped at (x, rotation).
+  //
+  // state.helpers.simulateDrop(type, x, rotation)  → { x, y, rotation, wasKicked, spin }
+  //   Full drop simulation. Returns the landing position with server
+  //   spin detection result (spin = 'TSPIN'|'TSPIN_MINI'|'ISPIN'|'SSPIN'|...|null).
+  //   Uses the server's own BFS + SRS kick tables, so it perfectly matches gameplay.
+
+  // ── Return value ─────────────────────────────────────────────
   return {
-    x: 3,        // target column
-    rotation: 0, // target rotation (0-3)
+    x: 3,        // target column (bounding-box left)
+    rotation: 0, // target rotation 0-3
     useHold: false
   };
 }
