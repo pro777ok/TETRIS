@@ -291,9 +291,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   }
 
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
-  if (spinType === 'TSPIN' || spinType === 'MINI_TSPIN') {
-    score -= 100000;
-  } else if (spinType && linesCleared > 0) {
+  if (spinType && linesCleared > 0) {
     score += linesCleared * 600;
   }
   if (isB2B)   score += 700;
@@ -337,13 +335,13 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     score += linesCleared * garbageRows * 120;
   }
 
-  // ── 穴ペナルティ（大幅強化） ──────────────────────────────────
-  score -= holes        * 600.0;  // 穴を絶対開けるな
-  score -= coveredDepth * 80.0;   // 深い穴は致命的
-  score -= floorGaps    * 120.0;  // 底の隙間は最悪
-  score -= overhangs    * 100.0;  // 張り出しもペナルティ
-  score -= bumpiness    * 6.0;
-  score -= sumH         * 2.0;
+  // ── 穴ペナルティ（超強化） ────────────────────────────────────
+  score -= holes        * 1000.0; // 穴は絶対ダメ
+  score -= coveredDepth * 150.0;  // 深い穴は致命的
+  score -= floorGaps    * 200.0;  // 底の隙間は最悪
+  score -= overhangs    * 200.0;  // 張り出しもペナルティ
+  score -= bumpiness    * 8.0;
+  score -= sumH         * 2.5;
 
   if (garbageRows > 0) {
     score -= garbageRows * 60;
@@ -420,20 +418,24 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // T-spin禁止のため評価しない
 
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / cols;
-  score -= variance * 1.2;
+  score -= variance * 3.0;
 
-  // 縦積みペナルティ（大幅強化）
+  // 縦積みペナルティ（大幅強化）+ 孤立柱ペナルティ
   for (let c = 0; c < cols; c++) {
     const h = heights[c];
-    if (h < 3) continue;
+    if (h < 2) continue;
     const lh = c > 0 ? heights[c-1] : 0;
     const rh = c < cols-1 ? heights[c+1] : 0;
     const protrude = h - Math.max(lh, rh);
     if (protrude >= 1) {
-      score -= protrude * protrude * 120;
+      score -= protrude * protrude * 200;
     }
-    if (protrude >= 4) {
-      score -= protrude * 150;
+    if (protrude >= 3) {
+      score -= protrude * protrude * 50;
+    }
+    // 孤立柱: 両隣が極端に低い
+    if (lh <= 1 && rh <= 1 && h >= 4) {
+      score -= h * h * 15;
     }
   }
   for (let c = 0; c < cols; c++) {
@@ -1230,15 +1232,10 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       return b;
     }
 
-    // ── Spin bonus: actively seek spin shapes ────────────────
-    if (p.spin === 'TSPIN') b += 5000;
-    else if (p.spin === 'MINI_TSPIN') b += 2000;
+    // ── Spin bonus ───────────────────────────────────────────
+    if (p.spin === 'TSPIN') b += 8000;
+    else if (p.spin === 'MINI_TSPIN') b += 4000;
     else if (p.spin) b += 3000;
-    // ── T-piece: strongly prefer T-spin when slot exists ────
-    if (p.type === 'T') {
-      if (p.spin === 'TSPIN') b += 50000;
-      else if (p.spin === 'MINI_TSPIN') b += 20000;
-    }
 
     // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
     // 盤面を低く・フラットに保つことを強く報酬
@@ -1261,9 +1258,8 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       if (p.lines >= 4) b += 1500;
     }
 
-    // ── ソフトドロップ縦積みペナルティ ─────────────────────────
-    // ソフトドロップで無理矢理高い柱を作る行為を禁止
-    if (p.needsSoftDrop && p.board) {
+    // ── 縦積みペナルティ（常時適用） ─────────────────────────
+    if (p.board) {
       const cols = p.board[0].length;
       const ph = [];
       for (let c = 0; c < cols; c++) {
@@ -1272,7 +1268,6 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
           if (r === ROWS + HIDDEN - 1) ph.push(0);
         }
       }
-      const maxH = Math.max(...ph);
       for (let c = 0; c < cols; c++) {
         const h = ph[c];
         if (h < 2) continue;
@@ -1280,7 +1275,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
         const rh = c < cols-1 ? ph[c+1] : 0;
         const protrude = h - Math.max(lh, rh);
         if (protrude >= 1) {
-          b -= protrude * protrude * 300;
+          b -= protrude * protrude * 200;
         }
       }
     }
