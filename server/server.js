@@ -2256,7 +2256,9 @@ class BotPlayer {
     const isTSpin = spin === 'TSPIN';
     const isMini = spin === 'MINI_TSPIN';
     const isAnySpin = !!spin && spin !== 'MINI_TSPIN';
-    const isB2Bable = lines === 4 || (!!spin && lines > 0);
+    const room = rooms[this.roomId];
+    const season1 = room && room.roomSettings && room.roomSettings.season1Mode;
+    const isB2Bable = season1 ? (isTSpin || lines === 4) : (lines === 4 || (!!spin && lines > 0));
     const wasB2B = this.b2b;
     const isB2B = wasB2B && isB2Bable;
 
@@ -2271,11 +2273,18 @@ class BotPlayer {
     else if (lines === 3) attack = 3; // 強化: 3->3
     else if (lines === 2) attack = 1; 
     else if (lines === 1) attack = 0;
-    const room = rooms[this.roomId];
-    // B2B (fixed +1)
     this._b2bBreakHoles3 = 0;
     const puyotet = room && room.roomSettings && room.roomSettings.puyotetMode;
-    if (puyotet) {
+    if (season1) {
+      // B2B bonus based on count table (only on B2B-able clears)
+      if (isB2Bable) {
+        if (this.b2bCount >= 68) attack += 5;
+        else if (this.b2bCount >= 25) attack += 4;
+        else if (this.b2bCount >= 9) attack += 3;
+        else if (this.b2bCount >= 4) attack += 2;
+        else if (this.b2bCount >= 2) attack += 1;
+      }
+    } else if (puyotet) {
       if (isB2B && attack > 0) attack += 1;
     } else {
       if (isB2B && attack > 0) {
@@ -2372,8 +2381,8 @@ class BotPlayer {
     }
 
     if (allClear) {
-      if (room && room.roomSettings && room.roomSettings.puyotetMode) {
-        attack = 10 + attack; // puyotet: unchanged
+      if ((room && room.roomSettings && room.roomSettings.season1Mode) || (room && room.roomSettings && room.roomSettings.puyotetMode)) {
+        attack = 10 + attack; // season1/puyotet: fixed 10
       } else {
         attack = 5 + attack;  // 5段 + tetris firepower stacks
       }
@@ -2594,6 +2603,7 @@ function createRoom(roomId) {
       puyotetMode: false,        // ぷよテトモード（足し算REN・即時ゴミ・B2B固定+1）
       bombMode: false,           // ボムモード（穴にミノを設置すると縦列のゴミが消えて相手へ）
       slowMode: false,           // スローモード（非コンボ時1ラインずつせり上がり）
+      season1Mode: false,        // シーズン1モード（B2Bカウント制ボーナス）
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
       multiplierDelayMin: 1.6,   // 火力倍率開始までの時間(分)
@@ -2829,6 +2839,7 @@ io.on('connection', (socket) => {
     if (ns.puyotetMode!==undefined) rs.puyotetMode=!!ns.puyotetMode;
     if (ns.bombMode!==undefined) rs.bombMode=!!ns.bombMode;
     if (ns.slowMode!==undefined) rs.slowMode=!!ns.slowMode;
+    if (ns.season1Mode!==undefined) rs.season1Mode=!!ns.season1Mode;
     if (ns.boardRows!==undefined) rs.boardRows=Math.max(20,Math.min(100,parseInt(ns.boardRows)||20));
     if (ns.garbageMultiplier!==undefined) rs.garbageMultiplier=Math.max(1,Math.min(10,parseInt(ns.garbageMultiplier)||2));
     if (ns.multiplierDelayMin!==undefined) rs.multiplierDelayMin=Math.max(0,Math.min(10,parseFloat(ns.multiplierDelayMin)||0));
@@ -2842,9 +2853,9 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.slowMode || rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode) ? 1 : 2;
+    const minPlayers = (rs.slowMode || rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode || rs.season1Mode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
-      socket.emit('error',{msg: (rs.slowMode||rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
+      socket.emit('error',{msg: (rs.slowMode||rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode||rs.season1Mode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
     room.started=true;
     room.startTime=Date.now();
@@ -2853,7 +2864,7 @@ io.on('connection', (socket) => {
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});
 
     const humanCount=room.players.length;
-    const isSolo = !!(rs.soloMode || rs.cheeseMode) || (humanCount === 1 && room.bots.length === 0 && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode);
+    const isSolo = !!(rs.soloMode || rs.cheeseMode) || (humanCount === 1 && room.bots.length === 0 && !rs.season1Mode && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode);
     const doShogi=room.roomSettings.shogiMode&&humanCount===1&&room.bots.length>=1;
     room.shogiMode=doShogi;
     room.isSolo=isSolo;
@@ -2917,6 +2928,7 @@ io.on('connection', (socket) => {
       puyotetMode:!!(room.roomSettings&&room.roomSettings.puyotetMode),
       bombMode:!!(room.roomSettings&&room.roomSettings.bombMode),
       slowMode:!!(room.roomSettings&&room.roomSettings.slowMode),
+      season1Mode:!!(room.roomSettings&&room.roomSettings.season1Mode),
       boardRows:(rs.slowMode&&rs.fourWideMode)?26:(room.roomSettings?room.roomSettings.boardRows:20),
       playerModes:room.playerModes||{}
     });

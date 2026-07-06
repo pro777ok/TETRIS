@@ -198,6 +198,7 @@ let fourWideMode=false; // 4Wideモード（ボード幅4列）
 let puyotetMode=false; // ぷよテトモード
 let bombMode=false; // ボムモード
 let slowMode=false; // スローモード
+let season1Mode=false; // シーズン1モード
 let isSpectator=false; // 観戦モードフラグ
 let myGameMode='tetris'; // 'tetris' or 'puyo' - this player's chosen mode
 let playerModes={}; // map of playerId -> 'tetris'|'puyo'
@@ -960,6 +961,7 @@ function updateRoomSettingsUI(rs){
   const ptTog=document.getElementById('puyotet-toggle');if(ptTog)ptTog.checked=!!(rs.puyotetMode);
   const bmTog=document.getElementById('bomb-toggle');if(bmTog)bmTog.checked=!!(rs.bombMode);
   const smTog=document.getElementById('slowmode-toggle');if(smTog)smTog.checked=!!(rs.slowMode);
+  const s1Tog=document.getElementById('season1-toggle');if(s1Tog)s1Tog.checked=!!(rs.season1Mode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const brInput=document.getElementById('board-rows-input');
   const brVal=document.getElementById('board-rows-val');
@@ -1000,7 +1002,7 @@ function updateRoomSettingsUI(rs){
     const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botLevel===6?'CC':'Lv.'+b.botLevel}`).join(', '):'None';
     const gmLabel=rs.puyotetMode?`×${rs.garbageMultiplier??2}`:'—';
     const md=(rs.multiplierDelayMin??1.6).toFixed(1)+'min';const mi=(rs.multiplierIntervalSec??1).toFixed(1)+'s';const mr=(rs.multiplierRate??0.03).toFixed(3);
-vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
+vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.season1Mode?'<div class="settings-view-row"><span>🏆 Season1</span><span style="color:var(--neon-green)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
   }
 }
 function getBotLevelLabel(lvl){
@@ -1010,7 +1012,7 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
@@ -1114,6 +1116,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   puyotetMode=!!ptm;
   bombMode=!!(rs&&rs.bombMode);
   slowMode=!!(rs&&rs.slowMode);
+  season1Mode=!!(rs&&rs.season1Mode);
   if(pm) playerModes=pm;
   if(rs)roomSettings={...roomSettings,...rs};
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
@@ -1153,6 +1156,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(fwm)addChatSystem('◼ 4WIDE MODE — 横4列でプレイ！');
   if(ptm)addChatSystem('🍬 PUYOTET MODE — 足し算REN・即時ゴミ！');
   if(rs&&rs.bombMode)addChatSystem('💣 BOMB MODE — 穴にミノを置いて縦列のゴミを消して相手へ送れ！');
+  if(rs&&rs.season1Mode)addChatSystem('🏆 SEASON1 MODE — B2B never breaks! Count-based bonus!');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
   if(_hasCustomBotCode)addChatSystem('🤖 Bots are running CUSTOM AI code!');
 });
@@ -1712,6 +1716,15 @@ class TetrisGame{
     }
   }
 
+  getSeason1B2BBonus(b2bCount){
+    if (b2bCount >= 68) return 5;
+    if (b2bCount >= 25) return 4;
+    if (b2bCount >= 9) return 3;
+    if (b2bCount >= 4) return 2;
+    if (b2bCount >= 2) return 1;
+    return 0;
+  }
+
   clearLines(){
     const hadPendingGO=this._pendingGameOver;
     this._pendingGameOver=false;
@@ -1756,7 +1769,7 @@ class TetrisGame{
 
       // ── Attack Calculation (TETR.IO Standard) ───────────────────
       const isPenta=count===5;
-      const isB2Bable = count===4 || isPenta || (isSpin) || allClear;
+      const isB2Bable = season1Mode ? (isTSpin || count===4 || isPenta || allClear) : (count===4 || isPenta || (isSpin) || allClear);
       const wasB2B = this.b2b;
       const isB2B = wasB2B && isB2Bable;
       
@@ -1770,8 +1783,11 @@ class TetrisGame{
         else attack={1:0,2:1,3:2,4:3}[count]||0;
       }
 
-      // B2B (fixed +1)
-      if(puyotetMode){
+      // B2B bonus
+      if(season1Mode){
+        this._b2bBreakHoles3 = 0;
+        if(isB2Bable) attack += this.getSeason1B2BBonus(this.b2bCount);
+      } else if(puyotetMode){
         if(isB2B && attack > 0) attack += 1;
       } else {
         if(isB2B && attack > 0) {
@@ -1797,8 +1813,8 @@ class TetrisGame{
 
       // ── PC bonus ──────────────────────────────────────────────
       if (allClear) {
-        if (puyotetMode) {
-          attack = 10; // puyotet: fixed 10
+        if (season1Mode || puyotetMode) {
+          attack = 10; // season1/puyotet: fixed 10
         } else {
           attack += 5; // 5段 + tetris firepower stacks
         }
@@ -1895,7 +1911,7 @@ class TetrisGame{
       }
       else{
         this.b2bCount=0;this.b2b=false;
-        if(wasB2B && renderer) renderer.onB2BBreak(prevB2bCount);
+        if(wasB2B && !season1Mode && renderer) renderer.onB2BBreak(prevB2bCount);
       }
 
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
