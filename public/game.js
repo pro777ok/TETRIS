@@ -1598,6 +1598,7 @@ class TetrisGame{
   }
 
   move(dx){
+    if(!this.current) return false;
     if(this.isValid(this.current,dx,0)){
       this.current.x+=dx;this.lastSpin=null;this._updateLockAfterMove();SFX.move();
       return true;
@@ -8228,7 +8229,7 @@ function startDAS(dir){
       arr=setInterval(()=>{
         if(!gameState||!gameState.alive){stopDAS();return;}
         if(!dasActive)return;
-        gameState.move(dir);
+        try{gameState.move(dir);}catch(e){}
       },iv);
     };
     if(dcdWait>0)dasDcd=setTimeout(onArr,dcdWait);
