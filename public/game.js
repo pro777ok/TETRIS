@@ -1368,6 +1368,7 @@ class TetrisGame{
     this._deferredGarbage=[];
     this._lastGarbageHoleCol=-1;
     this.gravityMs=0;
+    this._softDropAccum=0;
     renSemitone=0;
 
     // Stats tracking
@@ -1615,6 +1616,7 @@ class TetrisGame{
   }
 
   softDrop(){
+    if(!this.current) return false;
     if(this.isValid(this.current,0,1)){this.current.y++;this.score+=1;return true;}
     else{this._lockHalf=true;this.startLockTimer();return false;}
   }
@@ -2248,6 +2250,7 @@ class TetrisGame{
 
   updateGravity(dt){
     if(!this.alive)return;
+    this._updateSoftDrop(dt);
     const base=roomSettings.gravityBase||1000;
     const dec=roomSettings.gravityDec||80;
     const min=roomSettings.gravityMin||50;
@@ -2257,6 +2260,21 @@ class TetrisGame{
       this.gravityMs=0;
       if(this.isValid(this.current,0,1))this.current.y++;
       else{this._lockHalf=false;this.startLockTimer();}
+    }
+  }
+
+  _updateSoftDrop(dt){
+    if(!this.alive||!this.current)return;
+    if(!keyState['ArrowDown']&&!_softDropping){this._softDropAccum=0;return;}
+    const interval=settings.softDropInterval??50;
+    if(interval===0){
+      while(this.isValid(this.current,0,1)){this.current.y++;this.score+=1;}
+      return;
+    }
+    this._softDropAccum+=dt;
+    while(this._softDropAccum>=interval){
+      this._softDropAccum-=interval;
+      this.softDrop();
     }
   }
 }
@@ -8157,7 +8175,7 @@ class SpectatorRenderer{
   }
 }
 
-let das=null,dasDcd=null,arr=null,softDropTimer=null,keyState={},dasActive=false;
+let das=null,dasDcd=null,arr=null,keyState={},dasActive=false;
 function setupInput(){
   document.addEventListener('keydown',handleKeyDown);
   document.addEventListener('keyup',handleKeyUp);
@@ -8238,8 +8256,14 @@ function startDAS(dir){
 }
 let _dasStartedAt=0;
 function stopDAS(){dasActive=false;if(das){clearTimeout(das);das=null;}if(dasDcd){clearTimeout(dasDcd);dasDcd=null;}if(arr){clearInterval(arr);arr=null;}}
-function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;const interval=settings.softDropInterval??50;if(interval===0){while(gameState.alive&&gameState.softDrop());return;}gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},interval);}
-function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
+let _softDropping=false;
+function startSoftDrop(){
+  _softDropping=true;
+  if(!gameState||!gameState.alive)return;
+  gameState._softDropAccum=0;
+  try{gameState.softDrop();}catch(e){}
+}
+function stopSoftDrop(){_softDropping=false;}
 
 // ---- Multiplayer ----
 socket.on('opponent_update',(data)=>{
