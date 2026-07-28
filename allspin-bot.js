@@ -262,6 +262,7 @@ function countHoles(board, rows, cols) {
   }
   return holes;
 }
+
 // detect a clean 1-wide overhang "spin pocket": empty column flanked by
 // walls/columns at least 2 higher on both sides, at the very top of the gap.
 function spinPocketBonus(board, rows, cols, wantType) {

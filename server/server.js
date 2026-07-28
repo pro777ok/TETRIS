@@ -148,7 +148,8 @@ function clearLines(board) {
   for (let r = ROWS+HIDDEN-1; r >= 0; r--) {
     if (b[r].every(c => c !== 0)) cleared.push(r);
   }
-  for (const r of [...cleared].sort((a,v)=>v-a)) { b.splice(r,1); b.unshift(Array(cols).fill(0)); }
+  for (const r of [...cleared].sort((a,v)=>v-a)) { b.splice(r,1); }
+  for (let i = 0; i < cleared.length; i++) { b.unshift(Array(cols).fill(0)); }
   return { board: b, lines: cleared.length, clearedRows: cleared };
 }
 
@@ -2296,6 +2297,7 @@ class BotPlayer {
       }
     }
 
+    const _prevRen = this.ren; // バッチコンボ用: コンボ更新前のren値
     if (lines > 0) {
       this.combo++;
       this.ren++;
@@ -2501,22 +2503,62 @@ class BotPlayer {
     }
 
     if (room && attack > 0) {
-      if (bombAttack > 0) {
-        const lineClearAtk = Math.max(0, attack - bombAttack);
-        if (lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
-        this.totalGarbageSent += bombAttack;
+      const batchCombo = room.roomSettings && room.roomSettings.batchComboMode;
+      // バッチコンボ: コンボ中に攻撃を蓄積
+      if (batchCombo && this.ren >= 1) {
+        if (!this.batchComboBuffer) this.batchComboBuffer = 0;
+        this.batchComboBuffer += attack;
+        // 相手にバッチコンボの蓄積量を通知
+        const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
+        for (const t of humanTargets) {
+          io.to(t.id).emit('batch_combo_update', { fromId: this.id, buffered: this.batchComboBuffer });
+        }
       } else {
-        this.totalAttackSent += attack;
+        // バッチコンボ: コンボ終了時、蓄積分を一括送信
+        let totalAttack = attack;
+        if (batchCombo && this.batchComboBuffer && this.batchComboBuffer > 0) {
+          totalAttack += this.batchComboBuffer;
+          this.batchComboBuffer = 0;
+        }
+        if (bombAttack > 0) {
+          const lineClearAtk = Math.max(0, totalAttack - bombAttack);
+          if (lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
+          this.totalGarbageSent += bombAttack;
+        } else {
+          this.totalAttackSent += totalAttack;
+        }
+        const holes3 = this._b2bBreakHoles3 || 0;
+        const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
+        for (const t of humanTargets) {
+          const hc = Math.floor(Math.random()*this.cols);
+          io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [] });
+          // バッチコンボ解放エフェクト
+          if (batchCombo && totalAttack > attack) {
+            io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
+          }
+        }
+        const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
+        for (const bt of botTargets) bt.queueGarbage(totalAttack, this.id, holes3);
       }
-      const holes3 = this._b2bBreakHoles3 || 0;
-      const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
-      for (const t of humanTargets) {
-        const hc = Math.floor(Math.random()*this.cols);
-        io.to(t.id).emit('receive_garbage', { lines: attack, fromId: this.id, holeCol: hc, holes3 });
-        io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack, clearRows: [] });
+    } else if (room && attack === 0 && _prevRen >= 1 && this.batchComboBuffer && this.batchComboBuffer > 0) {
+      // コンボ終了 (ren was >=1, now 0) but attack=0 → 蓄積分だけ送信
+      const batchCombo = room.roomSettings && room.roomSettings.batchComboMode;
+      if (batchCombo) {
+        const totalAttack = this.batchComboBuffer;
+        this.batchComboBuffer = 0;
+        this.totalAttackSent += totalAttack;
+        const holes3 = this._b2bBreakHoles3 || 0;
+        const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
+        for (const t of humanTargets) {
+          const hc = Math.floor(Math.random()*this.cols);
+          io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [] });
+          io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
+        }
+        const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
+        for (const bt of botTargets) bt.queueGarbage(totalAttack, this.id, holes3);
       }
-      const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-      for (const bt of botTargets) bt.queueGarbage(attack, this.id, holes3);
     }
 
     if (room) {
@@ -2554,8 +2596,15 @@ class BotPlayer {
   }
 
   queueGarbage(lines, fromId, holes3) {
-    const hc = Math.floor(Math.random()*this.cols);
+    // バッチコンボ: 蓄積バッファからゴミを相殺
     const room = rooms[this.roomId];
+    if (room && room.roomSettings && room.roomSettings.batchComboMode && this.batchComboBuffer > 0) {
+      const canCancel = Math.min(lines, this.batchComboBuffer);
+      this.batchComboBuffer -= canCancel;
+      lines -= canCancel;
+      if (lines <= 0) return;
+    }
+    const hc = Math.floor(Math.random()*this.cols);
     const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000;
     this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0 });
   }
@@ -2604,6 +2653,7 @@ function createRoom(roomId) {
       bombMode: false,           // ボムモード（穴にミノを設置すると縦列のゴミが消えて相手へ）
       slowMode: false,           // スローモード（非コンボ時1ラインずつせり上がり）
       season1Mode: false,        // シーズン1モード（B2Bカウント制ボーナス）
+      batchComboMode: false,     // バッチコンボモード（コンボ中に攻撃を蓄積、終了時に一括送信）
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
       multiplierDelayMin: 1.6,   // 火力倍率開始までの時間(分)
@@ -2840,6 +2890,7 @@ io.on('connection', (socket) => {
     if (ns.bombMode!==undefined) rs.bombMode=!!ns.bombMode;
     if (ns.slowMode!==undefined) rs.slowMode=!!ns.slowMode;
     if (ns.season1Mode!==undefined) rs.season1Mode=!!ns.season1Mode;
+    if (ns.batchComboMode!==undefined) rs.batchComboMode=!!ns.batchComboMode;
     if (ns.boardRows!==undefined) rs.boardRows=Math.max(20,Math.min(100,parseInt(ns.boardRows)||20));
     if (ns.garbageMultiplier!==undefined) rs.garbageMultiplier=Math.max(1,Math.min(10,parseInt(ns.garbageMultiplier)||2));
     if (ns.multiplierDelayMin!==undefined) rs.multiplierDelayMin=Math.max(0,Math.min(10,parseFloat(ns.multiplierDelayMin)||0));
@@ -2929,6 +2980,7 @@ io.on('connection', (socket) => {
       bombMode:!!(room.roomSettings&&room.roomSettings.bombMode),
       slowMode:!!(room.roomSettings&&room.roomSettings.slowMode),
       season1Mode:!!(room.roomSettings&&room.roomSettings.season1Mode),
+      batchComboMode:!!(room.roomSettings&&room.roomSettings.batchComboMode),
       boardRows:(rs.slowMode&&rs.fourWideMode)?26:(room.roomSettings?room.roomSettings.boardRows:20),
       playerModes:room.playerModes||{}
     });
@@ -3005,12 +3057,48 @@ io.on('connection', (socket) => {
     recordPlacement(socket.roomId, socket.id, frame);
   });
 
-  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount}) => {
+  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount,ren}) => {
     const room=getRoom(socket.roomId); if (!room) return;
 
     // チーズモード: ハンド数を記録
     if (room.cheeseMode && handCount !== undefined) {
       room.cheeseHandCount = handCount;
+    }
+
+    // バッチコンボ: プレイヤーのrenを追跡
+    if (!room.playerRens) room.playerRens = {};
+    const prevRen = room.playerRens[socket.id] || 0;
+    const curRen = ren || 0;
+    room.playerRens[socket.id] = curRen;
+
+    // バッチコンボ: コンボ中に攻撃を蓄積
+    if (room.roomSettings && room.roomSettings.batchComboMode) {
+      if (!room.batchComboBuffers) room.batchComboBuffers = {};
+      if (curRen >= 1 && attack > 0) {
+        // コンボ中 → バッファに蓄積
+        room.batchComboBuffers[socket.id] = (room.batchComboBuffers[socket.id] || 0) + attack;
+        // 相手にバッファ更新を通知
+        const others = allPlayers(room).filter(p => p.id !== socket.id && p.alive);
+        others.forEach(p => {
+          if (!p.isBot) {
+            io.to(p.id).emit('batch_combo_update', { fromId: socket.id, buffered: room.batchComboBuffers[socket.id] });
+          }
+        });
+        return; // 攻撃を送らずに終了
+      } else if (curRen < 1 && prevRen >= 1 && (room.batchComboBuffers[socket.id] || 0) > 0) {
+        // コンボ終了 → 蓄積分 + 今回の攻撃を一括送信
+        attack = (attack || 0) + room.batchComboBuffers[socket.id];
+        const flushTotal = attack;
+        room.batchComboBuffers[socket.id] = 0;
+        // 相手にフラッシュ通知
+        const others = allPlayers(room).filter(p => p.id !== socket.id && p.alive);
+        others.forEach(p => {
+          if (!p.isBot) {
+            io.to(p.id).emit('batch_combo_flush', { fromId: socket.id, total: flushTotal });
+          }
+        });
+      }
+      // curRen >= 1 で attack === 0 の場合はバッファを維持（コンボ継続中）
     }
 
     // ── 40ラインモード: 達成チェック ────────────────────────────
@@ -3092,6 +3180,34 @@ io.on('connection', (socket) => {
         socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:total,clearRows:clearRows||[]});
       });
     }
+  });
+
+  // バッチコンボ: コンボ終了時に蓄積攻撃を一括送信
+  socket.on('batch_combo_end', () => {
+    const room=getRoom(socket.roomId); if (!room) return;
+    if (!room.roomSettings || !room.roomSettings.batchComboMode) return;
+    if (!room.batchComboBuffers) return;
+    const buf = room.batchComboBuffers[socket.id] || 0;
+    if (buf <= 0) return;
+    room.batchComboBuffers[socket.id] = 0;
+    const senderMode = (room.playerModes && room.playerModes[socket.id]) || 'tetris';
+    const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
+    others.forEach(p=>{
+      const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
+      if (p.isBot && p.queueGarbage) {
+        p.queueGarbage(buf, socket.id, 0);
+      } else {
+        if (senderMode === 'tetris' && targetMode === 'puyo') {
+          const mult = room.roomSettings.garbageMultiplier || 2;
+          const ojama = Math.floor(buf * mult);
+          if (ojama > 0) io.to(p.id).emit('receive_puyo_ojama', {ojama, fromId: socket.id});
+        } else if (senderMode === 'tetris' && targetMode === 'tetris') {
+          io.to(p.id).emit('receive_garbage', {lines: buf, fromId: socket.id, holes3: 0});
+        }
+      }
+      io.to(p.id).emit('batch_combo_flush', { fromId: socket.id, total: buf });
+      socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:buf,clearRows:[]});
+    });
   });
 
   socket.on('spin_effect', ({spinType}) => { socket.to(socket.roomId).emit('opponent_spin',{id:socket.id,spinType}); });
@@ -3212,6 +3328,7 @@ io.on('connection', (socket) => {
     stopRecording(socket.roomId,{winner:null,scores,forceEnded:true});
     room.players.forEach(p=>{p.alive=true;p.board=null;});
     room.bots=[];room.isSolo=false;
+    room.batchComboBuffers={};room.playerRens={};
     if(room.spectators)room.spectators=[];
     addChatSys(socket.roomId,'⚠ Game force-ended by host.');
   });

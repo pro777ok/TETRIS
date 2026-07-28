@@ -199,6 +199,7 @@ let puyotetMode=false; // ぷよテトモード
 let bombMode=false; // ボムモード
 let slowMode=false; // スローモード
 let season1Mode=false; // シーズン1モード
+let batchComboMode=false; // バッチコンボモード
 let isSpectator=false; // 観戦モードフラグ
 let myGameMode='tetris'; // 'tetris' or 'puyo' - this player's chosen mode
 let playerModes={}; // map of playerId -> 'tetris'|'puyo'
@@ -962,6 +963,7 @@ function updateRoomSettingsUI(rs){
   const bmTog=document.getElementById('bomb-toggle');if(bmTog)bmTog.checked=!!(rs.bombMode);
   const smTog=document.getElementById('slowmode-toggle');if(smTog)smTog.checked=!!(rs.slowMode);
   const s1Tog=document.getElementById('season1-toggle');if(s1Tog)s1Tog.checked=!!(rs.season1Mode);
+  const bcTog=document.getElementById('batchcombo-toggle');if(bcTog)bcTog.checked=!!(rs.batchComboMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const brInput=document.getElementById('board-rows-input');
   const brVal=document.getElementById('board-rows-val');
@@ -1002,7 +1004,7 @@ function updateRoomSettingsUI(rs){
     const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botLevel===6?'CC':'Lv.'+b.botLevel}`).join(', '):'None';
     const gmLabel=rs.puyotetMode?`×${rs.garbageMultiplier??2}`:'—';
     const md=(rs.multiplierDelayMin??1.6).toFixed(1)+'min';const mi=(rs.multiplierIntervalSec??1).toFixed(1)+'s';const mr=(rs.multiplierRate??0.03).toFixed(3);
-vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.season1Mode?'<div class="settings-view-row"><span>🏆 Season1</span><span style="color:var(--neon-green)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
+vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.season1Mode?'<div class="settings-view-row"><span>🏆 Season1</span><span style="color:var(--neon-green)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.batchComboMode?'<div class="settings-view-row"><span>🔗 Batch Combo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
   }
 }
 function getBotLevelLabel(lvl){
@@ -1012,7 +1014,7 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
@@ -1096,7 +1098,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,cheeseMode:chm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,boardRows:br,playerModes:pm})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,cheeseMode:chm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,batchComboMode:bcm,boardRows:br,playerModes:pm})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -1117,6 +1119,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   bombMode=!!(rs&&rs.bombMode);
   slowMode=!!(rs&&rs.slowMode);
   season1Mode=!!(rs&&rs.season1Mode);
+  batchComboMode=!!bcm;
   if(pm) playerModes=pm;
   if(rs)roomSettings={...roomSettings,...rs};
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
@@ -1157,6 +1160,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(ptm)addChatSystem('🍬 PUYOTET MODE — 足し算REN・即時ゴミ！');
   if(rs&&rs.bombMode)addChatSystem('💣 BOMB MODE — 穴にミノを置いて縦列のゴミを消して相手へ送れ！');
   if(rs&&rs.season1Mode)addChatSystem('🏆 SEASON1 MODE — B2B never breaks! Count-based bonus!');
+  if(bcm)addChatSystem('🔗 BATCH COMBO MODE — コンボ中の攻撃を蓄積、終了時に一括送信！');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
   if(_hasCustomBotCode)addChatSystem('🤖 Bots are running CUSTOM AI code!');
 });
@@ -1386,6 +1390,7 @@ class TetrisGame{
     this._garbagePushY = 0;
     this._lockHalf = false;
     this._bombCells = null;
+    this.batchComboBuffer = 0; // バッチコンボ: 蓄積攻撃量
 
     this.spawnPiece();
   }
@@ -1920,10 +1925,18 @@ class TetrisGame{
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
 
+      // バッチコンボ: コンボ中に攻撃を蓄積（ローカルUI用）
+      if(batchComboMode && this.ren >= 1 && attack > 0) {
+        this.batchComboBuffer += attack;
+      } else if(batchComboMode && this.ren < 1 && this.batchComboBuffer > 0) {
+        // コンボ終了 → バッファリセット（サーバーが一括送信済み）
+        this.batchComboBuffer = 0;
+      }
+
       if(attack>0||fortyLineMode||cheeseMode){
         const lineClearAtk = Math.max(0, attack - bombAttack);
         if(lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
-        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined});
+        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren});
       }
       // 相手に視覚エフェクトを送信
       const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack};
@@ -1986,9 +1999,12 @@ class TetrisGame{
 
       if(this.ren>0){SFX.renReset();}
       this.combo=-1;this.ren=0;
+      if(batchComboMode) this.batchComboBuffer=0;
       renderer&&renderer.endComboLabel();
       // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
+      // バッチコンボ: コンボ終了時に蓄積攻撃を送信
+      socket.emit('batch_combo_end',{ren:0});
       // ゴミは次のlockPieceまで遅延
     }
 
@@ -2192,6 +2208,13 @@ class TetrisGame{
   }
 
   queueGarbage(lines,fromId,holes3){
+    // バッチコンボ: 蓄積バッファからゴミを相殺
+    if(batchComboMode && this.batchComboBuffer > 0){
+      const canCancel=Math.min(lines,this.batchComboBuffer);
+      this.batchComboBuffer-=canCancel;
+      lines-=canCancel;
+      if(lines<=0)return;
+    }
     const readyAt=performance.now()+(puyotetMode?0:1000);
     if(!puyotetMode&&lines>10){
       while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
@@ -4468,6 +4491,10 @@ class GameRenderer{
       const opSmokeLayer=new PIXI.Container();this.root.addChild(opSmokeLayer);
       // ゴミゲージ (ボード左側に縦棒)
       const gMeterGfx=new PIXI.Graphics();gMeterGfx.x=-8;gMeterGfx.y=0;cont.addChild(gMeterGfx);
+      // バッチコンボゲージ (ボード左側、ゴミゲージのさらに左)
+      const batchGfx=new PIXI.Graphics();batchGfx.x=-18;batchGfx.y=0;cont.addChild(batchGfx);
+      const batchTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(fSz*0.8),fill:0x00f5ff,fontWeight:'700'}));
+      batchTxt.anchor.set(0.5,0);batchTxt.x=-14;batchTxt.y=-fSz-2;cont.addChild(batchTxt);
       this.opBoardData[p.id]={
         cont,boardGfx,scoreTxt:stxt,ppsTxt,apmTxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
         board:null,currentPiece:null,nextPieces:null,holdPiece:null,
@@ -4476,7 +4503,9 @@ class GameRenderer{
         gameOverTick:null,origXcenter:RX+oBW/2,origYcenter:by+oBH/2,
         score:0,pps:0,apm:0,garbageLines:0,gMeterGfx,
         garbageQueue:[],
+        batchComboBuffer:0, // 相手のバッチコンボ蓄積量
         flashGfx,flashAlpha:0,
+        batchGfx,batchTxt,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
         ren:0,renColor:0x00f5ff,renTxt,
         smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
@@ -4560,6 +4589,25 @@ class GameRenderer{
     this.gMeterTxt.anchor.set(0.5,0);
     this.gMeterTxt.x=5;
     this.gMeterCont.addChild(this.gMeterTxt);
+    // バッチコンボメーター（ゴミゲージの隣）
+    this.batchMeterCont=new PIXI.Container();
+    this.batchMeterCont.x=-BOARD_W/2-32;this.batchMeterCont.y=-BOARD_H/2;
+    this.batchMeterCont.visible=false;
+    this.boardWrap.addChild(this.batchMeterCont);
+    this.batchMeterGfx=new PIXI.Graphics();this.batchMeterCont.addChild(this.batchMeterGfx);
+    this.batchMeterTxt=new PIXI.Text('',new PIXI.TextStyle({
+      fontFamily:'Share Tech Mono',fontSize:Math.round(11),fill:0x00f5ff,fontWeight:'700'
+    }));
+    this.batchMeterTxt.anchor.set(0.5,0);
+    this.batchMeterTxt.x=5;
+    this.batchMeterCont.addChild(this.batchMeterTxt);
+    this.batchMeterLabel=new PIXI.Text('BATCH',new PIXI.TextStyle({
+      fontFamily:'Share Tech Mono',fontSize:Math.round(7),fill:0x00f5ff,letterSpacing:1
+    }));
+    this.batchMeterLabel.anchor.set(0.5,0);
+    this.batchMeterLabel.x=5;
+    this.batchMeterLabel.y=-12;
+    this.batchMeterCont.addChild(this.batchMeterLabel);
   }
 
   buildSideUI(){
@@ -5198,18 +5246,38 @@ class GameRenderer{
     const g=d.gMeterGfx;g.clear();
     const lines=d.garbageLines||0;
     const bh=d.boardH;
-    if(lines<=0)return;
-    // 背景
-    g.beginFill(0x111122,0.5);g.drawRect(0,0,6,bh);g.endFill();
-    // ゲージ高さ (最大20行分でbh全体)
-    const h=Math.min(lines/20,1)*bh;
-    const y=bh-h;
-    // 固定色（グラデーションなし）
-    const col=0xff006e;
-    g.beginFill(col,0.85);g.drawRect(0,y,6,h);g.endFill();
-    // 点滅枠
-    const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()*0.006));
-    g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
+    if(lines<=0){
+      // ゴミが0でもバッチコンボゲージは描画する
+    } else {
+      // 背景
+      g.beginFill(0x111122,0.5);g.drawRect(0,0,6,bh);g.endFill();
+      // ゲージ高さ (最大20行分でbh全体)
+      const h=Math.min(lines/20,1)*bh;
+      const y=bh-h;
+      // 固定色（グラデーションなし）
+      const col=0xff006e;
+      g.beginFill(col,0.85);g.drawRect(0,y,6,h);g.endFill();
+      // 点滅枠
+      const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()*0.006));
+      g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
+    }
+    // バッチコンボゲージ
+    if(d.batchGfx && batchComboMode){
+      const bg=d.batchGfx;bg.clear();
+      const buf=d.batchComboBuffer||0;
+      if(buf>0){
+        const bh2=d.boardH;
+        const h2=Math.min(buf/20,1)*bh2;
+        const y2=bh2-h2;
+        bg.beginFill(0x001133,0.5);bg.drawRect(0,0,6,bh2);bg.endFill();
+        const bpulse=0.5+0.5*Math.abs(Math.sin(performance.now()*0.008));
+        bg.beginFill(0x00f5ff,0.85);bg.drawRect(0,y2,6,h2);bg.endFill();
+        bg.lineStyle(1,0x00f5ff,bpulse);bg.drawRect(0,y2,6,h2);bg.lineStyle(0);
+        if(d.batchTxt){d.batchTxt.text='BATCH '+buf;d.batchTxt.visible=true;}
+      } else {
+        if(d.batchTxt){d.batchTxt.text='';d.batchTxt.visible=false;}
+      }
+    }
   }
 
   drawGarbageMeter(){
@@ -5258,6 +5326,38 @@ class GameRenderer{
     if(this.gMeterTxt) this.gMeterTxt.text=totalLines.toString();
   }
 
+  // バッチコンボメーター描画
+  drawBatchComboMeter(){
+    if(!this.batchMeterCont || !batchComboMode) {
+      if(this.batchMeterCont) this.batchMeterCont.visible = false;
+      return;
+    }
+    const buf = this.gs.batchComboBuffer || 0;
+    if(buf <= 0) {
+      this.batchMeterCont.visible = false;
+      return;
+    }
+    this.batchMeterCont.visible = true;
+    const g = this.batchMeterGfx;
+    g.clear();
+    const h = Math.min(buf * CELL, BOARD_H);
+    const y = BOARD_H - h;
+    // 背景
+    g.beginFill(0x001133, 0.6);
+    g.drawRect(0, 0, 8, BOARD_H);
+    g.endFill();
+    // 蓄積ゲージ（シアン色）
+    const pulse = 0.6 + 0.4 * Math.abs(Math.sin(performance.now() * 0.006));
+    g.beginFill(0x00f5ff, 0.85);
+    g.drawRect(0, y, 8, h);
+    g.endFill();
+    g.lineStyle(1, 0x00f5ff, pulse);
+    g.drawRect(0, y, 8, h);
+    g.lineStyle(0);
+    // テキスト
+    this.batchMeterTxt.text = buf.toString();
+  }
+
   updateScoreUI(){
     this.scoreTxt.text=this.gs.score.toString().padStart(7,'0');
     this.linesTxt.text=this.gs.lines.toString();
@@ -5267,6 +5367,7 @@ class GameRenderer{
     if(this.vsTxt) this.vsTxt.text = this.gs.vs.toFixed(1);
     this.updateVisibleOpponents();
     this.drawGarbageMeter();
+    this.drawBatchComboMeter();
   }
 
   updateB2bBadge(){
@@ -7895,6 +7996,22 @@ class GameRenderer{
       if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
     });
   }
+
+  // バッチコンボ: 一括送信エフェクト
+  onBatchComboFlush(fromId, total) {
+    if (!this.opBoardData) return;
+    const d = this.opBoardData[fromId];
+    if (!d) return;
+    // 相手ボードにフラッシュエフェクト
+    if (d.flashGfx) {
+      d.flashGfx.clear();
+      d.flashGfx.beginFill(0xff006e, 0.6);
+      d.flashGfx.drawRect(0, 0, d.boardW, d.boardH);
+      d.flashGfx.endFill();
+      d.flashGfx.alpha = 1;
+      setTimeout(() => { d.flashGfx.alpha = 0; }, 300);
+    }
+  }
 } // end class GameRenderer
 
 // ---- Input ----
@@ -8367,6 +8484,25 @@ socket.on('receive_garbage',({lines,fromId,holes3})=>{
   gameState.queueGarbage(lines,fromId,h3);
 });
 
+// バッチコンボ: 相手の蓄積量を受信
+let batchComboOpponentBuffers = {}; // { fromId: bufferedLines }
+socket.on('batch_combo_update', ({fromId, buffered}) => {
+  batchComboOpponentBuffers[fromId] = buffered;
+  // 相手ボードデータにも反映
+  if (renderer && renderer.opBoardData && renderer.opBoardData[fromId]) {
+    renderer.opBoardData[fromId].batchComboBuffer = buffered;
+  }
+});
+
+// バッチコンボ: 一括送信エフェクト受信
+socket.on('batch_combo_flush', ({fromId, total}) => {
+  batchComboOpponentBuffers[fromId] = 0;
+  if (renderer && renderer.opBoardData && renderer.opBoardData[fromId]) {
+    renderer.opBoardData[fromId].batchComboBuffer = 0;
+  }
+  if (renderer) renderer.onBatchComboFlush(fromId, total);
+});
+
 // Admin: Send 20 lines to all opponents
 function send20Lines(){
   if(!gameState || !gameState.alive) return;
@@ -8442,6 +8578,8 @@ socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId,cheeseClear,ha
   stopDAS();stopSoftDrop();
   if(gameState)gameState.alive=false;
   if(puyoGameState){ puyoGameState.alive=false; puyoGameState.dropping=false; }
+  batchComboOpponentBuffers = {};
+  if(gameState) gameState.batchComboBuffer = 0;
   // リプレイ記録停止（チーズモードは既にcheese_clearで停止済み）
   const hadReplay = ReplayRecorder.isRecording();
   if(hadReplay){
