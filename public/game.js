@@ -951,7 +951,9 @@ function updateRoomSettingsUI(rs){
   const gd=document.getElementById('gravity-dec-input');if(gd){gd.value=rs.gravityDec??80;document.getElementById('gravity-dec-val').textContent=(rs.gravityDec??80)+'ms';}
   const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
-  const bl=document.getElementById('bot-level-input');if(bl){bl.value=rs.botLevel??3;document.getElementById('bot-level-val').textContent=getBotLevelLabel(rs.botLevel??3);}
+  const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||3));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
+  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin')?'allspin':'normal';
+  const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??1.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||1.5).toFixed(1)+' PPS';}
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
@@ -1001,14 +1003,14 @@ function updateRoomSettingsUI(rs){
     const spd=rs.gravityBase??1000;
     const spdLabel=spd>=1500?'SLOW':spd>=900?'NORMAL':spd>=500?'FAST':'VERY FAST';
     const bots=roomPlayers.filter(p=>p.isBot);
-    const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botLevel===6?'CC':'Lv.'+b.botLevel}`).join(', '):'None';
+    const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botType==='allspin'?'ALLSPIN':'Lv.'+b.botLevel}`).join(', '):'None';
     const gmLabel=rs.puyotetMode?`×${rs.garbageMultiplier??2}`:'—';
     const md=(rs.multiplierDelayMin??1.6).toFixed(1)+'min';const mi=(rs.multiplierIntervalSec??1).toFixed(1)+'s';const mr=(rs.multiplierRate??0.03).toFixed(3);
 vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.season1Mode?'<div class="settings-view-row"><span>🏆 Season1</span><span style="color:var(--neon-green)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.batchComboMode?'<div class="settings-view-row"><span>🔗 Batch Combo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
   }
 }
 function getBotLevelLabel(lvl){
-  return ['','BEGINNER','EASY','STRONG','EXPERT','GOD','COLD CLEAR'][lvl]||'STRONG';
+  return ['','BEGINNER','EASY','STRONG','EXPERT','GOD'][lvl]||'STRONG';
 }
 function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
@@ -1016,9 +1018,11 @@ function _saveRoomSettings(){
 function updateRoomSetting(key,val){
   const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
+  const strKeys=['botType'];
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
-  else if(floatKeys.includes(key)) parsed=parseFloat(val)||0;
+  else if(strKeys.includes(key)) parsed=String(val);
+  else if(floatKeys.includes(key)||key==='botPps') parsed=parseFloat(val)||0;
   else parsed=parseInt(val)||0;
   roomSettings[key]=parsed;
   socket.emit('set_room_settings',{[key]:parsed});
@@ -1028,6 +1032,8 @@ function updateRoomSetting(key,val){
 
 function addBot(){
   const lvl=parseInt(document.getElementById('bot-level-input')?.value)||roomSettings.botLevel||3;
+  const type=document.getElementById('bot-type-select')?.value||roomSettings.botType||'normal';
+  const pps=parseFloat(document.getElementById('bot-pps-input')?.value)||roomSettings.botPps||1.5;
   const fi=document.getElementById('bot-code-input');
   const file=fi&&fi.files[0]?fi.files[0]:null;
   const fname=file?file.name.replace(/\.[^.]+$/, ''):null;
@@ -1039,11 +1045,11 @@ function addBot(){
       document.getElementById('bot-code-status').textContent='✅ Uploaded: '+file.name;
       _hasCustomBotCode=true;
       if(typeof updateBotList==='function')updateBotList(roomPlayers);
-      socket.emit('add_bot',{botLevel:lvl,botFileName:fname,botCode:code});
+      socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botCode:code});
     };
     reader.readAsText(file);
   } else {
-    socket.emit('add_bot',{botLevel:lvl,botFileName:fname});
+    socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname});
   }
 }
 
@@ -1078,7 +1084,7 @@ function updateBotList(players){
   const bots=players.filter(p=>p.isBot);
   const el=document.getElementById('bot-list');
   if(!el)return;
-  el.innerHTML=bots.map(b=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${b.botLevel===6?'CC':'Lv.'+b.botLevel}</span>${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem">KICK</button></div>`).join('');
+  el.innerHTML=bots.map(b=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${b.botType==='allspin'?'ALLSPIN':'Lv.'+b.botLevel}</span>${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem">KICK</button></div>`).join('');
 }
 
 function updatePlayerList(players){
@@ -1088,7 +1094,7 @@ function updatePlayerList(players){
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
       <div style="display:flex;flex-direction:column;margin-left:0.5rem">
-        <span style="font-weight:700">${p.name}${p.isBot?` <span style="color:var(--neon-yellow);font-size:0.7rem">${p.botLevel===6?'CC':'Lv.'+p.botLevel}</span>`:''}</span>
+        <span style="font-weight:700">${p.name}${p.isBot?` <span style="color:var(--neon-yellow);font-size:0.7rem">${p.botType==='allspin'?'ALLSPIN':'Lv.'+p.botLevel}</span>`:''}</span>
         <span style="font-size:0.6rem;color:${modeColor};letter-spacing:0.1em">${mode}</span>
       </div>
       ${i===0&&!p.isBot?'<span class="host-badge">HOST</span>':''}
@@ -1936,7 +1942,7 @@ class TetrisGame{
       if(attack>0||fortyLineMode||cheeseMode){
         const lineClearAtk = Math.max(0, attack - bombAttack);
         if(lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
-        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren});
+        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren,lockX:this._lockX,lockY:this._lockY});
       }
       // 相手に視覚エフェクトを送信
       const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack};
@@ -2219,7 +2225,6 @@ class TetrisGame{
     if(!puyotetMode&&lines>10){
       while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
     }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
-    renderer&&renderer.onGarbageIncoming(lines,fromId);
     // ゴミはreadyAtに従って自然に適用される（ゲージが溢れても強制出現しない）
   }
 
@@ -3872,10 +3877,27 @@ function openReplayViewer(replayData, mode) {
         break;
       }
       case 'attack_sent': {
-        const { fromId, toId, attack, clearRows } = data;
-        if (fromId === meta.myId) {
-          const launchY = renderer._getClearRowsCenterY && renderer._getClearRowsCenterY(clearRows);
-          renderer.onAttackProjectile && renderer.onAttackProjectile(toId, attack, launchY);
+        const { fromId, toId, attack, clearRows, lockX, lockY, holes3 } = data;
+        const d = renderer.opBoardData && renderer.opBoardData[fromId];
+        let startX, startY;
+        if (d && lockX != null && lockY != null) {
+          startX = d.origX + (lockX + 2) * CELL;
+          startY = d.origY + (lockY - HIDDEN + 2) * CELL;
+        } else if (fromId === meta.myId) {
+          const gs = renderer.gs;
+          const lx = gs._lockX != null ? gs._lockX : 4;
+          const ly = gs._lockY != null ? gs._lockY : HIDDEN + 5;
+          startX = renderer.mainBX + (lx + 2) * CELL;
+          startY = renderer.mainBY + (ly - HIDDEN + 2) * CELL;
+        } else {
+          startX = renderer.mainBX + BOARD_W / 2;
+          startY = renderer.mainBY + BOARD_H * 0.3;
+        }
+        if (attack > 0 && startX != null && startY != null) {
+          renderer.showOpponentAttackNumber && renderer.showOpponentAttackNumber(fromId, attack, startX, startY);
+        }
+        if (holes3 && holes3 > 0 && startX != null && startY != null) {
+          renderer.showOpponentAttackNumber && renderer.showOpponentAttackNumber(fromId, holes3, startX, startY);
         }
         break;
       }
@@ -3911,7 +3933,6 @@ function openReplayViewer(replayData, mode) {
         break;
       }
       case 'receive_garbage': {
-        renderer.onGarbageIncoming && renderer.onGarbageIncoming(data.lines, data.fromId);
         break;
       }
       case 'player_dead': {
@@ -4372,7 +4393,7 @@ class GameRenderer{
     this.tiltAngle=0;this.tiltTarget=0;this.shakePower=0;
     // 壁バウンス: 押し込み中は繰り返さない
     this.wallBumpX=0;this._wallBumpActive=false;this._wallPressX=0;
-    this.particles=[];this.projectiles=[];this.floatLabels=[];this._customLabels=[];
+    this.particles=[];this.floatLabels=[];this._customLabels=[];
     this.comboLabel=null;this.attackLabel=null;this._attackAccum=0;
     this.opBoardData={};this._flashAlpha=0;
     this._gameOverTick=null;
@@ -4386,7 +4407,6 @@ class GameRenderer{
     this.buildLayout();this.createBg();
     this.buildOpponentBoards();this.buildMainBoard();this.buildSideUI();
     this.effectsLayer=new PIXI.Container();app.stage.addChild(this.effectsLayer);
-    this.projLayer=new PIXI.Container();app.stage.addChild(this.projLayer);
   }
 
   buildLayout(){
@@ -4466,7 +4486,7 @@ class GameRenderer{
       cont.addChild(bg);      const nameCol=isBot?0xffbe0b:0x00f5ff;
       const fSz=this.opponentPlayers.length===1?Math.round(12*sc):10;
       const nst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:fSz,fill:nameCol,letterSpacing:2});
-      const nameLabel=isBot?`${p.name.toUpperCase()} ${p.botLevel===6?'CC':'Lv.'+(p.botLevel||'?')}`:p.name.toUpperCase();
+      const nameLabel=isBot?`${p.name.toUpperCase()} ${p.botType==='allspin'?'ALLSPIN':'Lv.'+(p.botLevel||'?')}`:p.name.toUpperCase();
       const ntxt=new PIXI.Text(nameLabel,nst);ntxt.x=0;ntxt.y=-fSz-6;cont.addChild(ntxt);
       const boardGfx=new PIXI.Graphics();cont.addChild(boardGfx);
       const nextGfx=[];
@@ -4482,6 +4502,7 @@ class GameRenderer{
       const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xff8500}));apmTxt.x=0;apmTxt.y=oBH+ppsSz*2;cont.addChild(apmTxt);
       const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=oBH+ppsSz*3;cont.addChild(vsTxt);
       const renTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b}));renTxt.x=0;renTxt.y=oBH+ppsSz*4;cont.addChild(renTxt);
+      const b2bTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b,fontWeight:'700'}));b2bTxt.x=0;b2bTxt.y=oBH+ppsSz*5;cont.addChild(b2bTxt);
 
       const flashGfx=new PIXI.Graphics();flashGfx.alpha=0;cont.addChild(flashGfx);
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
@@ -4507,7 +4528,7 @@ class GameRenderer{
         flashGfx,flashAlpha:0,
         batchGfx,batchTxt,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
-        ren:0,renColor:0x00f5ff,renTxt,
+        ren:0,renColor:0x00f5ff,renTxt,b2bTxt,
         smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
         sinkOffset:0, // ハードドロップ時の沈み込みオフセット
       };
@@ -5119,6 +5140,17 @@ class GameRenderer{
       this._drawZigzag(d.lightGfx,0,0,0,d.boardH,segs,amp,'v');
       this._drawZigzag(d.lightGfx,d.boardW,0,d.boardW,d.boardH,segs,amp,'v');
       if(d.lightTimer<=0){d.lightGfx.clear();d.lightGfx.alpha=0;}
+    }
+    // 相手B2Bカウント表示（B2Bバッジ）
+    if(d.b2bTxt){
+      const bc=d.b2bCount||0;
+      if(bc>=2){
+        const col=bc>=8?0x0088ff:bc>=3?0x00ff88:0xffbe0b;
+        d.b2bTxt.text=`B2B ×${bc}`;
+        d.b2bTxt.style=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12),fill:col,fontWeight:'700'});
+      }else{
+        d.b2bTxt.text='';
+      }
     }
     if(d.shakeX!==0||d.shakeY!==0){
       d._shakeT=(d._shakeT||0)+0.9;
@@ -5942,106 +5974,6 @@ class GameRenderer{
     if(settings.shake==='on')this.shakePower=Math.max(this.shakePower,4);
   }
 
-  // B2B解除時のボーナス攻撃エフェクト: 白い塊が分裂して相手に飛ぶ
-  onB2bBreakAttack(bonusAtk,b2bCount){
-    if(settings.particles==='off')return;
-    // 発射元: ボードの中央上
-    const sx=this.mainBX+BOARD_W/2;
-    const sy=this.mainBY+BOARD_H*0.2;
-    // 相手のガベージメーターに向かって飛ぶ
-    const targets=this._getOpponentTargets();
-    for(const {tx,ty} of targets){
-      for(let i=0;i<bonusAtk;i++){
-        setTimeout(()=>{
-          this._spawnB2bBreakBolt(sx,sy,tx,ty,i,bonusAtk);
-        },i*80);
-      }
-    }
-    // 自分のボード上に白い爆発
-    for(let i=0;i<16;i++){
-      const g=new PIXI.Graphics();
-      const sz=Math.random()*8+4;
-      g.beginFill(0xffffff,0.9);g.drawCircle(0,0,sz);g.endFill();
-      g.x=sx+(Math.random()-0.5)*BOARD_W*0.6;
-      g.y=sy+(Math.random()-0.5)*BOARD_H*0.3;
-      this.effectsLayer.addChild(g);
-      const a=Math.random()*Math.PI*2;
-      const sp=Math.random()*8+3;
-      this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-4,life:1,decay:0.018+Math.random()*0.012,rot:(Math.random()-0.5)*0.15});
-    }
-    // フラッシュ
-    this._flashAlpha=0.6;
-    this.flashGfx.clear();
-    this.flashGfx.beginFill(0xffffff,0.6);
-    this.flashGfx.drawRect(0,0,BOARD_W,BOARD_H);
-    this.flashGfx.endFill();
-  }
-
-  _getOpponentTargets(){
-    const targets=[];
-    for(const pid of Object.keys(this.opBoardData)){
-      const d=this.opBoardData[pid];
-      if(d&&d.cont&&d.cont.visible){
-        // ガベージメーターの位置（ボードの左端 + 上部）
-        targets.push({tx:d.cont.x+(d.bw||0)*0.5,ty:d.cont.y+(d.bh||0)*0.3});
-      }
-    }
-    // ターゲットがなければ画面右端
-    if(!targets.length)targets.push({tx:this.W*0.85,ty:this.H*0.3});
-    return targets;
-  }
-
-  _spawnB2bBreakBolt(sx,sy,tx,ty,idx,total){
-    const cont=new PIXI.Container();
-    cont.x=sx;cont.y=sy;
-    this.projLayer.addChild(cont);
-    // 白い球
-    const g=new PIXI.Graphics();
-    const r=10+Math.random()*6;
-    g.beginFill(0xffffff,1);g.drawCircle(0,0,r);g.endFill();
-    g.beginFill(0xaaddff,0.7);g.drawCircle(0,0,r*0.6);g.endFill();
-    cont.addChild(g);
-    // カーブ軌道: 中間点をランダムに曲げる
-    const mx=(sx+tx)/2+(Math.random()-0.5)*200;
-    const my=(sy+ty)/2+(Math.random()-0.5)*200-100;
-    const frames=40+Math.floor(Math.random()*20);
-    let f=0;
-    const trail=[];
-    const ticker=()=>{
-      f++;
-      const t=f/frames;
-      // ベジエ曲線 (二次)
-      const bx=(1-t)*(1-t)*sx+2*(1-t)*t*mx+t*t*tx;
-      const by=(1-t)*(1-t)*sy+2*(1-t)*t*my+t*t*ty;
-      cont.x=bx;cont.y=by;
-      cont.rotation+=0.25;
-      // トレイル
-      if(f%2===0&&settings.particles!=='off'){
-        const tg=new PIXI.Graphics();
-        tg.beginFill(0xffffff,0.4*(1-t));tg.drawCircle(0,0,r*0.5*(1-t*0.5));tg.endFill();
-        tg.x=bx;tg.y=by;
-        this.effectsLayer.addChild(tg);
-        this.particles.push({gfx:tg,vx:0,vy:0,life:0.4*(1-t),decay:0.06});
-      }
-      if(f>=frames){
-        // 着弾爆発
-        for(let i=0;i<10;i++){
-          const eg=new PIXI.Graphics();
-          eg.beginFill(0xffffff,0.9);eg.drawCircle(0,0,Math.random()*5+2);eg.endFill();
-          eg.x=tx;eg.y=ty;
-          this.effectsLayer.addChild(eg);
-          const ea=Math.random()*Math.PI*2;
-          const esp=Math.random()*6+2;
-          this.particles.push({gfx:eg,vx:Math.cos(ea)*esp,vy:Math.sin(ea)*esp-2,life:0.8,decay:0.04+Math.random()*0.03});
-        }
-        try{cont.destroy({children:true});}catch(e){}
-        this.app.ticker.remove(ticker);
-        return;
-      }
-    };
-    this.app.ticker.add(ticker);
-  }
-
   _getClearRowsCenterY(cleared){
     if(!cleared||!cleared.length)return this.mainBY+BOARD_H*0.5;
     const avgRow=cleared.reduce((a,b)=>a+b,0)/cleared.length;
@@ -6262,44 +6194,28 @@ class GameRenderer{
       }
       ly+=38;
     } else {this.endComboLabel();}
-    if(attack>0&&count>1){
-      this._attackAccum+=attack;
-      let atkTxt=`⚔ +${this._attackAccum}`;
-      if(ren>1)atkTxt+=`  REN x${ren-1}`;
-      if(_b2bBreakCount>0)atkTxt+=`  💔 B2B x${_b2bBreakCount}`;
-      const atkSz=Math.min(20+Math.floor(this._attackAccum*4),64);
-      const sc=this._uiScale||1;
-      if(!this._atkText||!this._atkText.alive){
-        this._attackAccum=attack;
-        atkTxt=`⚔ +${attack}`;
-        const st=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:atkSz,fill:0xff6060,fontWeight:'700',letterSpacing:2,dropShadow:true,dropShadowColor:0x000000,dropShadowDistance:3,dropShadowBlur:4});
-        this._atkText=new PIXI.Text(atkTxt,st);
-        this._atkText.anchor.set(0,0.5);
-        this._atkText.x=lx;this._atkText.y=this.mainBY+BOARD_H*0.6;
-        this._atkText.alpha=0;this._atkText.scale.set(1.5);
-        this._atkText._popT=0;
-        this._atkText.alive=true;
-        this.effectsLayer.addChild(this._atkText);
-        if(!this._customLabels)this._customLabels=[];
-        this._customLabels.push(this._atkText);
-      } else {
-        this._atkText.style.fontSize=atkSz;
-        this._atkText.text=atkTxt;
-        this._atkText._popT=0;
-        this._atkText.scale.set(1.5);this._atkText.alpha=0;
-      }
-      clearTimeout(this._attackAccumTimer);
-      this._attackAccumTimer=setTimeout(()=>{this._attackAccum=0;if(this._atkText){this._atkText.alive=false;this._atkText._fadeT=0;this._atkText._fading=true;}},3500);
-    }
     if(attack>0){
-      const launchY=this._getClearRowsCenterY(cleared);
+      const gs=this.gs;
+      const lockX = gs._lockX != null ? gs._lockX : 4;
+      const lockY = gs._lockY != null ? gs._lockY : HIDDEN+5;
+      const startX = this.mainBX + (lockX + 2) * CELL;
+      const startY = this.mainBY + (lockY - HIDDEN + 2) * CELL;
+      // コンボ中の累積火力を追跡
+      if(!this._opComboAtk)this._opComboAtk={};
+      if(!this._opComboAtkTimer)this._opComboAtkTimer={};
       this.opponentPlayers.forEach(op=>{
         if(this.opBoardData[op.id]&&!this.opBoardData[op.id].dead){
-          this.onAttackProjectile(op.id,attack,launchY);
-          if(attack>=4)this.showOpponentAttackNumber(op.id,attack);
+          // 累積攻撃量を追跡（コンボ中は加算、リセットはタイマー）
+          if(!this._opComboAtk[op.id])this._opComboAtk[op.id]=0;
+          this._opComboAtk[op.id]+=attack;
+          const displayAtk=this._opComboAtk[op.id];
+          this.showOpponentAttackNumber(op.id,attack,startX,startY,displayAtk);
+          // タイマーでリセット（1.5秒間攻撃がなければコンボ終了）
+          clearTimeout(this._opComboAtkTimer[op.id]);
+          this._opComboAtkTimer[op.id]=setTimeout(()=>{this._opComboAtk[op.id]=0;},1500);
         }
       });
-      // attack>=4: 枠バッジ表示
+      // 枠バッジ表示
       if(attack>=4)this.showAttackBadge(attack,'attack');
     }
     // ALL CLEAR spinning text (self-view)
@@ -6788,66 +6704,75 @@ class GameRenderer{
     }},133);
   }
 
-  onGarbageIncoming(lines,fromId){
-    const d=this.opBoardData[fromId];if(!d)return;
-    const sx=d.origX+(getGameCols()*d.cell)/2,sy=d.origY+(d.boardH||ROWS*d.cell)/2;
-    const tx=this.mainBX-8,ty=this.mainBY+BOARD_H*0.5;
-    const isBig=lines>=4;
-    const color=isBig?0x00f5ff:0xff3333;
-    const visualPower=isBig?lines+4:lines;
-    this.spawnProjectile(sx,sy,tx,ty,color,visualPower);
-  }
-
-  onAttackProjectile(targetId,attack,launchY){
-    const d=this.opBoardData[targetId];if(!d)return;
-    const sx=this.mainBX+BOARD_W/2;
-    const sy=launchY!==undefined?launchY:this.mainBY+BOARD_H*0.5;
-    // ターゲット: 相手ボードのゲージメーター位置（ボード左端）
-    const tx=d.origX-12;
-    const ty=d.origY+d.boardH*0.5;
-    this.spawnProjectile(sx,sy,tx,ty,0x00f5ff,attack);
-    SFX.attack();
-  }
-
   onGarbageApplied(lines){
     // シェイクはonGarbageRowAddedで行う
   }
 
   // 4ライン以上送った時、相手の盤面近くに赤い数字を表示
-  showOpponentAttackNumber(pid, attack){
+  // startX, startY: 画面座標での開始位置（ミノ設置位置など）。未指定時は相手ボード上部中央
+  // totalAtk: コンボ中の累積火力。表示は累積値のみ
+  showOpponentAttackNumber(pid, attack, startX, startY, totalAtk){
     const d=this.opBoardData[pid];
-    if(!d||d.dead)return;
+    if((!d||d.dead)&&(startX==null||startY==null))return;
     const sc=this._uiScale||1;
-    const sz=Math.min(20+attack*3,52);
-    const col=attack>=6?0xff0044:0xff3333;
+    const displayVal = totalAtk > 1 ? totalAtk : attack;
+    const sz=Math.min(20+displayVal*3,52);
     const st=new PIXI.TextStyle({
       fontFamily:"'Arial Black','Impact',sans-serif",fontSize:sz,
-      fill:col,stroke:0x000000,strokeThickness:3,fontWeight:'900',
+      fill:0xffffff,stroke:0x000000,strokeThickness:3,fontWeight:'900',
       dropShadow:true,dropShadowColor:0x000000,dropShadowBlur:8
     });
-    const txt=new PIXI.Text(`+${attack}`,st);
+    const txt=new PIXI.Text(`+${displayVal}`,st);
     txt.anchor.set(0.5,0.5);
-    txt.x=d.origX+d.boardW/2;
-    txt.y=d.origY-10;
-    txt.alpha=0;txt.scale.set(1.8);
+
+    const defaultX = d ? d.origX + d.boardW/2 : (startX||0);
+    const defaultY = d ? d.origY - 10 : (startY||0);
+    const sx = startX !== undefined ? startX : defaultX;
+    const sy = startY !== undefined ? startY : defaultY;
+
+    txt.x = sx;
+    txt.y = sy;
+    txt.alpha = 0;
+    txt.scale.set(0.2);
+
     this.effectsLayer.addChild(txt);
     if(!this._customLabels)this._customLabels=[];
-    const anim={txt,targetX:txt.x,targetY:txt.y-40,alive:true,popT:0,fadeDelay:1200,fadeT:0,fading:false};
+
+    // ランダムな8方向
+    const dirs = [
+      {x:0,y:-1}, {x:0.7,y:-0.7}, {x:1,y:0}, {x:0.7,y:0.7},
+      {x:0,y:1}, {x:-0.7,y:0.7}, {x:-1,y:0}, {x:-0.7,y:-0.7}
+    ];
+    const dir = dirs[Math.floor(Math.random()*dirs.length)];
+    const distance = 60 + Math.random() * 40;
+    const targetX = sx + dir.x * distance;
+    const targetY = sy + dir.y * distance;
+
+    const anim={txt,startX:sx,startY:sy,targetX,targetY,alive:true,popT:0,fadeDelay:1000,fadeT:0,fading:false};
     this._customLabels.push(anim);
     const update=()=>{
       if(!anim.alive)return;
       if(anim.popT<1){
-        anim.popT=Math.min(1,(anim.popT||0)+0.06);
+        anim.popT=Math.min(1,(anim.popT||0)+0.08);
         const e=1-(1-anim.popT)*(1-anim.popT);
-        anim.txt.scale.set(1.8-0.8*e);anim.txt.alpha=e;
-        if(anim.popT>=1){anim.txt.scale.set(1);anim.txt.alpha=1;anim.fadeDelay=performance.now()+1200;}
+        const curX = anim.startX + (anim.targetX - anim.startX) * e;
+        const curY = anim.startY + (anim.targetY - anim.startY) * e;
+        anim.txt.x = curX;
+        anim.txt.y = curY;
+        anim.txt.scale.set(0.2 + 0.8 * e);
+        anim.txt.alpha = e;
+        if(anim.popT>=1){
+          anim.txt.scale.set(1);
+          anim.txt.alpha = 1;
+          anim.fadeDelay = performance.now() + 1000;
+        }
         requestAnimationFrame(update);
         return;
       }
       if(!anim.fading&&performance.now()<anim.fadeDelay){requestAnimationFrame(update);return;}
       if(!anim.fading){anim.fading=true;anim.fadeT=0;}
       anim.fadeT+=0.03;
-      anim.txt.y=anim.targetY-(anim.fadeT*20);
+      anim.txt.y -= 0.5;
       anim.txt.alpha=Math.max(0,1-anim.fadeT);
       if(anim.txt.alpha<=0){anim.alive=false;try{anim.txt.destroy();}catch(e){}this._customLabels=this._customLabels.filter(l=>l!==anim);return;}
       requestAnimationFrame(update);
@@ -7765,44 +7690,6 @@ class GameRenderer{
     this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-(downward?0:3),life:1,decay:0.022+Math.random()*0.028});
   }
 
-  spawnProjectile(sx,sy,tx,ty,color,power){
-    const cont=new PIXI.Container();cont.x=sx;cont.y=sy;this.projLayer.addChild(cont);
-    const r=7+Math.min(power*1.4,20); // larger base size
-
-    // 外側の鋭いリング（攻撃的）
-    const spike=new PIXI.Graphics();
-    const spikes=6;
-    for(let i=0;i<spikes;i++){
-      const a=i/spikes*Math.PI*2;
-      const a2=(i+0.5)/spikes*Math.PI*2;
-      spike.beginFill(color,0.8);
-      spike.moveTo(Math.cos(a)*r*0.6,Math.sin(a)*r*0.6);
-      spike.lineTo(Math.cos(a2)*r*2.2,Math.sin(a2)*r*2.2);
-      spike.lineTo(Math.cos(a+Math.PI*2/spikes)*r*0.6,Math.sin(a+Math.PI*2/spikes)*r*0.6);
-      spike.endFill();
-    }
-    cont.addChild(spike);
-
-    // コア
-    const core=new PIXI.Graphics();
-    core.beginFill(0xffffff,1);core.drawCircle(0,0,r*0.6);core.endFill();
-    core.beginFill(color,0.9);core.drawCircle(0,0,r*0.42);core.endFill();
-    cont.addChild(core);
-
-    // パワー数字
-    if(power>=2){
-      const pt=new PIXI.Text(power.toString(),new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.min(10+power,16),fill:0xffffff,fontWeight:'900'}));
-      pt.anchor.set(0.5);cont.addChild(pt);
-    }
-
-    // 直線距離・方向
-    const dx=tx-sx,dy=ty-sy;
-    const dist=Math.sqrt(dx*dx+dy*dy);
-    // 速度: 速めに一定 (35~50フレーム)
-    const frames=Math.round(35+Math.min(dist/30,15));
-    this.projectiles.push({cont,spike,core,sx,sy,tx,ty,color,frames,f:0,power,r,dist,dx,dy});
-  }
-
   updateParticlesEtc(dt){
     this.particles=this.particles.filter(p=>{
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;p.vy+=0.28;p.life-=p.decay;p.gfx.alpha=p.life;
@@ -7850,61 +7737,6 @@ class GameRenderer{
       });
     }
     this._updateBadge(dt);
-    this.projectiles=this.projectiles.filter(p=>{
-      p.f++;
-      const t=p.f/p.frames;
-      // ease-in（最初ゆっくり→急加速）で攻撃的に
-      const te=t*t*t;
-      const cx=p.sx+p.dx*te;
-      const cy=p.sy+p.dy*te;
-      p.cont.x=cx;p.cont.y=cy;
-      // スパイクを高速回転
-      p.spike.rotation+=0.28;
-      // 突撃時にスケール震動
-      const sc=1+0.22*Math.sin(p.f*0.7);
-      p.cont.scale.set(sc);
-      // 尾を引くトレイル（直線方向に伸びる）
-      if(p.f%1===0&&settings.particles!=='off'){
-        const tg=new PIXI.Graphics();
-        const trailAlpha=0.55*(1-t);
-        tg.beginFill(p.color,trailAlpha);
-        // 楕円を進行方向に引き伸ばした軌跡
-        const trailLen=p.r*1.8*(1-t*0.4);
-        tg.drawCircle(0,0,p.r*0.35);
-        tg.endFill();
-        tg.x=cx-(p.dx/p.frames)*2;tg.y=cy-(p.dy/p.frames)*2;
-        this.effectsLayer.addChild(tg);
-        this.particles.push({gfx:tg,vx:0,vy:0,life:trailAlpha,decay:0.12});
-      }
-      if(p.f>=p.frames){
-        // 着弾: 爆発的なバースト
-        const n=settings.particles==='high'?32:14;
-        for(let i=0;i<n;i++){
-          const g=new PIXI.Graphics();g.beginFill(p.color,1);
-          const sz=Math.random()*5+1.5;
-          if(i%4===0)g.drawCircle(0,0,sz);else g.drawRect(-sz/2,-sz/2,sz,sz);
-          g.endFill();g.x=p.tx+(Math.random()-0.5)*12;g.y=p.ty+(Math.random()-0.5)*12;
-          this.effectsLayer.addChild(g);
-          // 進行方向前方への集中バースト
-          const baseAngle=Math.atan2(p.dy,p.dx);
-          const spread=i<n*0.4?(Math.random()-0.5)*1.2:(Math.random()-0.5)*Math.PI*2;
-          const a=baseAngle+spread;
-          const sp=Math.random()*12+5;
-          this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,decay:0.042+Math.random()*0.04});
-        }
-        // 衝撃波リング
-        if(settings.quality!=='low'&&settings.quality!=='minimum'){
-          const sw=new PIXI.Graphics();sw.lineStyle(3,p.color,0.9);sw.drawCircle(0,0,6);
-          sw.x=p.tx;sw.y=p.ty;this.effectsLayer.addChild(sw);
-          let sr=6,sa=0.9;
-          const swT=()=>{sr+=7;sa-=0.065;sw.clear();sw.lineStyle(3,p.color,sa);sw.drawCircle(0,0,sr);
-            if(sa>0)requestAnimationFrame(swT);else try{sw.destroy();}catch(e){}};
-          requestAnimationFrame(swT);
-        }
-        try{p.cont.destroy({children:true});}catch(e){}return false;
-      }
-      return true;
-    });
   }
 
   update(dt){
@@ -8422,10 +8254,10 @@ socket.on('opponent_update',(data)=>{
 
 // BOT board update (same structure as opponent_update)
 socket.on('bot_update',(data)=>{
-  const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue,bombExplodedCells}=data;
+  const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,b2bCount,pps,apm,vs,garbageQueue,bombExplodedCells}=data;
   if(renderer&&renderer.onOpponentUpdate) renderer.onOpponentUpdate(id, data);
   if(!renderer||!renderer.opBoardData)return;
-  ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
+  ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue,b2bCount});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -8433,6 +8265,7 @@ socket.on('bot_update',(data)=>{
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
   if(garbageLines!==undefined)d.garbageLines=garbageLines;
+  if(b2bCount!==undefined) d.b2bCount=b2bCount;
   if(pps!==undefined) d.pps=pps;
   if(apm!==undefined) d.apm=apm;
   if(vs!==undefined) d.vs=vs;
@@ -8557,19 +8390,15 @@ socket.on('attack_sent',({fromId,toId,attack,clearRows})=>{
     // My attack going to opponent — update gauge immediately
     const opData=renderer.opPuyoData?.[toId]||renderer.opBoardData?.[toId];
     if(opData) opData.ojamaQueue=(opData.ojamaQueue||0)+(attack&~1);
-    const launchY=renderer._getClearRowsCenterY?.(clearRows)??(renderer._myBY+renderer._bH/2);
-    renderer.onAttackProjectile(toId,attack,launchY);
   } else if(toId===myId){
     // Opponent/bot attack incoming
     if(!renderer.opBoardData) return;
     const d=renderer.opBoardData[fromId];
     if(d){
       const sx=d.origX+d.boardW/2;
-      const sy=d.origY+d.boardH/2;
-      const isBig=attack>=4;
-      const color=isBig?0x00f5ff:0xff8500;
-      const visualPower=isBig?attack+4:attack; // inflate size only for big
-      renderer.spawnProjectile(sx,sy,renderer.mainBX-8,renderer.mainBY+BOARD_H*0.5,color,visualPower);
+      const sy=d.origY+d.boardH*0.3;
+      // 攻撃番号を攻撃元のボードに表示
+      if(attack>0) renderer.showOpponentAttackNumber(fromId,attack,sx,sy);
     }
   }
 });
@@ -10725,8 +10554,6 @@ class PuyoRenderer {
 
   _onPop(cells, chain, comboCount){
     const{_myBX:bx,_myBY:by,_cell:cell}=this;
-    // Store cleared cells for attack projectile launch positions
-    this._lastPopCells = cells.filter(([r])=>r>=1).map(([r,c])=>[r,c]);
     // ─ パーティクル: 膨らんで消えるぷよ ─
     for(const[r,c]of cells){
       if(r<1)continue;
@@ -11073,51 +10900,6 @@ class PuyoRenderer {
       }
     }
 
-    // プロジェクタイルアニメ
-    if(this._projectiles){
-      this._projectiles=this._projectiles.filter(p=>{
-        p.f++;
-        const t=p.f/p.frames;
-        const te=t*t*t;
-        const cx=p.sx+p.dx*te;
-        const cy=p.sy+p.dy*te;
-        p.cont.x=cx;p.cont.y=cy;
-        // Puyo wobble + fade in-out
-        const wobble=1+0.08*Math.sin(p.f*0.5);
-        p.cont.scale.set(wobble);
-        p.puyoGfx.alpha=0.4+0.3*Math.sin(p.f*0.08);
-        p.aura.alpha=0.2+0.3*(1-t);
-        p.aura.scale.set(1+(1-t)*0.5);
-        // Trail particles
-        if(p.f%3===0){
-          const tg=new PIXI.Graphics();
-          const trailAlpha=0.3*(1-t);
-          tg.beginFill(p.puyoColor,trailAlpha);
-          tg.drawCircle(0,0,p.pSize*0.25);
-          tg.endFill();
-          tg.x=cx;tg.y=cy;
-          this._particleLayer.addChild(tg);
-          this._particles.push({gfx:tg,vx:0,vy:0,life:trailAlpha*10,decay:0.15});
-        }
-        if(p.f>=p.frames){
-          const n=10;
-          for(let i=0;i<n;i++){
-            const g=new PIXI.Graphics();g.beginFill(p.puyoColor,1);
-            const sz=Math.random()*4+1;
-            g.drawCircle(0,0,sz);
-            g.endFill();
-            g.x=cx;g.y=cy;this._particleLayer.addChild(g);
-            const a=Math.random()*Math.PI*2;
-            const spd=2+Math.random()*5;
-            this._particles.push({gfx:g,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd-2,life:0.5+Math.random()*0.3,decay:0.025+Math.random()*0.015});
-          }
-          try{p.cont.destroy({children:true});}catch(e){}
-          return false;
-        }
-        return true;
-      });
-    }
-
     // 盤面沈み込み (設置/おじゃま落下時)
     if(this._sinkOffset>0.3){
       this._sinkOffset*=0.88;
@@ -11265,60 +11047,6 @@ class PuyoRenderer {
 
   _getClearRowsCenterY(cleared){
     return this._myBY+this._bH/2;
-  }
-
-  // ─── Attack projectile (puyo flying to opponent on chain clear) ───
-  onAttackProjectile(toId, attack, launchY){
-    const d=this.opPuyoData[toId];
-    if(!d||!d._cont)return;
-    const tx=d._cont.x+d._bW/2;
-    const ty=d._cont.y+d._bH/2;
-    const{_myBX:bx,_myBY:by,_cell:cell}=this;
-    // Fire from cleared puyo positions if available, else from board center
-    const cells=this._lastPopCells||[];
-    if(cells.length>0){
-      // Fire multiple small projectiles from each cell
-      const perCell=Math.ceil(attack/cells.length);
-      for(const[r,c]of cells.slice(0,Math.min(cells.length,attack*2))){
-        const sx=bx+c*cell+cell/2;
-        const sy=by+(r-1)*cell+cell/2;
-        this._spawnPuyoProjectile(sx,sy,tx,ty,0x00f5ff,Math.max(1,perCell));
-      }
-    } else {
-      const sx=bx+this._bW/2;
-      const sy=launchY!==undefined?launchY:by+this._bH/2;
-      this._spawnPuyoProjectile(sx,sy,tx,ty,0x00f5ff,attack);
-    }
-    try{SFX.attack();}catch(e){}
-  }
-
-  _spawnPuyoProjectile(sx,sy,tx,ty,color,power){
-    if(!this._projLayer){this._projLayer=new PIXI.Container();this.root.addChild(this._projLayer);}
-    const cont=new PIXI.Container();cont.x=sx;cont.y=sy;this._projLayer.addChild(cont);
-    // Semi-transparent puyo as the projectile
-    const puyoColor=power>3?0xff006e:(power>1?0xff8800:0x00f5ff);
-    const pSize=8+Math.min(power*2,14);
-    const puyoGfx=new PIXI.Graphics();
-    puyoGfx.beginFill(puyoColor,0.6);
-    puyoGfx.drawCircle(0,0,pSize);
-    puyoGfx.endFill();
-    puyoGfx.beginFill(0xffffff,0.25);
-    puyoGfx.drawCircle(-pSize*0.2,-pSize*0.2,pSize*0.4);
-    puyoGfx.endFill();
-    puyoGfx.alpha=0.7;
-    cont.addChild(puyoGfx);
-    // Glow aura
-    const aura=new PIXI.Graphics();
-    aura.beginFill(puyoColor,0.12);
-    aura.drawCircle(0,0,pSize*1.8);
-    aura.endFill();
-    aura.alpha=0.5;
-    cont.addChild(aura);
-    const dx=tx-sx,dy=ty-sy;
-    const dist=Math.sqrt(dx*dx+dy*dy);
-    const frames=Math.round(35+Math.min(dist/30,15));
-    if(!this._projectiles)this._projectiles=[];
-    this._projectiles.push({cont,puyoGfx,aura,sx,sy,tx,ty,puyoColor,frames,f:0,power,pSize,dist,dx,dy});
   }
 
   // ─── Tetris opponent effects (cross-mode) ───

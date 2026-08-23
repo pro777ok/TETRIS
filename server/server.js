@@ -6,6 +6,8 @@ const fs = require('fs');
 const { spawnSync } = require('child_process');
 const discordNotify = require('./discord-notify');
 require('dotenv').config();
+const TetrisPCFinder = require('../tetris-pc-finder.js');
+const AllSpinSearch = require('../allspin-search.js');
 
 // ── CLI flags ──────────────────────────────────────────────────────
 // Usage: npm start -- --ai          (enable training data recording)
@@ -96,7 +98,9 @@ const PIECE_TYPES = ['I','O','T','S','Z','J','L'];
 
 function seededRng(seed) {
   let s = seed >>> 0;
-  return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
+  const f = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
+  f.state = () => s;
+  return f;
 }
 class Bag {
   constructor(seed) { this.rng = seededRng(seed || Math.floor(Math.random()*1e6)); this.bag = []; }
@@ -106,10 +110,35 @@ class Bag {
     this.bag = a;
   }
   next() { if (!this.bag.length) this.fill(); return this.bag.pop(); }
+  // 現在のbag/RNG状態を変えずに次のcount枚を決定的に予測して返す
+  peek(count) {
+    const out = [];
+    let bag = this.bag.slice(); // 現在のbag残り（fill順、popで後ろから取り出される）
+    let s = this.rng.state();   // 現在のRNG内部状態をスナップショット
+    const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
+    while (out.length < count) {
+      if (!bag.length) {
+        const a = [...PIECE_TYPES];
+        for (let i = a.length-1; i > 0; i--) { const j = Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+        bag = a;
+      }
+      out.push(bag.pop());
+    }
+    return out;
+  }
 }
 
 function cloneBoard(b) { return b.map(r=>[...r]); }
 function getShape(type, rot) { return PIECE_SHAPES[type][((rot%4)+4)%4]; }
+
+function cellsAt(type, rot, row, col) {
+  const shape = getShape(type, rot);
+  const cells = [];
+  for (let r = 0; r < shape.length; r++) for (let c = 0; c < shape[r].length; c++) {
+    if (shape[r][c]) cells.push([row + r, col + c]);
+  }
+  return cells;
+}
 
 function isValid(board, type, rot, x, y) {
   const shape = getShape(type, rot);
@@ -1227,6 +1256,17 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     let b = 0;
     if (p.lines === 4) b += 3000;
 
+    // ── B2B構築: テトリス/非ミニスピンの消去はB2Bを持続・開始できる ──
+    // 連続B2Bは火力が上がるため、ボットも積極的にB2Bを組むように報酬を与える。
+    if (p.lines > 0) {
+      const isB2Bable = p.lines === 4 || (p.spin && p.spin !== 'MINI_TSPIN' && p.lines > 0);
+      if (isB2Bable) {
+        b += b2b ? 1200 : 1800; // 継続より開始のほうが強く報酬（新規B2B立上げ）
+      } else if (b2b) {
+        b -= 2500;              // B2B切れを避ける
+      }
+    }
+
     // PC達成ボーナス
     if (p.board && p.board.every(row => row.every(c => c === 0))) {
       b += 80000 + pcBonus; // PCは最優先
@@ -1369,11 +1409,14 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
 // ── BotPlayer ──────────────────────────────────────────────────────
 class BotPlayer {
-  constructor(id, name, level, roomId, bag, customCode) {
+  constructor(id, name, level, roomId, bag, customCode, botType = 'normal', botPps = null) {
     this.id = id; this.name = name; this.level = level; this.roomId = roomId;
     this.isBot = true; this.botLevel = level;
-    // Determine column count from the room if possible, otherwise default to 10
+    this.botType = botType === 'allspin' ? 'allspin' : 'normal';
     const room = rooms[roomId];
+    this.botPps = (typeof botPps === 'number' && botPps > 0) ? botPps
+      : (room && room.roomSettings && room.roomSettings.botPps) || 1.5;
+    // Determine column count from the room if possible, otherwise default to 10
     this.cols = (room && room.roomSettings && room.roomSettings.fourWideMode) ? COLS_4WIDE : COLS;
     this.board = Array.from({length:ROWS+HIDDEN},()=>Array(this.cols).fill(0));
     this.bag = bag;
@@ -1408,7 +1451,25 @@ class BotPlayer {
     this.pcCycle = 0;            // 何回目のPCサイクルか
     this.pcFailed = 0;           // 連続失敗回数（多すぎたら一時停止）
     this.lastPlacements = [];
-    
+    this._pcSeq = null;
+    this._pcSeqIndex = 0;
+    this._pcSearching = false;
+    this._pcSearchFailed = false;
+    this._pcShogiCatchUp = 0;
+    this._pcStartRow = 0;
+    this._pcSkipUntilBag = 0; // PC失敗後、このbag数まで再探索をスキップ
+    this._pcRetried = false;   // 1回リトライ済みか
+
+    // Spin search state
+    this._spinSearching = false;     // 探索中フラグ
+    this._spinSeq = null;            // 実行中の手順 [{x,y,rot,usedHold,moves},...]
+    this._spinSeqIndex = 0;          // 現在の手順インデックス
+    this._spinSearchFailed = false;  // 探索失敗フラグ
+    this._spinPhase = 0;             // 0=初回2回スピン, 1=積んでから2回スピン
+    this._spinStartRow = 0;          // spin探索盤面のゲーム内開始行
+    this._spinStackRemaining = 0;    // 探索失敗後、通常AIで積む残りミノ数
+    this._spinGiveUp = false;        // 最大リトライ到達後は永久に通常AI
+
     // Stats tracking
     this.startTime = Date.now();
     this.pieceCount = 0;
@@ -1422,20 +1483,23 @@ class BotPlayer {
     this.b2bCount = 0;
 
     this.spawnPiece();
-
-    // Cold Clear (level 6) の場合はここで即時初期化する。
-    // _thinkColdClear での遅延初期化だとキューのタイミングがズレるため。
-    this._ccBot = null;
-    this._ccPending = false;
-    this._ccInitFailed = false;
-    this._ccQueueSentCount = 0;
-    if (this.botLevel === 6) {
-      this._ccInit();
-    }
   }
 
-  get thinkDelay() { return [0, 2200, 1400, 700, 280, 80][this.level] || 400; }
+  // PPS制御: ユーザー設定のbotPpsに基づく遅延（0.5〜3.0 PPS）
+  get thinkDelay() {
+    if (this.botPps && this.botPps > 0) return 1000 / this.botPps;
+    return [0, 2200, 1400, 700, 280, 80][this.level] || 400;
+  }
   get moveStepDelay() { return [0, 120, 80, 45, 20, 8][this.level] || 40; }
+
+  // システム側で確定した「次21ミノ」キュー（currentを除く、次に実際にスポーンされる21枚）
+  // allspinスピン探索と通常AIの両方に同じキューを供給するための共通API。
+  _nextQueue21() {
+    const q = [...this.nextQueue];
+    const need = Math.max(0, 21 - q.length);
+    if (need > 0) q.push(...this.bag.peek(need));
+    return q;
+  }
 
   spawnPiece() {
     this.pieceCount++;
@@ -1587,181 +1651,11 @@ class BotPlayer {
     };
   }
 
-  // ── Cold Clear (real library) ─────────────────────────────────
-  // ── Cold Clear (real library) ────────────────────────────────────
-  // cold-clear.js (koffi FFI) による本物の Cold Clear 実装
-  // ─────────────────────────────────────────────────────────────────
-  // CC ピース番号 ↔ ゲーム内ピース文字列の対応
-  // CC: I=0 O=1 T=2 L=3 J=4 S=5 Z=6
-  static _ccPieceId(type) {
-    return { I:0, O:1, T:2, L:3, J:4, S:5, Z:6 }[type] ?? -1;
-  }
-
-  // 内部ボード（top-down, 0=cell, 非0=filled）→ CC 用 40行×10列 bool配列（bottom-up）
-  _ccBuildField() {
-    const TOTAL = ROWS + HIDDEN;
-    const field = Array.from({length:40}, () => Array(10).fill(false));
-    for (let r = 0; r < TOTAL; r++) {
-      const ccRow = TOTAL - 1 - r; // bottom-up
-      for (let c = 0; c < 10; c++) {
-        field[ccRow][c] = !!this.board[r][c];
-      }
-    }
-    return field;
-  }
-
-  // CC の expected_x/expected_y (4 cells, bottom-up) から
-  // ゲーム内の rot と x を直接逆算し、BFS合法手リストから該当配置を返す。
-  _ccMoveToBfsPlacement(ccMove, type, bfsPlacements) {
-    const xs = Array.from(ccMove.expected_x);
-    const ys = Array.from(ccMove.expected_y);
-
-    // CC の y は bottom-up (0=bottom)。ゲーム内 y は top-down。
-    const TOTAL = ROWS + HIDDEN;
-    // ゲーム内座標 (top-down)
-    const gCells = xs.map((cx, i) => ({ x: cx, y: TOTAL - 1 - ys[i] }));
-
-    // CCの4セル座標と PIECE_SHAPES の各 rot を照合して rot と x を特定する。
-    // アルゴリズム:
-    //   shape の各 rot について、セルのリストを (row, col) で列挙。
-    //   gCells の x最小値 - shape の col最小値 = piece_x
-    //   gCells の y最小値 - shape の row最小値 = piece_y (top-left corner)
-    //   その piece_x/piece_y でセルを生成して gCells と完全一致すれば rot 確定。
-
-    let targetRot = -1;
-    let targetX = -1;
-    let targetY = -1;
-
-    for (let rot = 0; rot < 4; rot++) {
-      const shape = PIECE_SHAPES[type][rot];
-      // shape のセル (srow, scol) を列挙
-      const sCells = [];
-      for (let srow = 0; srow < shape.length; srow++)
-        for (let scol = 0; scol < shape[srow].length; scol++)
-          if (shape[srow][scol]) sCells.push({ row: srow, col: scol });
-
-      if (sCells.length !== gCells.length) continue;
-
-      // piece_x = gCells.x_min - sCells.col_min
-      const gXmin = Math.min(...gCells.map(c => c.x));
-      const gYmin = Math.min(...gCells.map(c => c.y));
-      const sColMin = Math.min(...sCells.map(c => c.col));
-      const sRowMin = Math.min(...sCells.map(c => c.row));
-
-      const px = gXmin - sColMin;
-      const py = gYmin - sRowMin;
-
-      // piece (px, py, rot) のセルが gCells と完全一致するか確認
-      const genCells = sCells.map(s => ({ x: px + s.col, y: py + s.row }));
-      const match = gCells.every(gc => genCells.some(c => c.x === gc.x && c.y === gc.y));
-
-      if (match) {
-        targetRot = rot;
-        targetX = px;
-        targetY = py;
-        break;
-      }
-    }
-
-    if (targetRot === -1) {
-      // 逆算失敗: BFS全配置と照合してセル一致数最大のものを選ぶ（フォールバック）
-      console.warn(`[CC] _ccMoveToBfsPlacement: failed to decode rot for ${type}, falling back to cell-match`);
-      let bestP = null;
-      let bestMatch = -1;
-      for (const p of bfsPlacements) {
-        const shape = PIECE_SHAPES[type][p.rot];
-        const cells = [];
-        for (let row = 0; row < shape.length; row++)
-          for (let col = 0; col < shape[row].length; col++)
-            if (shape[row][col]) cells.push({ x: p.x + col, y: p.y + row });
-        let matches = 0;
-        for (const gc of gCells)
-          if (cells.some(c => c.x === gc.x && c.y === gc.y)) matches++;
-        if (matches > bestMatch) { bestMatch = matches; bestP = p; }
-        if (matches === 4) break;
-      }
-      return bestP;
-    }
-
-    // BFSリストから rot/x が一致するものを返す（y は hardDrop で決まるので無視）
-    const found = bfsPlacements.find(p => p.rot === targetRot && p.x === targetX);
-    if (found) return found;
-
-    // BFSに存在しない（到達不可能）場合: rot/x だけ一致するものを探す
-    // （BFS未到達でも hardDrop で置ける場合がある）
-    console.warn(`[CC] placement rot=${targetRot} x=${targetX} not in BFS for ${type}`);
-    return null;
-  }
-
-  // CC インスタンスの初期化（ゲーム開始時 or reset 時）
-  _ccInit() {
-    if (this._ccBot) return;
-    try {
-      const { ColdClearBot, defaultOptions, PcPriority } = require('./cold-clear');
-
-      // CC の cc_launch_async に渡す queue は「current piece から始まるピース列」。
-      // current piece が先頭、続いて nextQueue の順で渡す。
-      // (CC内部: queue[0] が現在のピース、queue[1]以降がnext)
-      const queue = [
-        this.currentPiece.type,
-        ...this.nextQueue,
-      ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
-
-      const options = defaultOptions({
-        pcloop:    PcPriority.ATTACK,
-        use_hold:  true,
-        speculate: true,
-        threads:   2,
-        min_nodes: 10_000,
-        max_nodes: 4_000_000_000,
-      });
-
-      this._ccBot = new ColdClearBot({ options, queue });
-      this._ccPending = false;
-      this._ccInitFailed = false;
-      // CCへのキュー供給済み枚数を追跡する。
-      // launch時に current(1) + nextQueue(6) = 7枚渡してある。
-      // spawnPiece()のたびに nextQueue末尾の1枚を addNextPiece で追加する。
-      // 何枚供給済みかを記録して二重送信を防ぐ。
-      this._ccQueueSentCount = queue.length;
-      console.log(`[CC] Initialized for bot ${this.name}, queue=${queue.length}`);
-    } catch(e) {
-      console.error('[CC] Failed to initialize ColdClearBot:', e.message);
-      console.error('[CC] Stack:', e.stack);
-      this._ccBot = null;
-      this._ccInitFailed = true;
-    }
-  }
-
-  // reset後にCC側のキューを現在のゲーム状態で再同期する
-  _ccReSyncQueue() {
-    if (!this._ccBot) return;
-    try {
-      // resetはフィールドのみリセットし、キューはCC内部で保持される。
-      // ただし投機が外れたケースのためにcurrent+nextを再通知する。
-      // CCはreset後も内部キューを維持するため、ここでは
-      // 「resetで失われたキュー」を補充するだけにとどめる。
-      // 安全のため: 現在のcurrent + nextQueue を全てaddNextPieceで送る
-      // (CCは重複分は無視するわけではないので、resetを使う際は
-      //  新しいBotインスタンスを作る方が確実)
-      const allPieces = [
-        this.currentPiece.type,
-        ...this.nextQueue,
-      ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
-      for (const pid of allPieces) {
-        this._ccBot.addNextPiece(pid);
-      }
-      this._ccQueueSentCount = allPieces.length;
-    } catch(e) {
-      console.error('[CC] _ccReSyncQueue failed:', e.message);
-    }
-  }
-
   // Level 5 AI に直接フォールバック（再帰を避ける）
   _fallbackAI(onDone) {
     const placement = botChoosePlacement(
       this.board, this.currentPiece.type,
-      this.nextQueue.slice(0, 5),
+      this._nextQueue21(),
       this.holdPiece,
       this.b2b, Math.max(0, this.combo),
       this.lvl, 5, this.ren, 0
@@ -1773,135 +1667,312 @@ class BotPlayer {
     }
   }
 
-  _thinkColdClear(onDone) {
-    if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
-    // CC ライブラリが使えない場合は手番をスキップ（lv5にフォールバックしない）
-    if (this._ccInitFailed) {
-      console.error('[CC] Library unavailable, skipping turn.');
-      if (onDone) onDone();
-      return;
-    }
+  _tryPCFinder(onDone) {
+    const h = this._boardHeight();
+    if (h > 4) return false;
 
-    // 初回初期化
-    if (!this._ccBot) this._ccInit();
-    if (!this._ccBot) {
-      console.error('[CC] Bot not available, skipping turn.');
-      if (onDone) onDone();
-      return;
-    }
-
-    const bot = this._ccBot;
-
-    // 手の要求（まだ発行していなければ）
-    if (!this._ccPending) {
-      const incoming = this.garbageQueue.reduce((s, g) => s + g.lines, 0);
-      try {
-        bot.requestNextMove(incoming);
-        this._ccPending = true;
-      } catch(e) {
-        console.error('[CC] requestNextMove failed:', e.message);
-        if (onDone) onDone();
-        return;
-      }
-    }
-
-    // ポーリング（最大 4000ms）
-    const startPoll = Date.now();
-    const POLL_LIMIT = 4000;
-
-    const pollLoop = () => {
-      if (!this.alive) { if (onDone) onDone(); return; }
-
-      let res;
-      try {
-        res = bot.pollNextMove();
-      } catch(e) {
-        console.error('[CC] pollNextMove error:', e.message);
-        this._ccPending = false;
-        if (onDone) onDone();
-        return;
-      }
-
-      if (res.status === 'provided') {
-        this._ccPending = false;
-        this._applyCC(res.move, onDone);
-        return;
-      }
-
-      if (res.status === 'dead') {
-        console.warn('[CC] Bot died, reinitializing...');
-        try { bot.destroy(); } catch(e) {}
-        this._ccBot = null;
-        this._ccPending = false;
-        this._ccInitFailed = false;
-        this._ccInit();
-        // 再初期化後は次の手番から使う。今の手番はスキップ。
-        if (onDone) onDone();
-        return;
-      }
-
-      // waiting
-      if (Date.now() - startPoll > POLL_LIMIT) {
-        console.warn('[CC] Poll timeout after', POLL_LIMIT, 'ms, skipping turn.');
-        this._ccPending = false;
-        if (onDone) onDone();
-        return;
-      }
-
-      setTimeout(pollLoop, 10);
-    };
-
-    pollLoop();
-  }
-
-  // CC の move を受け取り、ゲーム内配置に変換して実行する
-  _applyCC(mv, onDone) {
-    if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
-
-    const useHold = !!mv.hold;
-
-    // ── 配置するピースを特定 ──────────────────────────────────
-    let type;
-    if (useHold) {
-      if (this.holdPiece) {
-        type = this.holdPiece;
+    // 探索失敗後、7巡目（bag数7）まで再探索をスキップ
+    if (this._pcSearchFailed) {
+      if (!this._pcRetried) {
+        // 1回目の失敗 → リトライ許可
+        this._pcRetried = true;
+        this._pcSearchFailed = false;
       } else {
-        type = this.nextQueue[0];
+        // 2回目の失敗 → 7巡目までスキップ
+        this._pcSearchFailed = false;
+        this._pcSkipUntilBag = this.pcCycle + 7;
+        this._pcRetried = false;
+        return false;
       }
-    } else {
-      type = this.currentPiece.type;
+    }
+    // まだスキップ期間中
+    if (this._pcSkipUntilBag > 0 && this.pcCycle < this._pcSkipUntilBag) {
+      return false;
     }
 
-    // ── デバッグ: CCの生の出力をログ ──────────────────────────
-    const rawXs = Array.from(mv.expected_x);
-    const rawYs = Array.from(mv.expected_y);
-        //console.log(`[CC DEBUG] type=${type} hold=${useHold} raw_x=[${rawXs}] raw_y=[${rawYs}]`);
+    // PC対象: 下部4行のみ（空盤なら4行、それ以上ならh行）
+    const pcHeight = Math.max(h, 4);
+    const startRow = ROWS + HIDDEN - pcHeight;
 
-    // ── BFS合法手と照合 ──────────────────────────────────────
-    const bfsPlacements = getAllPlacementsBFS(this.board, type);
-    let placement = null;
+    // 空きセル数が4の倍数かチェック（下部pcHeight行のみ）
+    let emptyCells = 0;
+    for (let r = startRow; r < ROWS + HIDDEN; r++)
+      for (let c = 0; c < this.cols; c++)
+        if (!this.board[r][c]) emptyCells++;
+    if (emptyCells % 4 !== 0) return false;
 
-    if (bfsPlacements.length > 0) {
-      placement = this._ccMoveToBfsPlacement(mv, type, bfsPlacements);
+    // キャッシュされたソリューションがあれば手を進める
+    if (this._pcSeq && this._pcSeqIndex < this._pcSeq.length) {
+      return this._followPCSeq(onDone);
+    }
+    // ソリューション使い切り → 通常AIへ
+    if (this._pcSeq) { this._pcSeq = null; return false; }
+
+    // 探索中（非同期） → 何もしない
+    if (this._pcSearching) {
+      const room = rooms[this.roomId];
+      if (room && room.shogiMode) this._pcShogiCatchUp++;
+      return true;
     }
 
-    if (!placement) {
-      console.warn('[CC] No valid placement found for', type);
+    // ── 新規探索開始 ──
+    this._pcSearching = true;
+    this._pcStartRow = startRow;
+
+    console.log(`[PC-Finder] ${this.name}: 探索開始 h=${h}, emptyCells=${emptyCells}, startRow=${startRow}`);
+
+    const room = rooms[this.roomId];
+    if (room) {
+      io.to(this.roomId).emit('bot_pc_searching', { id: this.id, name: this.name, emptyCells });
+    }
+
+    // 下部pcHeight行の0/1盤面
+    const boardPC = [];
+    for (let r = startRow; r < ROWS + HIDDEN; r++) {
+      boardPC.push(this.board[r].map(c => c ? 1 : 0));
+    }
+
+    // キュー構築: current + next + bag残りをpeek
+    const queueSnap = [this.currentPiece.type, ...this.nextQueue.slice(0, 6)];
+    for (let i = this.bag.bag.length - 1; i >= 0; i--) queueSnap.push(this.bag.bag[i]);
+    const holdSnap = this.holdPiece;
+    const colsSnap = this.cols;
+
+    const self = this;
+    setTimeout(() => {
+      try {
+        const result = TetrisPCFinder.findPerfectClear({
+          board: boardPC, queue: queueSnap, hold: holdSnap,
+          width: colsSnap, timeLimitMs: 10000, nodeBudget: 5000000
+        });
+
+        self._pcSearching = false;
+        console.log(`[PC-Finder] ${self.name}: 探索完了 success=${result.success}, nodes=${result.nodesUsed || 0}, reason=${result.reason || 'none'}`);
+
+        if (room) {
+          io.to(self.roomId).emit('bot_pc_result', {
+            id: self.id, name: self.name,
+            success: result.success, nodesUsed: result.nodesUsed || 0,
+            reason: result.reason || null
+          });
+        }
+
+        if (result.success && result.solution.length > 0) {
+          self._pcSeq = result.solution;
+          self._pcSeqIndex = 0;
+        } else {
+          self._pcSearchFailed = true;
+        }
+      } catch (e) {
+        self._pcSearching = false;
+        self._pcSearchFailed = true;
+        console.error('[PC-Finder] Error:', e.message);
+      }
+
       if (onDone) onDone();
-      return;
-    }
 
-    this.executePlacement({ ...placement, useHold }, onDone);
+      // ショギモード: 探索完了後に自発的にthinkを再開
+      const room2 = rooms[self.roomId];
+      if (room2 && room2.shogiMode && self._pcSeq) {
+        setTimeout(() => { if (self.alive) self.think(() => {}); }, 50);
+      }
+    }, 0);
+
+    return true;
   }
 
+  _followPCSeq(onDone) {
+    const step = this._pcSeq[this._pcSeqIndex];
+    const useHold = step.usedHold || step.piece !== this.currentPiece.type;
+    const bfsPlacements = getAllPlacementsBFS(this.board, step.piece);
+    const rowOffset = this._pcStartRow; // PC finderのサブボード開始行
+
+    for (const p of bfsPlacements) {
+      const gameCells = cellsAt(step.piece, p.rot, p.y, p.x);
+      // PC finderの座標はサブボード内相対 → ゲーム座標に変換して照合
+      const match = step.cells.every(([sc, sr]) =>
+        gameCells.some(([gr, gc]) => gr === sr + rowOffset && gc === sc)
+      );
+      if (match) {
+        this._pcSeqIndex++;
+        if (this._pcSeqIndex >= this._pcSeq.length) this._pcSeq = null;
+        this.executePlacement({ ...p, useHold }, onDone);
+        return true;
+      }
+    }
+
+    // 配置見つからず → 探索無効、通常AIへ
+    this._pcSeq = null;
+    return false;
+  }
+
+  // ── Spin Search (allspin-bot) ─────────────────────────────────────
+  // 2回スピン探索→実行→再度探索。無理なら7ミノ積んでから再度探索。
+  _trySpinSearch(onDone) {
+    // 実行中シーケンスがあれば進める
+    if (this._spinSeq && this._spinSeqIndex < this._spinSeq.length) {
+      return this._followSpinSeq(onDone);
+    }
+    if (this._spinSeq) { this._spinSeq = null; }
+
+    // 探索中 → 何もしない
+    if (this._spinSearching) return true;
+
+    // 積み込み中 → 通常AIで1ミノ消費（残数減）
+    if (this._spinStackRemaining > 0 && !this._spinSearchFailed) {
+      this._spinStackRemaining--;
+      return false; // 通常AIで積む
+    }
+
+    // 探索失敗 → 7ミノ積んでから再探索（最大3回まで）
+    if (this._spinSearchFailed) {
+      this._spinSearchFailed = false;
+      if (!this._spinGiveUp && this._spinPhase <= 3) {
+        this._spinStackRemaining = 7;
+        this._spinPhase++;
+        console.log(`[SpinSearch] ${this.name}: 7ミノ積み込み→再探索 (phase=${this._spinPhase})`);
+      } else {
+        this._spinGiveUp = true;
+        console.log(`[SpinSearch] ${this.name}: 最大リトライ到達、通常AIへ`);
+      }
+      return false;
+    }
+
+    // 永久に諦めた → 通常AIへ
+    if (this._spinGiveUp) return false;
+
+    // ── 新規探索開始 ──
+    this._spinSearching = true;
+    console.log(`[SpinSearch] ${this.name}: 探索開始 phase=${this._spinPhase} (spins=2)`);
+
+    // 探索は「スタック+数行の空き」を含むウィンドウに切り詰める(下12行)
+    const boardSpin = [];
+    const SEARCH_ROWS = 12;
+    for (let r = ROWS + HIDDEN - SEARCH_ROWS; r < ROWS + HIDDEN; r++) {
+      boardSpin.push(this.board[r].map(c => c ? 1 : 0));
+    }
+    const spinStartRow = ROWS + HIDDEN - SEARCH_ROWS;
+
+    // 実キュー(current+next+bag预测)を構築する。
+    // PC探索(下記)と同じく、次に実際にスポーンされるミノ列を決定的に予測して渡すことで、
+    // プランがランダムな架空キューを参照せず、実行時に「配置見つからず」になるのを防ぐ。
+    // 通常AIと同じ「システム側で固定した次21ミノ」を使う（キュー一貫性）。
+    const queueSnap = this._nextQueue21();
+    const holdSnap = this.holdPiece;
+    const currentSnap = this.currentPiece && this.currentPiece.type;
+    const self = this;
+
+    setTimeout(() => {
+      try {
+        const beamWidth = self._spinPhase >= 2 ? 80 : 30;
+        const makeOpts = (spins) => ({
+          maxPieces: 12,
+          beamWidth,
+          hold: holdSnap,
+          limit: 10,
+          current: currentSnap,
+          next: queueSnap,
+          spins,
+          diversify: true,
+          attempts: 1,
+          timeLimitMs: 20000,
+        });
+
+        // 1. 実キュー(current+next)で2回スピンを探索(即実行可能なプラン)
+        let result = AllSpinSearch.findSpinPlan(boardSpin, makeOpts(2));
+        let foundSpins = 2;
+
+        // 2. 見つからなければ1回スピンで再試行
+        if (result.length === 0) {
+          console.log(`[SpinSearch] ${self.name}: 2回スピン見つからず、1回スピンで再探索`);
+          result = AllSpinSearch.findSpinPlan(boardSpin, makeOpts(1));
+          foundSpins = 1;
+        }
+
+        self._spinSearching = false;
+        console.log(`[SpinSearch] ${self.name}: 探索完了 ${result.length}件 (spins=${foundSpins})`);
+
+        if (result.length > 0) {
+          // 1位を実行
+          const best = result[0];
+          self._spinSeq = best.plan;
+          self._spinSeqIndex = 0;
+          self._spinStartRow = spinStartRow;
+          self._spinPhase = 0; // 成功したらリセット
+          self._spinStackRemaining = 0;
+          self._spinGiveUp = false;
+          console.log(`[SpinSearch] ${self.name}: ${best.label} (${best.piecesUsed}ミノ, start=${best.startPiece})`);
+        } else {
+          self._spinSearchFailed = true;
+          console.log(`[SpinSearch] ${self.name}: 候補なし`);
+        }
+      } catch (e) {
+        self._spinSearching = false;
+        self._spinSearchFailed = true;
+        console.error('[SpinSearch] Error:', e.message);
+      }
+      if (onDone) onDone();
+    }, 0);
+
+    return true;
+  }
+
+  _followSpinSeq(onDone) {
+    const step = this._spinSeq[this._spinSeqIndex];
+    const pieceType = step.piece;
+    const wantHold = !!step.usedHold;
+
+    // 実際にそのstepで設置されるのは、ホールドを使った場合は
+    // 「交換後/ホールド空きからのスポーン後」のミノになる。
+    // プランは実キュー(base.nextQueue + bag.peek)を元に作られているため、
+    // この「実配置ミノ」が step.piece と一致する場合のみ実行する。
+    let placedType;
+    if (wantHold) {
+      if (this.holdPiece) placedType = this.holdPiece;        // 交換後 = ホールド側
+      else placedType = this.nextQueue[0] || this.holdPiece;  // 空ホールド: 次をスポーン
+    } else {
+      placedType = this.currentPiece.type;
+    }
+
+    if (placedType !== pieceType) {
+      console.log(`[SpinSearch] ${this.name}: 実配置ミノ不一致 (plan=${pieceType}, 実際=${placedType}, hold=${this.holdPiece}, next0=${this.nextQueue[0]})`);
+      this._spinSeq = null;
+      return false;
+    }
+
+    // rot変換: allspin-search('0','R','2','L') → game(0,1,2,3)
+    const rotMap = { '0': 0, 'R': 1, '2': 2, 'L': 3 };
+    const targetRot = rotMap[step.rot] !== undefined ? rotMap[step.rot] : parseInt(step.rot) || 0;
+
+    // y座標変換: plan(0-11) → game(_spinStartRow+plan.y)
+    const targetY = step.y + (this._spinStartRow || (ROWS + HIDDEN - 12));
+
+    // BFS全配置から一致する物を探す
+    const bfsPlacements = getAllPlacementsBFS(this.board, pieceType);
+    for (const p of bfsPlacements) {
+      if (p.rot === targetRot && p.x === step.x && p.y === targetY) {
+        this._spinSeqIndex++;
+        if (this._spinSeqIndex >= this._spinSeq.length) this._spinSeq = null;
+// プランは既にスピンとして検証済み。S/Z/L/Jは wasKicked が立っていないと
+        // スピン判定にならないため、スピンするステップだけは強制的にスピン扱いにする。
+        const forceSpin = !!(step.isSpin);
+        this.executePlacement({ ...p, useHold: wantHold, wasKicked: forceSpin || !!p.wasKicked, exactY: true }, onDone);
+        return true;
+      }
+    }
+    console.log(`[SpinSearch] ${this.name}: 配置見つからず (piece=${pieceType} rot=${step.rot} x=${step.x} y=${step.y}→${targetY})`);
+    this._spinSeq = null;
+    return false;
+  }
 
   think(onDone) {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
 
-    // ── COLD CLEAR MODE ──────────────────────────────────────────
-    if (this.botLevel === 6) {
-      this._thinkColdClear(onDone);
-      return;
+    // ── ALLSPIN MODE ────────────────────────────────────────────────
+    if (this.botType === 'allspin') {
+      if (this._trySpinSearch(onDone)) return;
+      // Spin search failed → 通常AIへ（PCファインダーは使わない）
+      return this._thinkNormalAI(onDone);
     }
 
     // ── CUSTOM BOT CODE PATH (warp) ─────────────────────────────
@@ -1927,7 +1998,16 @@ class BotPlayer {
       // Fall through to normal AI if custom code fails/invalid
     }
 
-    // ── PC HUNT MODE (無効化) ────────────────────────────────────
+    // ── PC FINDER (allspin botのみ。通常AIはスキップ) ────────────────
+    if (this.botType === 'allspin' && this._tryPCFinder(onDone)) return;
+
+    // ── ショギモード: PC後のキャッチアップ ──
+    if (this._pcShogiCatchUp > 0) {
+      this._pcShogiCatchUp--;
+      // 通常AIで1手打つ（ループで自動的に続く）
+    }
+
+    // ── NORMAL AI (PC-FRIENDLY評価) ──────────────────────────────
     /*
     const pcActive = this.pcHuntMode && this.pcFailed < 12 && this.cols >= 10;
 
@@ -1981,12 +2061,16 @@ class BotPlayer {
     */
 
     // ── NORMAL AI (PC-FRIENDLY評価) ──────────────────────────────
+    this._thinkNormalAI(onDone);
+  }
+
+  _thinkNormalAI(onDone) {
     const h = this._boardHeight();
     const pcBonus = 0;
 
     let placement = botChoosePlacement(
       this.board, this.currentPiece.type,
-      this.nextQueue.slice(0, 5),
+      this._nextQueue21(),
       this.holdPiece,
       this.b2b, Math.max(0, this.combo),
       this.lvl, this.level, this.ren,
@@ -2027,8 +2111,6 @@ class BotPlayer {
         // fall-through → currentPiece.type は交換後のピース
       } else {
         // ホールドが空: 現在をホールドに退避し、next[0] をスポーン
-        // _applyCC が事前に rot/x をそのピース用に解決済みなので
-        // spawnPiece() だけして下の _animatePlacement に fall-through する
         this.holdPiece = this.currentPiece.type;
         this.holdUsed = true;
         this.spawnPiece();
@@ -2037,7 +2119,12 @@ class BotPlayer {
     }
 
     const type = this.currentPiece.type;
-    const targetY = hardDropY(this.board, type, rot, x, 0);
+    // BFSで求めた配置座標(placement.y)があればそれをそのまま使う。
+    // スピンに必要な下方向キック位置にワープしないと、上から直落下させると
+    // 高さがずれてスピン判定にならないため。(スピン手順のみ exactY=true)
+    const targetY = placement.exactY && placement.y !== undefined && placement.y !== null
+      ? placement.y
+      : hardDropY(this.board, type, rot, x, 0);
     const needsSoftDrop = placement.needsSoftDrop || false;
     const wasKicked = placement.wasKicked || false;
 
@@ -2471,30 +2558,6 @@ class BotPlayer {
         }
       }
       _garbageApplied = linesToAdd > 0;
-      // Cold Clear: ゴミで盤面が変わったのでBotをリセット。
-      // 新しいBotインスタンスを作るとフィールドが空になるため、
-      // reset APIでフィールドを更新した後、キューを再送信する。
-      if (_garbageApplied && this._ccBot && this.botLevel === 6) {
-        try {
-          this._ccBot.reset(this._ccBuildField(), this.b2b, Math.max(0, this.combo + 1));
-          // reset後はCC内部キューが不定なので current + nextQueue を再通知
-          const pieces = [
-            this.currentPiece.type,
-            ...this.nextQueue,
-          ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
-          for (const pid of pieces) {
-            try { this._ccBot.addNextPiece(pid); } catch(e) {}
-          }
-          this._ccPending = false;
-        } catch(e) {
-          console.error('[CC] reset/resync failed:', e.message);
-          // 失敗時はBotを再作成
-          try { this._ccBot.destroy(); } catch(_) {}
-          this._ccBot = null;
-          this._ccPending = false;
-          this._ccInit();
-        }
-      }
     } else if (remaining.length > 0) {
       // コンボ中は適用しなかったゴミをキューに戻す（500ms待ち）
       for (const g of remaining) {
@@ -2532,7 +2595,7 @@ class BotPlayer {
         for (const t of humanTargets) {
           const hc = Math.floor(Math.random()*this.cols);
           io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
-          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [] });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: clearedRows || [], lockX: x, lockY: y });
           // バッチコンボ解放エフェクト
           if (batchCombo && totalAttack > attack) {
             io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
@@ -2553,7 +2616,7 @@ class BotPlayer {
         for (const t of humanTargets) {
           const hc = Math.floor(Math.random()*this.cols);
           io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
-          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [] });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [], lockX: x, lockY: y });
           io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
@@ -2577,6 +2640,7 @@ class BotPlayer {
         nextPieces: this.nextQueue.slice(0,5),
         holdPiece: this.holdPiece,
         garbageLines,
+        b2bCount: this.b2bCount,
         pps: this.pps,
         apm: this.apm,
         garbageQueue: this.garbageQueue,
@@ -2585,12 +2649,6 @@ class BotPlayer {
     }
 
     this.spawnPiece();
-
-    // Cold Clear: 新しいピースをキューに通知
-    if (this._ccBot && this.botLevel === 6) {
-      const nid = BotPlayer._ccPieceId(this.nextQueue[this.nextQueue.length - 1]);
-      if (nid >= 0) { try { this._ccBot.addNextPiece(nid); } catch(e) {} }
-    }
 
     this.locking = false;
   }
@@ -2611,23 +2669,28 @@ class BotPlayer {
 
   startAutonomous(extraDelay = 0) {
     if (this.thinkTimer) return;
+    const targetInterval = this.thinkDelay; // 目標1ピースあたりの時間（ms）
     const tick = () => {
       if (!this.alive) return;
       const room = rooms[this.roomId];
       if (!room || !room.started || room.shogiMode) return;
       // Use setTimeout(0) to yield to other pending timers (other bots)
       this.thinkTimer = setTimeout(() => {
+        const t0 = Date.now();
         this.think(() => {
-          if (this.alive) this.thinkTimer = setTimeout(tick, 50);
+          if (!this.alive) return;
+          // PPS制御: think実行時間を差し引いた残り時間だけ待って次へ
+          const elapsed = Date.now() - t0;
+          const wait = Math.max(30, targetInterval - elapsed);
+          this.thinkTimer = setTimeout(tick, wait);
         });
       }, 0);
     };
-    this.thinkTimer = setTimeout(tick, extraDelay + this.thinkDelay);
+    this.thinkTimer = setTimeout(tick, extraDelay + targetInterval);
   }
 
   stop() {
     if (this.thinkTimer) { clearTimeout(this.thinkTimer); this.thinkTimer = null; }
-    if (this._ccBot) { try { this._ccBot.destroy(); } catch(e) {} this._ccBot = null; }
     this.alive = false;
   }
 }
@@ -2643,6 +2706,7 @@ function createRoom(roomId) {
     roomSettings: {
       mutationRate: 60, gravityBase: 1000, gravityDec: 80,
       gravityMin: 50, lockDelay: 1000, botLevel: 3, shogiMode: false,
+      botType: 'normal', botPps: 1.5,  // ボット種類(通常AI/allspin)・PPS設定
       recordTraining: false,  // ホストが設置データ記録を有効化できる
       soloMode: false,         // 1人でもゲーム開始できる
       fortyLineMode: false,    // 40ラインモード
@@ -2668,7 +2732,7 @@ function allPlayers(room) { return [...room.players, ...room.bots]; }
 function broadcastRoomUpdate(room, roomId) {
   room.lastActivity = Date.now();
   const allP = allPlayers(room).map(p => ({
-    id: p.id, name: p.name, isBot: !!p.isBot, botLevel: p.botLevel || null
+    id: p.id, name: p.name, isBot: !!p.isBot, botLevel: p.botLevel || null, botType: p.botType || null
   }));
   io.to(roomId).emit('room_update', {
     players: allP, host: room.host, started: room.started,
@@ -2770,7 +2834,7 @@ io.on('connection', (socket) => {
       socket.join(roomId); socket.roomId=roomId; socket.playerName=name; lastRoom[name]=roomId;
       socket.emit('spectate_joined',{
         roomId,
-        players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
+        players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
         host:room.host
       });
       return;
@@ -2781,7 +2845,7 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate(room,roomId);
   });
 
-  socket.on('add_bot', ({botLevel,botFileName,botCode}) => {
+  socket.on('add_bot', ({botLevel,botFileName,botCode,botType,botPps}) => {
     const room=getRoom(socket.roomId); if (!room) return;
     if (socket.id!==room.host) return;
     // ── 盤面拡大時はBot不可 ──────────────────────────────────────
@@ -2804,7 +2868,9 @@ io.on('connection', (socket) => {
     const usedNames=allPlayers(room).map(p=>p.name);
 
 
-    const lvl=Math.max(1,Math.min(6,parseInt(botLevel)||room.roomSettings.botLevel||3));
+    const lvl=Math.max(1,Math.min(5,parseInt(botLevel)||room.roomSettings.botLevel||3));
+    const type = botType === 'allspin' ? 'allspin' : 'normal';
+    const pps = Math.max(0.5, Math.min(3, parseFloat(botPps) || (room.roomSettings.botPps) || 1.5));
     const cbc=room.customBot||customBotCode.get(socket.roomId);
     const baseName = botFileName || (cbc ? cbc.filename : null) || 'CUSTOM';
     let fullName;
@@ -2816,9 +2882,9 @@ io.on('connection', (socket) => {
       const bname=BOT_NAMES.find(n=>!usedNames.includes('🤖'+n))||('BOT'+(room.bots.length+1));
       fullName='🤖'+bname;
     }
-    room.bots.push({id:botId,name:fullName,isBot:true,botLevel:lvl,alive:true});
+    room.bots.push({id:botId,name:fullName,isBot:true,botLevel:lvl,botType:type,botPps:pps,alive:true});
     broadcastRoomUpdate(room,socket.roomId);
-    const lvlLabel = lvl === 6 ? 'CC' : `Lv.${lvl}`;
+    const lvlLabel = type === 'allspin' ? 'ALLSPIN' : `Lv.${lvl}`;
     addChatSys(socket.roomId,`🤖 ${fullName} (${lvlLabel}) joined the room!`);
   });
 
@@ -2877,7 +2943,9 @@ io.on('connection', (socket) => {
     if (ns.gravityDec!==undefined) rs.gravityDec=Math.max(0,Math.min(200,parseInt(ns.gravityDec)||80));
     if (ns.gravityMin!==undefined) rs.gravityMin=Math.max(20,Math.min(500,parseInt(ns.gravityMin)||50));
     if (ns.lockDelay!==undefined) rs.lockDelay=Math.max(200,Math.min(3000,parseInt(ns.lockDelay)||1000));
-    if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(6,parseInt(ns.botLevel)||3));
+    if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(5,parseInt(ns.botLevel)||3));
+    if (ns.botType!==undefined) rs.botType = ns.botType === 'allspin' ? 'allspin' : 'normal';
+    if (ns.botPps!==undefined) rs.botPps=Math.max(0.5,Math.min(3,parseFloat(ns.botPps)||1.5));
     if (ns.shogiMode!==undefined) rs.shogiMode=!!ns.shogiMode;
     if (ns.recordTraining!==undefined) rs.recordTraining=!!ns.recordTraining;
     if (ns.soloMode!==undefined) rs.soloMode=!!ns.soloMode;
@@ -2962,13 +3030,13 @@ io.on('connection', (socket) => {
     const botCode = cbcRoom ? cbcRoom.code : null;
     const realBots=room.bots.map(entry=>{
       const bag=new Bag(room.bagSeed); // 人間と同じシードで同じミノ順を共有
-      const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag,botCode);
+      const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag,botCode,entry.botType||'normal',entry.botPps||room.roomSettings.botPps||1.5);
       return bot;
     });
     room.bots=realBots;
 
     io.to(socket.roomId).emit('game_start',{
-      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null})),
+      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null})),
       bagSeed:room.bagSeed,mutationMode:room.mutationMode,mutationSeed:room.mutationSeed,
       roomSettings:room.roomSettings,shogiMode:doShogi,isSolo,
       allspinMode:!!(room.roomSettings&&room.roomSettings.allspinMode),
@@ -3057,7 +3125,7 @@ io.on('connection', (socket) => {
     recordPlacement(socket.roomId, socket.id, frame);
   });
 
-  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount,ren}) => {
+  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount,ren,lockX,lockY}) => {
     const room=getRoom(socket.roomId); if (!room) return;
 
     // チーズモード: ハンド数を記録
@@ -3177,7 +3245,7 @@ io.on('connection', (socket) => {
           }
           // puyo → tetris handled via puyo_attack event below
         }
-        socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:total,clearRows:clearRows||[]});
+        socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:total,clearRows:clearRows||[],lockX,lockY});
       });
     }
   });
@@ -3283,7 +3351,7 @@ io.on('connection', (socket) => {
       socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
       socket.emit('spectate_joined',{
         roomId:rid,
-        players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
+        players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
         host:room.host
       });
       return;
@@ -3310,7 +3378,7 @@ io.on('connection', (socket) => {
     socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
     socket.emit('rejoin_result',{
       success:true,roomId:rid,
-      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null})),
+      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null})),
       host:room.host,
       mutationMode:room.mutationMode,mutationSeed:room.mutationSeed,
       roomSettings:room.roomSettings

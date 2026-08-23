@@ -1,0 +1,17 @@
+{
+  "name": "tetris-spin-solver",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test",
+    "demo": "node demo/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

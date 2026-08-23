@@ -1055,10 +1055,25 @@
           <!-- BOT SECTION -->
           <h3 style="margin-bottom:0.6rem">🤖 BOT</h3>
           <div class="hs-row">
+            <label>🧠 BOT Type</label>
+            <select id="bot-type-select" style="background:rgba(0,20,30,0.9);color:var(--neon-cyan);border:1px solid rgba(0,245,255,0.25);border-radius:6px;padding:0.2rem 0.4rem;font-size:0.8rem"
+              onchange="updateRoomSetting('botType',this.value)">
+              <option value="normal">通常AI</option>
+              <option value="allspin">ALLSPIN</option>
+            </select>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">種類</span>
+          </div>
+          <div class="hs-row">
             <label>🧠 BOT Level</label>
-            <input type="range" id="bot-level-input" min="1" max="6" step="1" value="3"
+            <input type="range" id="bot-level-input" min="1" max="5" step="1" value="3"
               oninput="document.getElementById('bot-level-val').textContent=getBotLevelLabel(+this.value);updateRoomSetting('botLevel',this.value)">
             <span class="hs-val" id="bot-level-val">STRONG</span>
+          </div>
+          <div class="hs-row">
+            <label>⚡ BOT PPS</label>
+            <input type="range" id="bot-pps-input" min="0.5" max="3" step="0.1" value="1.5"
+              oninput="document.getElementById('bot-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('botPps',this.value)">
+            <span class="hs-val" id="bot-pps-val">1.5 PPS</span>
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">

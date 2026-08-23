@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tetris Spin Solver デモ</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Tetris Spin Solver <span class="sub">— T-Spin / All-Spin 探索デモ</span></h1>
+  </header>
+
+  <main>
+    <div class="mode-tabs">
+      <button id="tabSearch" class="mode-tab active">探索モード</button>
+      <button id="tabPractice" class="mode-tab">実践モード (vs Bot)</button>
+    </div>
+
+    <div id="searchMode" class="mode-page">
+    <section class="panel board-panel">
+      <h2>盤面エディタ <small>(クリックでブロックON/OFF)</small></h2>
+      <canvas id="boardCanvas" width="300" height="600"></canvas>
+      <div class="board-tools">
+        <button id="clearBtn">全消去</button>
+        <button id="presetTsd">TSD穴プリセット</button>
+        <button id="presetFlat">床プリセット</button>
+      </div>
+    </section>
+
+    <section class="panel controls-panel">
+      <h2>ミノ設定</h2>
+
+      <div class="field">
+        <label>現在のミノ (current)</label>
+        <div id="currentPicker" class="piece-picker"></div>
+      </div>
+
+      <div class="field">
+        <label>ホールド (hold) <small>未使用なら「なし」</small></label>
+        <div id="holdPicker" class="piece-picker"></div>
+      </div>
+
+      <div class="field">
+        <label>ネクスト (next, 先頭のみ使用)</label>
+        <div id="nextPicker" class="piece-picker"></div>
+      </div>
+
+      <div class="field plan-only">
+        <label>スピン回数 (プランモード)</label>
+        <select id="spinsSelect">
+          <option value="1">1回スピン</option>
+          <option value="2">連続2回スピン</option>
+        </select>
+      </div>
+
+      <button id="solveBtn" class="solve-btn">今すぐ置けるスピンを探索</button>
+      <button id="planBtn" class="solve-btn plan-btn">
+        最大7ミノで下地を作ってスピンを探索
+      </button>
+      <p class="hint">
+        「下地を作って探索」は、今すぐはスピンできない盤面でも、ネクスト(足りない分は7-bagで自動補完)を
+        使って積み込みしながらスピン成立まで持っていく手順をビームサーチで探します。
+      </p>
+
+      <div id="status" class="status"></div>
+    </section>
+
+    <section class="panel result-panel">
+      <h2>候補一覧 <small id="resultCount"></small></h2>
+      <div id="results" class="results"></div>
+    </section>
+
+    <section class="panel preview-panel">
+      <h2>プレビュー</h2>
+      <canvas id="previewCanvas" width="300" height="600"></canvas>
+      <div id="previewInfo" class="preview-info"></div>
+    </section>
+    </div>
+
+    <div id="practiceMode" class="mode-page" style="display:none">
+      <section class="panel practice-panel">
+        <h2>実践モード: ユーザー vs Bot</h2>
+        <div class="practice-grid">
+          <div class="player-col" style="order: 1;">
+            <h3>あなた <span id="userSurge" class="surge-badge"></span></h3>
+            <canvas id="userCanvas" width="260" height="340"></canvas>
+            <div class="hud">
+              <div>次: <span id="userNext"></span> ホールド: <span id="userHold"></span></div>
+              <div>ゴミ: <span id="userGarbage">0</span> ライン: <span id="userLines">0</span></div>
+            </div>
+            <div id="userStatus" class="status"></div>
+          </div>
+          <div class="player-col" style="order: 2;">
+            <h3>Bot <span id="botSurge" class="surge-badge"></span></h3>
+            <canvas id="botCanvas" width="260" height="340"></canvas>
+            <div class="hud">
+              <div>次: <span id="botNext"></span> ホールド: <span id="botHold"></span></div>
+              <div>ゴミ: <span id="botGarbage">0</span> ライン: <span id="botLines">0</span></div>
+            </div>
+            <div id="botStatus" class="status"></div>
+          </div>
+        </div>
+
+        <div class="practice-settings">
+          <div class="field">
+            <label>DAS (ms)</label>
+            <input id="dasInput" type="number" value="140" min="0" step="10" />
+          </div>
+          <div class="field">
+            <label>ARR (ms) <small>0=一瞬で移動</small></label>
+            <input id="arrInput" type="number" value="20" min="0" step="5" />
+          </div>
+          <div class="field">
+            <label>ソフトドロップ速度 (行/秒) <small>0=一瞬で落下</small></label>
+            <input id="softInput" type="number" value="15" min="0" step="1" />
+          </div>
+        </div>
+
+        <div class="practice-buttons">
+          <button id="startGameBtn" class="solve-btn">ゲーム開始</button>
+          <button id="stopGameBtn" class="solve-btn plan-btn">停止</button>
+        </div>
+
+        <p class="hint">
+          操作: ←/→ 移動 ｜ ↑ 右回転 ｜ Z 左回転 ｜ A 180°回転 ｜ Space ハードドロップ ｜ Shift ホールド ｜ ↓ ソフトドロップ
+        </p>
+        <p class="hint">
+          ルール: スピンを連続で決めるとB2Bサージ(4以上で数字表示)。非スピンで消すと溜まったサージ分のゴミが相手へ送られる。
+          Tスピン以外のスピン(S/Z/J/L/I)は「Spin Mini」扱いでサージは増えず、B2Bは維持されます。
+        </p>
+        <p class="hint">
+          Bot: 実ネクストで2回連続スピンを探索し、終わったら再度探索。見つからなければ7ミノをきれいに積んで消費して再探索。
+          盤面が半分埋まるとB2Bを解除してゴミを削る動作に切り替えます。
+        </p>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
