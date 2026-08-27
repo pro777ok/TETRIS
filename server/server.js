@@ -85,6 +85,20 @@ const COLS = 10, ROWS = 20, HIDDEN = 7;
 // 4Wideモード時のボード幅
 const COLS_4WIDE = 4;
 
+// ── MOD helpers ────────────────────────────────────────────────────
+function applyDoubleGarbage(room, senderId, lines) {
+  if (!room || !room.playerMods) return lines;
+  if (room.playerMods[senderId] === 'doubleGarbage') return lines * 2;
+  return lines;
+}
+
+// Bad Hole MOD: 受ける側の攻撃を半減
+function adjustForTargetMod(room, targetId, lines) {
+  if (!room || !room.playerMods) return lines;
+  if (room.playerMods[targetId] === 'badhole') return Math.max(1, Math.ceil(lines / 2));
+  return lines;
+}
+
 const PIECE_SHAPES = {
   I:[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],[[0,0,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]],[[0,0,0,0],[0,0,0,0],[1,1,1,1],[0,0,0,0]],[[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]]],
   O:[[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]]],
@@ -2341,12 +2355,17 @@ class BotPlayer {
     }
 
     const spin = detectSpin(this.board, type, rot, x, y, wasKicked);
-    const isTSpin = spin === 'TSPIN';
-    const isMini = spin === 'MINI_TSPIN';
-    const isAnySpin = !!spin && spin !== 'MINI_TSPIN';
     const room = rooms[this.roomId];
+    // AllSpin MOD: MINI→TSPIN for bot
+    let effectiveSpin = spin;
+    if (spin === 'MINI_TSPIN' && room && room.playerMods && room.playerMods[this.id] === 'allspin') {
+      effectiveSpin = 'TSPIN';
+    }
+    const isTSpin = effectiveSpin === 'TSPIN';
+    const isMini = effectiveSpin === 'MINI_TSPIN';
+    const isAnySpin = !!effectiveSpin && effectiveSpin !== 'MINI_TSPIN';
     const season1 = room && room.roomSettings && room.roomSettings.season1Mode;
-    const isB2Bable = season1 ? (isTSpin || lines === 4) : (lines === 4 || (!!spin && lines > 0));
+    const isB2Bable = season1 ? (isTSpin || lines === 4) : (lines === 4 || (!!effectiveSpin && lines > 0));
     const wasB2B = this.b2b;
     const isB2B = wasB2B && isB2Bable;
 
@@ -2356,8 +2375,11 @@ class BotPlayer {
     else if (isTSpin && lines === 2) attack = 3;
     else if (isTSpin && lines === 1) attack = 2;
     else if (isMini && lines === 2) attack = 1;
-    else if (isMini && lines === 1) attack = 0;
-    else if (isAnySpin && lines >= 1) attack = lines; 
+    else if (isMini && lines === 1) attack = 1;
+    else if (isAnySpin && lines >= 1) {
+      const hasAllSpin=room&&room.playerMods&&room.playerMods[this.id]==='allspin';
+      attack=hasAllSpin?lines*2:lines;
+    }
     else if (lines === 3) attack = 3; // 強化: 3->3
     else if (lines === 2) attack = 1; 
     else if (lines === 1) attack = 0;
@@ -2511,6 +2533,7 @@ class BotPlayer {
     }
     this.garbageQueue = this.garbageQueue.filter(g => g.lines > 0);
     // 送信される攻撃は相殺後の残り
+    const botCancelledByGarbage = attack - cancelPower;
     attack = cancelPower;
 
     // すぐにせり上がるゴミ（armed）を判定
@@ -2591,18 +2614,19 @@ class BotPlayer {
           this.totalAttackSent += totalAttack;
         }
         const holes3 = this._b2bBreakHoles3 || 0;
+        const sentAttack = applyDoubleGarbage(room, this.id, totalAttack);
         const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
         for (const t of humanTargets) {
           const hc = Math.floor(Math.random()*this.cols);
-          io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
-          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: clearedRows || [], lockX: x, lockY: y });
+          io.to(t.id).emit('receive_garbage', { lines: adjustForTargetMod(room, t.id, sentAttack), fromId: this.id, holeCol: hc, holes3 });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: sentAttack, clearRows: clearedRows || [], lockX: x, lockY: y, cancelledByGarbage: botCancelledByGarbage || 0 });
           // バッチコンボ解放エフェクト
-          if (batchCombo && totalAttack > attack) {
-            io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
+          if (batchCombo && sentAttack > attack) {
+            io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: sentAttack });
           }
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-        for (const bt of botTargets) bt.queueGarbage(totalAttack, this.id, holes3);
+        for (const bt of botTargets) bt.queueGarbage(sentAttack, this.id, holes3);
       }
     } else if (room && attack === 0 && _prevRen >= 1 && this.batchComboBuffer && this.batchComboBuffer > 0) {
       // コンボ終了 (ren was >=1, now 0) but attack=0 → 蓄積分だけ送信
@@ -2612,24 +2636,25 @@ class BotPlayer {
         this.batchComboBuffer = 0;
         this.totalAttackSent += totalAttack;
         const holes3 = this._b2bBreakHoles3 || 0;
+        const sentAttack = applyDoubleGarbage(room, this.id, totalAttack);
         const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
         for (const t of humanTargets) {
           const hc = Math.floor(Math.random()*this.cols);
-          io.to(t.id).emit('receive_garbage', { lines: totalAttack, fromId: this.id, holeCol: hc, holes3 });
-          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: totalAttack, clearRows: [], lockX: x, lockY: y });
-          io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: totalAttack });
+          io.to(t.id).emit('receive_garbage', { lines: adjustForTargetMod(room, t.id, sentAttack), fromId: this.id, holeCol: hc, holes3 });
+          io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack: sentAttack, clearRows: [], lockX: x, lockY: y, cancelledByGarbage: 0 });
+          io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: sentAttack });
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-        for (const bt of botTargets) bt.queueGarbage(totalAttack, this.id, holes3);
+        for (const bt of botTargets) bt.queueGarbage(sentAttack, this.id, holes3);
       }
     }
 
     if (room) {
       // スピン・ライン消去・ロックの視覚エフェクトを通知
-      io.to(this.roomId).emit('opponent_spin', { id: this.id, spinType: spin || 'LOCK' });
+      io.to(this.roomId).emit('opponent_spin', { id: this.id, spinType: effectiveSpin || 'LOCK' });
       if (lines > 0) {
         io.to(this.roomId).emit('opponent_line_clear', {
-          id: this.id, count: lines, spinType: spin, isB2B, ren: this.ren, allClear
+          id: this.id, count: lines, spinType: effectiveSpin, isB2B, ren: this.ren, allClear
         });
       }
       const garbageLines=this.garbageQueue?this.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
@@ -2739,7 +2764,8 @@ function broadcastRoomUpdate(room, roomId) {
     mutationMode: room.mutationMode, mutationSeed: room.mutationSeed,
     roomSettings: room.roomSettings,
     hasCustomCode: !!(room.customBot||customBotCode.has(roomId)),
-    playerModes: room.playerModes||{}
+    playerModes: room.playerModes||{},
+    playerMods: room.playerMods||{}
   });
 }
 
@@ -3050,7 +3076,8 @@ io.on('connection', (socket) => {
       season1Mode:!!(room.roomSettings&&room.roomSettings.season1Mode),
       batchComboMode:!!(room.roomSettings&&room.roomSettings.batchComboMode),
       boardRows:(rs.slowMode&&rs.fourWideMode)?26:(room.roomSettings?room.roomSettings.boardRows:20),
-      playerModes:room.playerModes||{}
+      playerModes:room.playerModes||{},
+      playerMods:room.playerMods||{}
     });
 
     // 学習データ記録: AIモードが有効 かつ ホストがrecordTrainingをオンにしている場合
@@ -3086,6 +3113,14 @@ io.on('connection', (socket) => {
     room.playerModes[socket.id] = (mode === 'puyo') ? 'puyo' : 'tetris';
     // Broadcast updated modes to all in room
     io.to(socket.roomId).emit('player_modes_update', {playerModes: room.playerModes});
+  });
+
+  socket.on('set_player_mod', ({mod}) => {
+    const room = getRoom(socket.roomId); if (!room) return;
+    if (!room.playerMods) room.playerMods = {};
+    const validMods = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower'];
+    room.playerMods[socket.id] = validMods.includes(mod) ? mod : 'none';
+    io.to(socket.roomId).emit('player_mods_update', {playerMods: room.playerMods});
   });
 
   socket.on('piece_update', ({currentPiece}) => {
@@ -3125,7 +3160,7 @@ io.on('connection', (socket) => {
     recordPlacement(socket.roomId, socket.id, frame);
   });
 
-  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount,ren,lockX,lockY}) => {
+  socket.on('lines_cleared', ({attack,allClear,spinType,clearRows,totalLines,holes3,handCount,ren,lockX,lockY,cancelledByGarbage}) => {
     const room=getRoom(socket.roomId); if (!room) return;
 
     // チーズモード: ハンド数を記録
@@ -3227,25 +3262,34 @@ io.on('connection', (socket) => {
 
     const total=attack||0;
     if (total>0) {
+      const sentTotal = applyDoubleGarbage(room, socket.id, total);
       const senderMode = (room.playerModes && room.playerModes[socket.id]) || 'tetris';
       const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
       others.forEach(p=>{
         const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
+        const targetMod = (room.playerMods && room.playerMods[p.id]) || 'none';
+        let finalLines = sentTotal;
+        let targetHoles3 = holes3||0;
+        if (targetMod === 'laststand') {
+          finalLines = sentTotal * 3;
+          targetHoles3 = 0;
+        } else if (targetMod === 'badhole') {
+          // Bad Hole MOD: 受ける攻撃を半減
+          finalLines = Math.max(1, Math.ceil(sentTotal / 2));
+          targetHoles3 = 0;
+        }
         if (p.isBot && p.queueGarbage) {
-          // Bots are always tetris
-          p.queueGarbage(total,socket.id,holes3);
+          p.queueGarbage(finalLines,socket.id,targetHoles3);
         } else {
           if (senderMode === 'tetris' && targetMode === 'puyo') {
-            // Tetris → Puyo: 1 line = n ojama
             const mult = room.roomSettings.garbageMultiplier || 2;
-            const ojama = Math.floor(total * mult);
+            const ojama = Math.floor(finalLines * mult);
             if (ojama > 0) io.to(p.id).emit('receive_puyo_ojama', {ojama, fromId: socket.id});
           } else if (senderMode === 'tetris' && targetMode === 'tetris') {
-            io.to(p.id).emit('receive_garbage', {lines: total, fromId: socket.id, holes3: holes3||0});
+            io.to(p.id).emit('receive_garbage', {lines: finalLines, fromId: socket.id, holes3: targetHoles3, targetMod});
           }
-          // puyo → tetris handled via puyo_attack event below
         }
-        socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:total,clearRows:clearRows||[],lockX,lockY});
+        socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:sentTotal,clearRows:clearRows||[],lockX,lockY,cancelledByGarbage:cancelledByGarbage||0});
       });
     }
   });
@@ -3258,27 +3302,47 @@ io.on('connection', (socket) => {
     const buf = room.batchComboBuffers[socket.id] || 0;
     if (buf <= 0) return;
     room.batchComboBuffers[socket.id] = 0;
+    const sentBuf = applyDoubleGarbage(room, socket.id, buf);
     const senderMode = (room.playerModes && room.playerModes[socket.id]) || 'tetris';
     const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
     others.forEach(p=>{
       const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
       if (p.isBot && p.queueGarbage) {
-        p.queueGarbage(buf, socket.id, 0);
+        p.queueGarbage(sentBuf, socket.id, 0);
       } else {
         if (senderMode === 'tetris' && targetMode === 'puyo') {
           const mult = room.roomSettings.garbageMultiplier || 2;
-          const ojama = Math.floor(buf * mult);
+          const ojama = Math.floor(sentBuf * mult);
           if (ojama > 0) io.to(p.id).emit('receive_puyo_ojama', {ojama, fromId: socket.id});
         } else if (senderMode === 'tetris' && targetMode === 'tetris') {
-          io.to(p.id).emit('receive_garbage', {lines: buf, fromId: socket.id, holes3: 0});
+          io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, sentBuf), fromId: socket.id, holes3: 0});
         }
       }
-      io.to(p.id).emit('batch_combo_flush', { fromId: socket.id, total: buf });
-      socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:buf,clearRows:[]});
+      io.to(p.id).emit('batch_combo_flush', { fromId: socket.id, total: sentBuf });
+      socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:sentBuf,clearRows:[]});
     });
   });
 
   socket.on('spin_effect', ({spinType}) => { socket.to(socket.roomId).emit('opponent_spin',{id:socket.id,spinType}); });
+
+  // Warlock MOD: spin without line clear → send 2 lines to opponents
+  socket.on('warlock_spin', () => {
+    const room=getRoom(socket.roomId); if (!room || !room.started) return;
+    const myMod = room.playerMods && room.playerMods[socket.id];
+    if (myMod !== 'warlock') return;
+    const sentAttack = 2;
+    const senderMode = (room.playerModes && room.playerModes[socket.id]) || 'tetris';
+    const others = allPlayers(room).filter(p => p.id !== socket.id && p.alive);
+    others.forEach(p => {
+      const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
+      if (p.isBot && p.queueGarbage) {
+        p.queueGarbage(sentAttack, socket.id, 0);
+      } else if (senderMode === 'tetris' && targetMode === 'tetris') {
+        io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, sentAttack), fromId: socket.id, holes3: 0});
+      }
+      socket.emit('attack_sent', {fromId:socket.id, toId:p.id, attack:sentAttack, clearRows:[], lockX:0, lockY:0, cancelledByGarbage:0});
+    });
+  });
 
   // Puyo → others: ojama_count sent by puyo client after chain
   socket.on('puyo_attack', ({ojama}) => {
@@ -3286,6 +3350,7 @@ io.on('connection', (socket) => {
     const total = Math.floor(ojama)||0;
     console.log(`[PUYO ATK] from=${socket.playerName||socket.id} total=${total} playerModes=${JSON.stringify(room.playerModes)}`);
     if (total <= 0) return;
+    const sentTotal = applyDoubleGarbage(room, socket.id, total);
     const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
     console.log(`[PUYO ATK] targets=${others.map(p=>p.name+'('+p.id.substring(0,6)+',bot='+!!p.isBot+',alive='+p.alive+')').join(', ')}`);
     others.forEach(p=>{
@@ -3293,19 +3358,19 @@ io.on('connection', (socket) => {
       console.log(`[PUYO ATK] -> target=${p.name} mode=${targetMode} isBot=${!!p.isBot}`);
       if (p.isBot && p.queueGarbage) {
         const mult = room.roomSettings.garbageMultiplier || 2;
-        const lines = Math.floor(total / mult);
+        const lines = Math.floor(sentTotal / mult);
         console.log(`[PUYO ATK] -> bot: mult=${mult} lines=${lines}`);
         if (lines > 0) p.queueGarbage(lines, socket.id);
       } else if (targetMode === 'tetris') {
         const mult = room.roomSettings.garbageMultiplier || 2;
-        const lines = Math.floor(total / mult);
+        const lines = Math.floor(sentTotal / mult);
         console.log(`[PUYO ATK] -> tetris target: mult=${mult} lines=${lines} emitLines=${lines>0}`);
-        if (lines > 0) io.to(p.id).emit('receive_garbage', {lines, fromId: socket.id});
+        if (lines > 0) io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, lines), fromId: socket.id});
       } else {
-        console.log(`[PUYO ATK] -> puyo target: emitOjama=${total}`);
-        io.to(p.id).emit('receive_puyo_ojama', {ojama: total, fromId: socket.id});
+        console.log(`[PUYO ATK] -> puyo target: emitOjama=${sentTotal}`);
+        io.to(p.id).emit('receive_puyo_ojama', {ojama: sentTotal, fromId: socket.id});
       }
-      socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:total,clearRows:[]});
+      socket.emit('attack_sent',{fromId:socket.id,toId:p.id,attack:sentTotal,clearRows:[]});
     });
   });
 
@@ -3406,13 +3471,14 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host||!room.started) return;
     const sender=room.players.find(p=>p.id===socket.id)||room.bots.find(b=>b.id===socket.id);
     if(sender) sender.totalGarbageSent = (sender.totalGarbageSent||0) + 20;
+    const sent20 = applyDoubleGarbage(room, socket.id, 20);
     const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
     const hc=Math.floor(Math.random()*10);
     others.forEach(p=>{
       if(p.isBot && p.queueGarbage){
-        p.queueGarbage(20, socket.id);
+        p.queueGarbage(sent20, socket.id);
       } else {
-        io.to(p.id).emit('receive_garbage',{lines:20,fromId:socket.id,holeCol:hc});
+        io.to(p.id).emit('receive_garbage',{lines:adjustForTargetMod(room, p.id, sent20),fromId:socket.id,holeCol:hc});
       }
     });
     addChatSys(socket.roomId,`💣 Admin sent 20 lines to everyone!`);

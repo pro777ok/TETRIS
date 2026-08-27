@@ -1284,6 +1284,24 @@
         <div id="mode-select-status" style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin-top:0.4rem;text-align:center">Tetris selected</div>
       </div>
 
+      <!-- MOD SELECTION (per-player) -->
+      <div id="mod-select-wrap" style="margin:0.5rem 0;background:rgba(0,0,0,0.3);border-radius:8px;padding:0.6rem 0.8rem;border:1px solid rgba(0,245,255,0.2)">
+        <div style="font-family:'Orbitron',sans-serif;font-size:0.7rem;color:rgba(0,245,255,0.8);letter-spacing:0.15em;margin-bottom:0.4rem">⚙ YOUR MOD</div>
+        <div style="display:flex;align-items:center;gap:0.5rem">
+          <select id="mod-select" style="flex:1;background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.3);border-radius:6px;padding:0.3rem 0.5rem;font-size:0.75rem;font-family:'Share Tech Mono',monospace"
+            onchange="setPlayerMod(this.value)">
+            <option value="none">なし</option>
+            <option value="doubleGarbage">ダブルガベージ</option>
+            <option value="allspin">オールスピン</option>
+            <option value="warlock">ウォーロック</option>
+            <option value="laststand">ラストスタンド</option>
+            <option value="badhole">バッドホール</option>
+            <option value="tower">タワー</option>
+          </select>
+        </div>
+        <div id="mod-select-desc" style="font-size:0.6rem;color:rgba(255,255,255,0.35);margin-top:0.3rem"></div>
+      </div>
+
       <button class="btn btn-primary" id="start-btn" onclick="startGame()" style="display:none">START GAME</button>
       <button class="btn" id="force-end-waiting-btn" onclick="forceEndGame()" style="display:none;margin-top:0.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;width:100%;">⏹ FORCE END GAME</button>
       <button class="btn btn-secondary" onclick="leaveRoom()" style="margin-top:0.5rem">LEAVE ROOM</button>
