@@ -3118,7 +3118,7 @@ io.on('connection', (socket) => {
   socket.on('set_player_mod', ({mod}) => {
     const room = getRoom(socket.roomId); if (!room) return;
     if (!room.playerMods) room.playerMods = {};
-    const validMods = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower'];
+    const validMods = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock'];
     room.playerMods[socket.id] = validMods.includes(mod) ? mod : 'none';
     io.to(socket.roomId).emit('player_mods_update', {playerMods: room.playerMods});
   });
