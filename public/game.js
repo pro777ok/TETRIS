@@ -798,7 +798,8 @@ const MOD_DESCRIPTIONS = {
   badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
   tower: '階層Lv(0~4): 永久ゴミ段数 Lv0→4,Lv1→3,Lv2→2,Lv3→3,Lv4→1、常に最下段。受けるゴミ量×(Lv+5)/10。1ブロック-0.2、送信ライン/2で上昇。減少時は不要分が穴空きゴミに',
   helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。7バッグ崩壊で偏りミノ(毎ゲームランダムに決まる)が連続で出る',
-  rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信'
+  rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
+  rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)'
 };
 
 function setPlayerMod(mod) {
@@ -1144,8 +1145,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -1465,12 +1466,14 @@ class TetrisGame{
     this._towerTarget = 0.0;     // HUD目標値
     this._towerAnim = false;     // アニメーション中フラグ
     this._towerPermanent = 0;    // 最下段の消えない永久ゴミ行数
+    this._towerDecayTimer = null; // 時間経過減少用setInterval
     this._towerEl = null;        // HUD要素
     this._towerHUDT = null;
     this._lsRiseQueue = null;     // Last Stand: せり上がり中の未適用ゴミ行（消した分を相殺するため）
     this._helmetHoleBase = undefined; // Helmet: 直列ゴミの穴ベース列（次キューごとに±1ずつ蛇行）
     // 注意: _helmetBiased は constructor冒頭で決定済み（ここで上書きしない）
     this._helmetStreak = 0;           // Helmet: 偏りミノの連続残り（冒頭で0初期化済み）
+    this._reboundHoleCol = undefined; // Rebound: 自分に返るゴミの穴位置（前回を引き継ぐ）
     this._badholeIdleSince = performance.now();
 
     this.spawnPiece();
@@ -1841,12 +1844,7 @@ class TetrisGame{
     // 相殺後に残ったゴミを適用（コンボ中はclearLines内の相殺でキャンセルされる）
     if (this.alive) this._applyReadyGarbage();
 
-    // ── Tower MOD: 1ブロック配置で階層 -0.2（0~4の範囲） ──
-    if((playerMods[socket.id]||'none')==='tower'){
-      this._towerLevel=Math.min(4,Math.max(0,this._towerLevel-0.2));
-      this._updateTowerPermanent();
-      this._updateTowerHUD(-0.2);
-    }
+    // ── Tower MOD: 階層の減少は時間経過で行う（_initTowerのsetInterval参照） ──
     // Bad Hole MOD: アクティビティ更新（放置タイマーリセット）
     this._badholeIdleSince=performance.now();
 
@@ -2009,13 +2007,15 @@ class TetrisGame{
           else break;
         }
         if(rockRows>0){
+          // 消費(除去)する青ライン数 = floor(攻撃値/2)+1（上限は現在の青ライン数）
           const consume=Math.floor(attack/2)+1;
           const remove=Math.min(consume,rockRows);
           this._removeRockGarbage(remove);
-          if(rockRows-remove>0){
-            attack=0; // シールドが残る→攻撃は吸収される
-          }
-          // 全消去なら attack をそのまま(本来の攻撃値)送信
+          // 消した青ライン数だけ相手に攻撃を送る
+          attack = remove;
+        } else {
+          // 青ラインがない場合は攻撃なし
+          attack = 0;
         }
       }
 
@@ -2099,6 +2099,24 @@ class TetrisGame{
       if(myMod==='tower' && attack>0){
         const towerFactor=(this._towerLevel+5)/10;
         attack=Math.max(0,Math.round(attack*towerFactor));
+      }
+
+      // ── Rebound MOD: 送った攻撃の半分を即座に自分の盤面下にゴミとして出す ──
+      if(myMod==='rebound' && attack>0){
+        const reb=Math.floor(attack/2);
+        if(reb>0){
+          const cols=getGameCols();
+          for(let i=0;i<reb;i++){
+            const hc=(this._reboundHoleCol!==undefined)?this._reboundHoleCol:Math.floor(Math.random()*cols);
+            this._reboundHoleCol=hc;
+            const row=Array(cols).fill('G');
+            row[hc]=0;
+            this._pushRow(row);
+            this.board.shift();
+            this.totalGarbageReceived++;
+            if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
+          }
+        }
       }
 
       // ゴミはロック時に適用（遅延適用）
@@ -2579,10 +2597,19 @@ class TetrisGame{
 
   _initTower(){
     if(this._towerEl){try{this._towerEl.remove();}catch(e){} this._towerEl=null;}
+    if(this._towerDecayTimer){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;}
     this._towerLevel=0.0;this._towerPermanent=0;
     this._towerDisplay=0.0;this._towerTarget=0.0;this._towerAnim=false;
     this._updateTowerPermanent();
     this._updateTowerHUD(0);
+    // ── Tower MOD: 0.1秒ごとに階層 -0.01（時間経過でゴミが増える） ──
+    this._towerDecayTimer=setInterval(()=>{
+      if(!this.alive){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
+      if((playerMods[socket.id]||'none')!=='tower'){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
+      this._towerLevel=Math.max(0,Math.min(4,this._towerLevel-0.01));
+      this._updateTowerPermanent();
+      this._updateTowerHUD(-0.01);
+    },100);
   }
 
   _towerTargetRows(){
@@ -5336,6 +5363,23 @@ class GameRenderer{
     const pulse=0.5+0.5*Math.sin(now*0.003);
     const durableColors1=[0xcc2266,0xbb2277,0xaa2288,0x992299,0x8822aa,0x772299,0x6633aa,0x5544bb,0x4433cc,0x3322dd];
     const durableColors2=[0xaa2288,0x992299,0x8822aa,0x772299,0xcc2266,0xbb2277,0x5544bb,0x4455cc,0x3344dd,0x2233ee];
+    // リバウンドMOD時のみ、一番上のゴミ段より下のゴミを段階的に透明にする
+    let _topGarbageRow=-1;
+    for(let r=0;r<ROWS+HIDDEN;r++){
+      const rr=this.gs.board[r];
+      if(rr&&rr.some(c=>c==='G'||c==='R')){_topGarbageRow=r;break;}
+    }
+    const _gbRebound=(playerMods[socket.id]||'none')==='rebound';
+    const garbAlpha=(rr)=>{
+      if(!_gbRebound) return 1;
+      if(_topGarbageRow<0) return 1;
+      const d=rr-_topGarbageRow;
+      if(d<=0) return 1;
+      if(d===1) return 0.75;
+      if(d===2) return 0.5;
+      if(d===3) return 0.25;
+      return 0;
+    };
     for(let r=0;r<ROWS+HIDDEN;r++){
       const row=this.gs.board[r];
       const isGarbageRow=row&&row.some(c=>c==='G'||c==='R');
@@ -5359,6 +5403,8 @@ class GameRenderer{
           g.beginFill(0xffffff,0.35);g.drawRect(c*CELL+1,dy+1,sz-1,3);g.drawRect(c*CELL+1,dy+1,3,sz-1);g.endFill();
           g.beginFill(0x000000,0.4);g.drawRect(c*CELL+1,dy+sz-2,sz-1,2);g.drawRect(c*CELL+sz-2,dy+1,2,sz-1);g.endFill();
           if(settings.quality!=='low'&&settings.quality!=='minimum'){g.lineStyle(1,col,0.45);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.lineStyle(0);}
+        } else if(v==='G'){
+          this.drawCell(g,c*CELL,dy,CELL,'G',garbAlpha(r));
         } else if(v==='R'){
           // Rock MOD: 藍(上)→紺(下) グラデーション
           const t=Math.max(0,Math.min(1,(r-HIDDEN)/(ROWS-1)));
@@ -5367,11 +5413,12 @@ class GameRenderer{
           const gg=Math.floor(((topC>>8)&0xff)+(((botC>>8)&0xff)-((topC>>8)&0xff))*t);
           const bb=Math.floor((topC&0xff)+((botC&0xff)-(topC&0xff))*t);
           const col=(rr<<16)|(gg<<8)|bb;
+          const ga=garbAlpha(r);
           const sz=CELL-1;
-          g.beginFill(col,1);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.endFill();
-          g.beginFill(0xffffff,0.35);g.drawRect(c*CELL+1,dy+1,sz-1,3);g.drawRect(c*CELL+1,dy+1,3,sz-1);g.endFill();
-          g.beginFill(0x000000,0.4);g.drawRect(c*CELL+1,dy+sz-2,sz-1,2);g.drawRect(c*CELL+sz-2,dy+1,2,sz-1);g.endFill();
-          if(settings.quality!=='low'&&settings.quality!=='minimum'){g.lineStyle(1,col,0.45);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.lineStyle(0);}
+          g.beginFill(col,ga);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.endFill();
+          g.beginFill(0xffffff,0.35*ga);g.drawRect(c*CELL+1,dy+1,sz-1,3);g.drawRect(c*CELL+1,dy+1,3,sz-1);g.endFill();
+          g.beginFill(0x000000,0.4*ga);g.drawRect(c*CELL+1,dy+1,sz-1,2);g.drawRect(c*CELL+sz-2,dy+1,2,sz-1);g.endFill();
+          if(settings.quality!=='low'&&settings.quality!=='minimum'){g.lineStyle(1,col,0.45*ga);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.lineStyle(0);}
         } else {
           this.drawCell(g,c*CELL,dy,CELL,v,1);
         }
@@ -8688,6 +8735,23 @@ class SpectatorRenderer{
       for(let r=1;r<ROWS;r++){bg.moveTo(0,r*cell);bg.lineTo(d.bw,r*cell);}
     }
 
+    // リバウンドMOD時のみ、一番上のゴミ段より下のゴミを段階的に透明にする
+    let _topGarbageRow=-1;
+    for(let r=HIDDEN_ROWS;r<ROWS+HIDDEN_ROWS;r++){
+      const rr=d.board[r];
+      if(rr&&rr.some(c=>c==='G'||c==='R')){_topGarbageRow=r;break;}
+    }
+    const _gbRebound=(playerMods[pid]||'none')==='rebound';
+    const garbAlpha=(rr)=>{
+      if(!_gbRebound) return 1;
+      if(_topGarbageRow<0) return 1;
+      const dep=rr-_topGarbageRow;
+      if(dep<=0) return 1;
+      if(dep===1) return 0.75;
+      if(dep===2) return 0.5;
+      if(dep===3) return 0.25;
+      return 0;
+    };
     for(let r=HIDDEN_ROWS;r<ROWS+HIDDEN_ROWS;r++){
       const row=d.board[r];
       const isGarbageRow=row&&row.some(c=>c==='G'||c==='R');
@@ -8723,8 +8787,9 @@ class SpectatorRenderer{
           color=(rr<<16)|(gg<<8)|bb;
         } else { color=PIECE_COLORS[v]||0x334455; }
         const dy=(r-HIDDEN_ROWS)*cell,dx=c*cell,s=cell-1;
-        g.beginFill(color,1);g.drawRect(dx+1,dy+1,s-1,s-1);g.endFill();
-        g.beginFill(0xffffff,0.3);g.drawRect(dx+1,dy+1,s-1,2);g.drawRect(dx+1,dy+1,2,s-1);g.endFill();
+        const _ga=((v==='G'||v==='R')?garbAlpha(r):1);
+        g.beginFill(color,_ga);g.drawRect(dx+1,dy+1,s-1,s-1);g.endFill();
+        g.beginFill(0xffffff,0.3*_ga);g.drawRect(dx+1,dy+1,s-1,2);g.drawRect(dx+1,dy+1,2,s-1);g.endFill();
       }
     }
     // ゴースト（ハードドロップ予測位置）
