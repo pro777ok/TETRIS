@@ -794,12 +794,13 @@ const MOD_DESCRIPTIONS = {
   doubleGarbage: '攻撃が2倍になる（送るゴミ×2）',
   allspin: 'MINI→TSPIN + 連続同種消除で耐久ゴミ出現',
   warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミ穴がバラバラ',
-  laststand: '受けるゴミ2倍・全行同じ穴・出現3秒遅延(0.2秒ごとに1段ずつ)・次のゴミ位置を矢印表示',
+  laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
   badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
   tower: '階層Lv(0~4): 永久ゴミ段数 Lv0→4,Lv1→3,Lv2→2,Lv3→3,Lv4→1、常に最下段。受けるゴミ量×(Lv+5)/10。1ブロック-0.2、送信ライン/2で上昇。減少時は不要分が穴空きゴミに',
-  helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。7バッグ崩壊で偏りミノ(毎ゲームランダムに決まる)が連続で出る',
+  helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。完全ランダムだが各ミノに30%の確率で1〜3回連続して出る',
   rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
-  rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)'
+  rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
+  expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現'
 };
 
 function setPlayerMod(mod) {
@@ -1145,8 +1146,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -1424,9 +1425,8 @@ class TetrisGame{
     this.board=Array.from({length:ROWS+HIDDEN},()=>Array(getGameCols()).fill(0));
     this.bag=new Bag(bagSeed);this.nextQueue=[];
     // Helmet MOD: 偏りミノを毎ゲームランダムに決定（nextQueue生成前に確定させる）
-    this._helmetBiased=(playerMods[socket.id]||'none')==='helmet'?PIECE_TYPES[Math.floor(Math.random()*PIECE_TYPES.length)]:null;
+    this._helmetLastType=null;  // Helmet: 直前のミノ種別（連続判定用）
     this._helmetStreak=0;
-    this._helmetOtherBag=[];
     // Fill nextQueue with pre-computed {type, customShape} entries
     for(let i=0;i<6;i++)this.nextQueue.push(this._makeNextEntry(this._nextType()));
     this.holdPiece=null;this.holdCustomShape=null;this.holdUsed=false;
@@ -1470,10 +1470,17 @@ class TetrisGame{
     this._towerEl = null;        // HUD要素
     this._towerHUDT = null;
     this._lsRiseQueue = null;     // Last Stand: せり上がり中の未適用ゴミ行（消した分を相殺するため）
+    this._lsAccWinStart=null;     // Last Stand: 10秒蓄積窓の開始時刻(未開始ならnull)
+    this._lsAccLines=0;           // Last Stand: 現在の窓に溜まったライン数(2倍後)
+    this._lsAccTimer=null;        // Last Stand: 7秒判定/投入開始のsetTimeout
+    this._lsFromId=null;          // Last Stand: 窓開始時の送信元
+    this._lsMarkCount=0;          // Last Stand: 拡張マーク数(0=対象外/1/2)
+    this._lsFlushAt=0;            // Last Stand: キュー投入開始時刻
     this._helmetHoleBase = undefined; // Helmet: 直列ゴミの穴ベース列（次キューごとに±1ずつ蛇行）
     // 注意: _helmetBiased は constructor冒頭で決定済み（ここで上書きしない）
     this._helmetStreak = 0;           // Helmet: 偏りミノの連続残り（冒頭で0初期化済み）
     this._reboundHoleCol = undefined; // Rebound: 自分に返るゴミの穴位置（前回を引き継ぐ）
+    this._expertStored = 0;         // Expert: 相殺で半分カウントされたゴミ行数
     this._badholeIdleSince = performance.now();
 
     this.spawnPiece();
@@ -1490,7 +1497,7 @@ class TetrisGame{
       }
     }
     if((playerMods[socket.id]||'none')==='helmet'){
-      // Helmet: 偏りミノは既に決定済み（nextQueue生成前）。ストreakをリセット。
+      // Helmet: ストreakをリセット。
       this._helmetStreak = 0;
     }
   }
@@ -1508,22 +1515,18 @@ class TetrisGame{
     return this.bag.next();
   }
 
-  // Helmet: 7バッグを崩し、毎ゲームランダムに決まる1種のミノが連続で固まって出る
+  // Helmet: 完全ランダムな7バッグ。各ミノに30%の確率で1~3回連続して出る
   _helmetNextType(){
-    if(this._helmetStreak>0){ this._helmetStreak--; return this._helmetBiased; }
-    // 一定確率で偏りミノの固まり（1~3連続）を開始
-    if(Math.random()<0.2){
+    if(this._helmetStreak>0){ this._helmetStreak--; return this._helmetLastType; }
+    // 通常の7バッグから次を取得
+    const type=this.bag.next();
+    this._helmetLastType=type;
+    // 30%の確率で1~3回連続して同じミノを出す
+    if(Math.random()<0.3){
       this._helmetStreak = 1 + Math.floor(Math.random()*3); // 1~3連続
       this._helmetStreak--; // 今回の1個分
-      return this._helmetBiased;
     }
-    // それ以外は偏り以外の6種をバッグでバランス良く出す
-    if(!this._helmetOtherBag || this._helmetOtherBag.length===0){
-      const others=PIECE_TYPES.filter(t=>t!==this._helmetBiased);
-      for(let i=others.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[others[i],others[j]]=[others[j],others[i]];}
-      this._helmetOtherBag=others;
-    }
-    return this._helmetOtherBag.pop();
+    return type;
   }
 
   spawnPiece(){
@@ -2086,6 +2089,10 @@ class TetrisGame{
       this.garbageQueue=this.garbageQueue.filter(g=>g.lines>0);
       // 相殺に使われたライン数
       const cancelledByGarbage = attack - cancelPower;
+      // ── Expert MOD: 相殺した半分を蓄積（次にゴミが出現する時に一緒に出す） ──
+      if(myMod==='expert' && cancelledByGarbage>0){
+        this._expertStored += Math.floor(cancelledByGarbage/2);
+      }
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
@@ -2353,7 +2360,7 @@ class TetrisGame{
         const canAdd = Math.min(g.lines, cap - linesToAdd);
         if (canAdd > 0) remainingToBoard.push({...g, lines: canAdd});
         if (canAdd < g.lines) {
-          backToQueue.push({lines: g.lines - canAdd, fromId: g.fromId, readyAt: now + 500, holeCol: g.holeCol});
+          backToQueue.push({...g, lines: g.lines - canAdd, readyAt: now + 500});
         }
         linesToAdd += canAdd;
       }
@@ -2438,6 +2445,8 @@ class TetrisGame{
     if(armed.length===0)return;
     // コンボ中はゴミを適用しない（次のロックまで待つ）
     if(this.ren>=1&&!puyotetMode)return;
+    // Last Stand: せり上がり中は次のゴミを出現させない（終わるまで待つ）
+    if(this._lsRiseQueue&&this._lsRiseQueue.length>0)return;
     this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
     const cap=(slowMode&&!puyotetMode)?1:(puyotetMode?8:10);
     let linesToAdd=0;
@@ -2506,9 +2515,22 @@ class TetrisGame{
           this._lastGarbageHoleCol=holeCol;
         }
       }
-      if(canAdd<g.lines)backToQueue.push({lines:g.lines-canAdd,fromId:g.fromId,readyAt:now+500,holeCol:g.holeCol,holes3:g.holes3});
+      if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+500});
     }
     for(const g of backToQueue)this.garbageQueue.unshift(g);
+    // ── Expert MOD: 蓄積ゴミを通常ゴミと一緒に即座に盤面に出現（直列穴） ──
+    if(this._expertStored>0 && linesToAdd>0){
+      const eHole=Math.floor(Math.random()*getGameCols());
+      for(let i=0;i<this._expertStored;i++){
+        const row=Array(getGameCols()).fill('G');
+        row[eHole]=0;
+        this._pushRow(row);this.board.shift();
+        this.totalGarbageReceived++;
+        if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
+        linesToAdd++;
+      }
+      this._expertStored=0;
+    }
     if(linesToAdd>0){
       this.cancelLock();
       SFX.garbage();
@@ -2574,6 +2596,50 @@ class TetrisGame{
     const removed=Math.min(n,this._lsRiseQueue.length);
     this._lsRiseQueue.splice(0,removed);
     return removed;
+  }
+
+  // Last Stand: 7秒時点の蓄積ライン数で拡張モード(マーク数・投入タイミング)を決定
+  _evalLastStandTier(){
+    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;return;}
+    const n=this._lsAccLines;
+    // 投入開始 = 7秒時点から+3秒(10秒)。20ライン以上は+4秒(11秒)
+    let delay=3000;
+    this._lsMarkCount=0;
+    if(n>=20){this._lsMarkCount=2;delay=4000;}
+    else if(n>=10){this._lsMarkCount=1;}
+    this._lsFlushAt=this._lsAccWinStart+7000+delay;
+    const wait=Math.max(0,this._lsFlushAt-performance.now());
+    this._lsAccTimer=setTimeout(()=>this._flushLastStandWindow(),wait);
+  }
+
+  // Last Stand: 溜めたラインをキューへ投入する。
+  // 拡張時は 4+4+余り に再構成し0.2秒間隔で、通常時は送られたまま一括投入。
+  _flushLastStandWindow(){
+    if(this._lsAccTimer){clearTimeout(this._lsAccTimer);this._lsAccTimer=null;}
+    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;this._lsFlushAt=0;return;}
+    const n=this._lsAccLines;
+    if(n>0){
+      if(this._lsMarkCount>=1){
+        // 拡張: 4+4+余り に再構成して0.2秒間隔で投入
+        const sizes=[4,4,Math.max(0,n-8)];
+        let t=0;
+        for(const s of sizes){
+          if(s<=0)continue;
+          const holeCol=Math.floor(Math.random()*getGameCols());
+          this.garbageQueue.push({lines:s,fromId:this._lsFromId||'laststand',readyAt:performance.now()+2000+t,holeCol,holes3:0,laststandConsecutive:true});
+          t+=200;
+        }
+      }else{
+        // 通常: 送られたまま(ランダムな穴)一括投入(2秒後から出現準備完了)
+        const holeCol=Math.floor(Math.random()*getGameCols());
+        this.garbageQueue.push({lines:n,fromId:this._lsFromId||'laststand',readyAt:performance.now()+2000,holeCol,holes3:0,laststandConsecutive:true});
+      }
+    }
+    this._lsAccLines=0;
+    this._lsAccWinStart=null;
+    this._lsFromId=null;
+    this._lsMarkCount=0;
+    this._lsFlushAt=0;
   }
 
   // Rock MOD: 底から n 段の穴なしゴミ(R)行を除去（盤面長を保つ）
@@ -2758,12 +2824,16 @@ class TetrisGame{
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});
       return;
     }
-    // ── MOD: Last Stand (受ける側) ── ゴミ2倍・直列・出現3秒
+    // ── MOD: Last Stand (受ける側) ── 10秒間ためる。7秒時点で10ライン以上なら拡張(再構成+マーク) ──
     if(mod==='laststand'){
-      lines=lines*2;
-      const readyAt=performance.now()+3000;
-      const holeCol=Math.floor(Math.random()*getGameCols());
-      this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,laststandConsecutive:true});
+      if(this._lsAccWinStart==null){
+        this._lsAccWinStart=performance.now();
+        this._lsAccLines=0;
+        this._lsFromId=fromId;
+        this._lsMarkCount=0;
+        this._lsAccTimer=setTimeout(()=>this._evalLastStandTier(),7000);
+      }
+      this._lsAccLines+=lines*2;
       return;
     }
     // ── MOD: Bad Hole (受ける側) ── 攻撃半減(サーバー側)・一度に最大2段・穴5~7個・出現2秒
@@ -2804,6 +2874,13 @@ class TetrisGame{
       if(!puyotetMode&&lines>10){
         while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
       }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
+      return;
+    }
+    // ── MOD: Expert (受ける側) ── ゴミ1.0倍・2秒準備完了・直列穴
+    if(mod==='expert'){
+      const readyAt=performance.now()+2000;
+      const holeCol=Math.floor(Math.random()*getGameCols());
+      this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,laststandConsecutive:true});
       return;
     }
     // ── 通常処理 ──
@@ -5480,17 +5557,83 @@ class GameRenderer{
     {
       const lsArr=(this.gs.garbageQueue||[]).filter(q=>q.laststandConsecutive);
       if(lsArr.length){
-        const nxt=lsArr.sort((a,b)=>a.readyAt-b.readyAt)[0];
+        const sorted=[...lsArr].sort((a,b)=>a.readyAt-b.readyAt);
         const gc=getGameCols();
-        const ax=(Math.min(Math.max(nxt.holeCol||0,0),gc-1))*CELL+CELL/2;
         const by=ROWS*CELL;
-        const fl=0.55+0.45*Math.abs(Math.sin(now*0.006));
-        g.beginFill(0xffee00,fl);
-        g.moveTo(ax-7,by+17);g.lineTo(ax+7,by+17);g.lineTo(ax,by+2);
-        g.closePath();g.endFill();
-        g.lineStyle(1,0x000000,0.6);
-        g.moveTo(ax-7,by+17);g.lineTo(ax,by+2);g.lineTo(ax+7,by+17);
-        g.lineStyle(0);
+        const drawArrow=(nxt,alpha)=>{
+          const ax=(Math.min(Math.max(nxt.holeCol||0,0),gc-1))*CELL+CELL/2;
+          g.beginFill(0xffee00,alpha);
+          g.moveTo(ax-7,by+17);g.lineTo(ax+7,by+17);g.lineTo(ax,by+2);
+          g.closePath();g.endFill();
+          g.lineStyle(1,0x000000,0.6*Math.min(1,alpha+0.1));
+          g.moveTo(ax-7,by+17);g.lineTo(ax,by+2);g.lineTo(ax+7,by+17);
+          g.lineStyle(0);
+        };
+        // 次に来るゴミ（二つ目）を半透明の矢印で表示
+        if(sorted[1]) drawArrow(sorted[1],0.2);
+        // 一番近いゴミを通常の矢印で表示
+        drawArrow(sorted[0],0.55+0.45*Math.abs(Math.sin(now*0.006)));
+      }
+    }
+    // Last Stand MOD: キューに投入される3秒前から、溜まっているライン数を盤面の上に表示
+    {
+      const ls=this.gs;
+      const inWs=ls._lsAccWinStart!=null&&ls._lsAccWinStart>0;
+      const cdMs=inWs?((ls._lsAccWinStart+10000)-now):0;
+      if(inWs&&cdMs<=3000&&cdMs>=-150){
+        if(!this._lsCountText){
+          this._lsCountText=new PIXI.Text('',{fontFamily:'Orbitron',fontSize:16,fill:0xff5500,stroke:0x000000,strokeThickness:3,fontWeight:'700'});
+          this._lsCountText.anchor.set(0.5,1);
+          this.boardCont.addChild(this._lsCountText);
+        }
+        this._lsCountText.visible=true;
+        this._lsCountText.text='LAST STAND ＋'+ls._lsAccLines;
+        this._lsCountText.x=cols*CELL/2;
+        this._lsCountText.y=-12;
+      }else if(this._lsCountText){
+        this._lsCountText.visible=false;
+      }
+    }
+    // Last Stand MOD: 拡張マーク(7秒時点で10ライン以上)を盤面中央より少し上に表示
+    {
+      const ls=this.gs;
+      const extActive=ls._lsAccWinStart!=null&&ls._lsMarkCount>0&&now>=ls._lsAccWinStart+7000;
+      if(extActive){
+        const mc=ls._lsMarkCount>=2?2:1;
+        const pul=1+0.12*Math.sin(now*0.012);
+        const cx=cols*CELL/2,cy=ROWS*CELL/2-30;
+        const rot=now*0.002;
+        if(!this._lsMarkOct){
+          this._lsMarkOct=new PIXI.Graphics();
+          this.boardCont.addChild(this._lsMarkOct);
+        }
+        const oct=this._lsMarkOct;
+        oct.clear();
+        oct.lineStyle(3,0xffd400,0.95);
+        const R=24*pul;
+        for(let v=0;v<8;v++){
+          const a=rot+v*(Math.PI/4);
+          const px=cx+Math.cos(a)*R,py=cy+Math.sin(a)*R;
+          if(v===0)oct.moveTo(px,py);else oct.lineTo(px,py);
+        }
+        oct.closePath();
+        oct.lineStyle(0);
+        let txt=this._lsMark1;
+        if(!txt){
+          txt=new PIXI.Text('',{fontFamily:'Orbitron',fontSize:28,fontWeight:'900',fill:0xff2222,stroke:0x660000,strokeThickness:2});
+          txt.anchor.set(0.5,0.5);
+          this.boardCont.addChild(txt);
+          this._lsMark1=txt;
+        }
+        txt.visible=true;
+        txt.scale.set(pul);
+        txt.text=(mc===2)?'!!':'!';
+        txt.x=cx;
+        txt.y=cy+Math.sin(now*0.008)*2;
+      }else{
+        if(this._lsMark1)this._lsMark1.visible=false;
+        if(this._lsMark2)this._lsMark2.visible=false;
+        if(this._lsMarkOct)this._lsMarkOct.clear();
       }
     }
     // 危険時: 次のミノのスポーン位置に赤バツ
@@ -6062,6 +6205,16 @@ class GameRenderer{
     
     // ゲージのライン数表示
     if(this.gMeterTxt) this.gMeterTxt.text=totalLines.toString();
+    // ── Expert MOD: 蓄積ゴミ量を黄色バーで表示（キューの右隣） ──
+    if(this.gs._expertStored>0){
+      const eH=Math.min(this.gs._expertStored,MAX_VISIBLE)*CELL;
+      this.gMeterGfx.beginFill(0xffd400,0.9);
+      this.gMeterGfx.drawRect(8,BOARD_H-eH,6,eH);
+      this.gMeterGfx.endFill();
+      this.gMeterGfx.lineStyle(1,0xffffff,0.4);
+      this.gMeterGfx.drawRect(8,BOARD_H-eH,6,eH);
+      this.gMeterGfx.lineStyle(0);
+    }
   }
 
   // バッチコンボメーター描画
