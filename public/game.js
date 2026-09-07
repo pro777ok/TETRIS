@@ -796,7 +796,7 @@ const MOD_DESCRIPTIONS = {
   warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミ穴がバラバラ',
   laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
   badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
-  tower: '階層Lv(0~4): 永久ゴミ段数 Lv0→4,Lv1→3,Lv2→2,Lv3→3,Lv4→1、常に最下段。受けるゴミ量×(Lv+5)/10。1ブロック-0.2、送信ライン/2で上昇。減少時は不要分が穴空きゴミに',
+  tower: '永久ゴミ段数=10-レベル(最初10ライン、常に最下段)。レベルは攻撃したミノライン分で上昇、時間経過で減少(0.02/0.1秒)。受けるゴミ量×(Lv+5)/10',
   helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。完全ランダムだが各ミノに30%の確率で1〜3回連続して出る',
   rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
   rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
@@ -1476,6 +1476,8 @@ class TetrisGame{
     this._lsFromId=null;          // Last Stand: 窓開始時の送信元
     this._lsMarkCount=0;          // Last Stand: 拡張マーク数(0=対象外/1/2)
     this._lsFlushAt=0;            // Last Stand: キュー投入開始時刻
+    this._lsCarryLines=0;         // Last Stand: 拡張マーク後に送られてきた持ち越しライン数(2倍後)
+    this._lsCarryFromId=null;     // Last Stand: 持ち越しラインの送信元
     this._helmetHoleBase = undefined; // Helmet: 直列ゴミの穴ベース列（次キューごとに±1ずつ蛇行）
     // 注意: _helmetBiased は constructor冒頭で決定済み（ここで上書きしない）
     this._helmetStreak = 0;           // Helmet: 偏りミノの連続残り（冒頭で0初期化済み）
@@ -1487,6 +1489,11 @@ class TetrisGame{
 
     if((playerMods[socket.id]||'none')==='tower') this._initTower();
     if((playerMods[socket.id]||'none')==='badhole') this._initBadholeIdle();
+    if((playerMods[socket.id]||'none')==='badhole'){
+      // Bad Hole: 開始時に穴5~7個のゴミ4ラインをキューに溜める
+      const rt=performance.now()+1200;
+      this.garbageQueue.push({lines:4,fromId:socket.id,readyAt:rt,holeCol:0,holes3:0,badHole:true});
+    }
     if((playerMods[socket.id]||'none')==='warlock'){
       // Warlock: 開始時に穴バラのガベージを5ラインキューに溜める
       const cols=getGameCols();
@@ -2096,11 +2103,11 @@ class TetrisGame{
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
-      // ── Tower MOD: 階層上昇は「送ったライン/2」をそのまま加算（掛け算の影響なし） ──
+      // ── Tower MOD: 階層上昇は「攻撃したミノライン分」をそのまま加算 ──
       if(myMod==='tower' && attack>0){
-        this._towerLevel=Math.min(4,Math.max(0, this._towerLevel + attack/2));
+        this._towerLevel=Math.min(9,Math.max(0, this._towerLevel + attack));
         this._updateTowerPermanent();
-        this._updateTowerHUD(attack/2);
+        this._updateTowerHUD(attack);
       }
       // ── Tower MOD: 実際に送信する攻撃だけを (階層+5)/10 倍にする（相殺・階層には影響させない） ──
       if(myMod==='tower' && attack>0){
@@ -2263,8 +2270,16 @@ class TetrisGame{
     // ── AllSpin / Warlock Penalty: 同数連続ライン消去でペナルティ ──
     const myMod = playerMods[socket.id] || 'none';
     if(count>0 && (myMod==='allspin'||myMod==='warlock')){
-      // 連続判定キー: (スピン種別+消去行数)。sspin double ≠ tspin double。通常singleの後singleも不一致。
-      const curKey=(spinType||'none')+'-'+count;
+      // 連続判定キー。
+      // AllSpin: (スピン種別+消去行数)。sspin double ≠ tspin double
+      // Warlock: スピン消去は行数で分類(sspin double と tspin double は同じ)。スピン以外は全て同一カテゴリ
+      let curKey;
+      if(myMod==='warlock'){
+        if(spinType && count>=1 && count<=3) curKey='spin-'+count;
+        else curKey='other';
+      }else{
+        curKey=(spinType||'none')+'-'+count;
+      }
       if(_allspinConsecType!==null && _allspinConsecType!==curKey){
         _allspinConsecCount=1;
         _allspinConsecType=curKey;
@@ -2600,7 +2615,7 @@ class TetrisGame{
 
   // Last Stand: 7秒時点の蓄積ライン数で拡張モード(マーク数・投入タイミング)を決定
   _evalLastStandTier(){
-    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;return;}
+    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;this._lsCarryLines=0;this._lsCarryFromId=null;return;}
     const n=this._lsAccLines;
     // 投入開始 = 7秒時点から+3秒(10秒)。20ライン以上は+4秒(11秒)
     let delay=3000;
@@ -2616,7 +2631,7 @@ class TetrisGame{
   // 拡張時は 4+4+余り に再構成し0.2秒間隔で、通常時は送られたまま一括投入。
   _flushLastStandWindow(){
     if(this._lsAccTimer){clearTimeout(this._lsAccTimer);this._lsAccTimer=null;}
-    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;this._lsFlushAt=0;return;}
+    if(!this.alive){this._lsAccWinStart=null;this._lsAccLines=0;this._lsFromId=null;this._lsMarkCount=0;this._lsFlushAt=0;this._lsCarryLines=0;this._lsCarryFromId=null;return;}
     const n=this._lsAccLines;
     if(n>0){
       if(this._lsMarkCount>=1){
@@ -2640,6 +2655,15 @@ class TetrisGame{
     this._lsFromId=null;
     this._lsMarkCount=0;
     this._lsFlushAt=0;
+    // 拡張マーク後に送られてきたラインは現在の窓に含めず、次の窓へ持ち越す（即座に次の窓を開始）
+    if(this._lsCarryLines>0){
+      this._lsAccWinStart=performance.now();
+      this._lsAccLines=this._lsCarryLines;
+      this._lsFromId=this._lsCarryFromId||null;
+      this._lsCarryLines=0;
+      this._lsCarryFromId=null;
+      this._lsAccTimer=setTimeout(()=>this._evalLastStandTier(),7000);
+    }
   }
 
   // Rock MOD: 底から n 段の穴なしゴミ(R)行を除去（盤面長を保つ）
@@ -2668,24 +2692,19 @@ class TetrisGame{
     this._towerDisplay=0.0;this._towerTarget=0.0;this._towerAnim=false;
     this._updateTowerPermanent();
     this._updateTowerHUD(0);
-    // ── Tower MOD: 0.1秒ごとに階層 -0.01（時間経過でゴミが増える） ──
+    // ── Tower MOD: 0.1秒ごとに階層 -0.02（時間経過でゴミが増える。減少は以前の2倍） ──
     this._towerDecayTimer=setInterval(()=>{
       if(!this.alive){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
       if((playerMods[socket.id]||'none')!=='tower'){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
-      this._towerLevel=Math.max(0,Math.min(4,this._towerLevel-0.01));
+      this._towerLevel=Math.max(0,Math.min(9,this._towerLevel-0.02));
       this._updateTowerPermanent();
-      this._updateTowerHUD(-0.01);
+      this._updateTowerHUD(-0.02);
     },100);
   }
 
   _towerTargetRows(){
-    const lv=Math.round(this._towerLevel);
-    if(lv<=0)return 5;
-    if(lv===1)return 4;
-    if(lv===2)return 3;
-    if(lv===3)return 2;
-    if(lv===4)return 1;
-    return 0;
+    // 永久ゴミの数 = 10 - レベル（最初はレベル0で10ライン）
+    return Math.max(1, 10 - Math.round(this._towerLevel));
   }
 
   _updateTowerPermanent(){
@@ -2817,7 +2836,7 @@ class TetrisGame{
     }
     // ── MOD: Tower (受ける側) ── 受けるゴミ量を階層で乗算
     if(mod==='tower'){
-      const lv=this._towerLevel||5;
+      const lv=this._towerLevel||0;
       lines=Math.max(0,Math.round(lines*(lv+5)/10));
       const readyAt=performance.now()+(puyotetMode?0:1000);
       const holeCol=Math.floor(Math.random()*getGameCols());
@@ -2833,7 +2852,13 @@ class TetrisGame{
         this._lsMarkCount=0;
         this._lsAccTimer=setTimeout(()=>this._evalLastStandTier(),7000);
       }
-      this._lsAccLines+=lines*2;
+      // 拡張マーク発動後は現在の窓を凍結（増えない）。その間に来たラインは次の窓へ持ち越す
+      if(this._lsMarkCount>=1){
+        this._lsCarryLines+=lines*2;
+        if(this._lsCarryFromId===null)this._lsCarryFromId=fromId;
+      }else{
+        this._lsAccLines+=lines*2;
+      }
       return;
     }
     // ── MOD: Bad Hole (受ける側) ── 攻撃半減(サーバー側)・一度に最大2段・穴5~7個・出現2秒
@@ -9258,6 +9283,8 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
 });
 
 socket.on('receive_garbage',({lines,fromId,holes3,targetMod})=>{
+  // 全プレイヤー共通: 相手から送られたラインの50%はキューに一切入らない
+  if(Math.random()<0.5)return;
   const h3 = holes3 || 0;
   console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
   ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:h3});

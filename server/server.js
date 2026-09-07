@@ -2679,6 +2679,8 @@ class BotPlayer {
   }
 
   queueGarbage(lines, fromId, holes3) {
+    // 全プレイヤー共通: 相手から送られたラインの50%はキューに一切入らない
+    if (Math.random() < 0.5) return;
     // バッチコンボ: 蓄積バッファからゴミを相殺
     const room = rooms[this.roomId];
     if (room && room.roomSettings && room.roomSettings.batchComboMode && this.batchComboBuffer > 0) {
