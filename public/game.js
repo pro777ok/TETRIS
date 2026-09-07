@@ -2115,6 +2115,11 @@ class TetrisGame{
         attack=Math.max(0,Math.round(attack*towerFactor));
       }
 
+      // ── 6ライン以上送信: 置いたミノの位置から魚眼レンズの波紋が全体に広がる ──
+      if(attack>=6&&renderer&&renderer.onBigAttackRipple)renderer.onBigAttackRipple(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
+      // ── 送信: 置いたミノの位置から相手のゴミゲージへ矢印エフェクト（数に応じて拡大・ランダム色・ベジェ軌道） ──
+      if(attack>0&&renderer&&renderer.onLinesSent)renderer.onLinesSent(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
+
       // ── Rebound MOD: 送った攻撃の半分を即座に自分の盤面下にゴミとして出す ──
       if(myMod==='rebound' && attack>0){
         const reb=Math.floor(attack/2);
@@ -2166,7 +2171,8 @@ class TetrisGame{
         socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren,lockX:this._lockX,lockY:this._lockY,cancelledByGarbage});
       }
       // 相手に視覚エフェクトを送信
-      const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack};
+      const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack,
+        lockX:this._lockX,lockY:this._lockY,lockType:this._lockType,lockRot:this._lockRot};
       socket.emit('line_clear_effect',lcEv);
       ReplayRecorder.record('line_clear_effect',lcEv);
 
@@ -4411,6 +4417,8 @@ function openReplayViewer(replayData, mode) {
   renderer = new GameRenderer(gameApp, players, gameState);
   renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
   renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
+  // リプレイ用: ゴミキューのreadyAtをリプレイ時刻軸に引き直す基準
+  renderer._replayGarbageBase = null;
 
   showScreen('game');
 
@@ -4469,7 +4477,18 @@ function openReplayViewer(replayData, mode) {
           gameState.score = data.score || 0;
           gameState.lines = data.lines || 0;
           gameState.level = data.level || 1;
-          if (data.garbageQueue) gameState.garbageQueue = data.garbageQueue.map(g=>({...g}));
+          if (data.garbageQueue) {
+            // リプレイ同期: readyAtは元ゲームの絶対時刻なのでリプレイ時刻軸に引き直す
+            // （初回のboard_updateを基準に一度だけオフセット計算 → 途中のずれを防ぐ）
+            if (renderer._replayGarbageBase == null && data.garbageQueue.length && data.garbageQueue[0].readyAt != null) {
+              const rtNow = (typeof ReplayPlayer._getCurT === 'function') ? ReplayPlayer._getCurT() : 0;
+              renderer._replayGarbageBase = data.garbageQueue[0].readyAt - rtNow;
+            }
+            const base = renderer._replayGarbageBase || 0;
+            const q = data.garbageQueue.map(g => ({...g, readyAt:(g.readyAt!=null)?(g.readyAt-base):g.readyAt}));
+            q.sort((a,b)=>(a.readyAt||0)-(b.readyAt||0));
+            gameState.garbageQueue = q;
+          }
         }
         renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
         renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
@@ -4567,6 +4586,15 @@ function openReplayViewer(replayData, mode) {
           replayState._lastWasB2B = false;
           // B2Bカウントはリセットしない（clearがないだけ）
         }
+
+        // ── リプレイでも送信エフェクト（波紋・矢印）を再現 ──
+        const atk = data.attack || 0;
+        if (atk >= 6 && renderer.onBigAttackRipple && data.lockX != null && data.lockY != null) {
+          renderer.onBigAttackRipple(atk, data.lockX, data.lockY, data.lockType || 0, data.lockRot || 0);
+        }
+        if (atk > 0 && renderer.onLinesSent && data.lockX != null && data.lockY != null) {
+          renderer.onLinesSent(atk, data.lockX, data.lockY, data.lockType || 0, data.lockRot || 0);
+        }
         break;
       }
       case 'lines_cleared': {
@@ -4630,6 +4658,8 @@ function openReplayViewer(replayData, mode) {
         break;
       }
       case 'receive_garbage': {
+        // 相手からの攻撃 → 自分の盤面へ矢印（リプレイ再現）
+        if (renderer && renderer.onLinesReceived) renderer.onLinesReceived(data.lines || 0, data.fromId);
         break;
       }
       case 'player_dead': {
@@ -5096,6 +5126,10 @@ class GameRenderer{
     this._gameOverTick=null;
     // B2B 雷エフェクト
     this._b2bCount=0;this._lightningBolts=[];this._lightningTimer=0;
+    // 6ライン以上送信時の魚眼レンズ・波紋エフェクト
+    this._rippleFilter=null;this._rippleActive=false;this._rippleT=0;this._rippleDuration=1150;this._rippleFilterArea=null;
+    // 送信時の矢印（ベジェ軌道）エフェクト
+    this._sendArrows=[];
     // B2Bバッジ初期化 (buildSideUI後に呼ばれるので存在チェック)
     if(this.b2bBadgeCont)this.b2bBadgeCont.visible=false;
     // 煙エフェクト（危機状態）
@@ -5293,6 +5327,15 @@ class GameRenderer{
     this._afterimageAlpha=0;
     this._afterimageData=null; // {shape, x, y, type}
     this.flashGfx=new PIXI.Graphics();this.flashGfx.alpha=0;this.boardCont.addChild(this.flashGfx);
+    // 魚眼波紋フィルタは常時適用（パス開始/終了による黒フラッシュ防止、始めからコンパイル済み）。idle時はuTimeで歪み0
+    // 注意: filterAreaはスクリーン座標系（FilterSystemがsourceFrameとしてそのまま使う）で指定する
+    if(settings.quality!=='minimum'){
+      this._rippleFilter=this._buildRippleFilter();
+      const sc=this._uiScale||1,pad=48;
+      this._rippleFilterArea=new PIXI.Rectangle(this.mainBX-pad,this.mainBY-pad,BOARD_W*sc+pad*2,BOARD_H*sc+pad*2);
+      this.boardCont.filterArea=this._rippleFilterArea;
+      this.boardCont.filters=[this._rippleFilter];
+    }
     // 耐久ゴミカウンターレイヤー
     this._durableLayer=new PIXI.Container();this.boardCont.addChild(this._durableLayer);
     this._durableTexts=[];
@@ -7702,6 +7745,7 @@ class GameRenderer{
     const targetY = sy + dir.y * distance;
 
     const anim={txt,startX:sx,startY:sy,targetX,targetY,alive:true,popT:0,fadeDelay:1000,fadeT:0,fading:false};
+    const ALPHA_MAX=0.30;
     this._customLabels.push(anim);
     const update=()=>{
       if(!anim.alive)return;
@@ -7713,10 +7757,10 @@ class GameRenderer{
         anim.txt.x = curX;
         anim.txt.y = curY;
         anim.txt.scale.set(0.2 + 0.8 * e);
-        anim.txt.alpha = e;
+        anim.txt.alpha = e * ALPHA_MAX;
         if(anim.popT>=1){
           anim.txt.scale.set(1);
-          anim.txt.alpha = 1;
+          anim.txt.alpha = ALPHA_MAX;
           anim.fadeDelay = performance.now() + 1000;
         }
         requestAnimationFrame(update);
@@ -7726,7 +7770,7 @@ class GameRenderer{
       if(!anim.fading){anim.fading=true;anim.fadeT=0;}
       anim.fadeT+=0.03;
       anim.txt.y -= 0.5;
-      anim.txt.alpha=Math.max(0,1-anim.fadeT);
+      anim.txt.alpha=Math.max(0,ALPHA_MAX*(1-anim.fadeT));
       if(anim.txt.alpha<=0){anim.alive=false;try{anim.txt.destroy();}catch(e){}this._customLabels=this._customLabels.filter(l=>l!==anim);return;}
       requestAnimationFrame(update);
     };
@@ -8701,6 +8745,8 @@ class GameRenderer{
     this.drawGarbageMeter();
     this._drawDangerWarning();
     this.updateParticlesEtc(dt);
+    this._updateRippleFx(dt);
+    this._updateSendArrows(dt);
     // ── Elapsed time ──
     if(this.elapsedText){
       const gs=this.gs||gameState||puyoGameState;
@@ -8719,6 +8765,185 @@ class GameRenderer{
       this._bgScanline.drawRect(0,this._bgScanlineY,this.W,2);
       this._bgScanline.endFill();
     }
+  }
+
+  // ロックミノの重心を boardContローカル座標系（盤面0~BOARD_W, 0~BOARD_H。ピースはCELL単位）で返す
+  _boardCenterLocal(lockX,lockY,type,rot){
+    const shape=(PIECE_SHAPES[type]?PIECE_SHAPES[type][rot||0]||PIECE_SHAPES[type][0]:null);
+    let cc=1,cr=1;
+    if(shape){
+      let minR=99,maxR=-99,minC=99,maxC=-99;
+      for(let r=0;r<shape.length;r++){
+        for(let c=0;c<shape[r].length;c++){
+          if(shape[r][c]){if(r<minR)minR=r;if(r>maxR)maxR=r;if(c<minC)minC=c;if(c>maxC)maxC=c;}
+        }
+      }
+      cc=(minC+maxC)/2;cr=(minR+maxR)/2;
+    }
+    return {x:(lockX+cc)*CELL,y:(lockY+cr-HIDDEN)*CELL};
+  }
+
+  // 6ライン以上送信時: 置いたミノの位置から魚眼レンズの波紋が全体に広がる
+  onBigAttackRipple(attack,lockX,lockY,type,rot){
+    if(!this.boardCont||settings.quality==='minimum')return;
+    // 既に波紋が広がっている最中は再発動しない（連なる多重波紋を防ぐ）
+    if(this._rippleActive)return;
+    if(!this._rippleFilter){
+      this._rippleFilter=this._buildRippleFilter();
+      const sc=this._uiScale||1,pad=48;
+      this._rippleFilterArea=new PIXI.Rectangle(this.mainBX-pad,this.mainBY-pad,BOARD_W*sc+pad*2,BOARD_H*sc+pad*2);
+      this.boardCont.filterArea=this._rippleFilterArea;
+      this.boardCont.filters=[this._rippleFilter];
+    }
+    // ロック位置をスクリーン座標に変換 → filterArea（スクリーン座標）内のUVとして中心指定
+    const c=this._boardCenterLocal(lockX,lockY,type,rot);
+    const sp=this.boardCont.toGlobal(new PIXI.Point(c.x,c.y));
+    const a=this._rippleFilterArea;
+    const u=Math.max(0.001,Math.min(0.999,(sp.x-a.x)/a.width));
+    const vv=Math.max(0.001,Math.min(0.999,(sp.y-a.y)/a.height));
+    this._rippleFilter.uniforms.uCenter=[u,vv];
+    this._rippleFilter.uniforms.uTime=0;
+    this._rippleActive=true;this._rippleT=0;
+  }
+
+  _buildRippleFilter(){
+    const fragSrc=`
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform sampler2D uSampler;
+      uniform vec2 uCenter;
+      uniform float uTime;
+      uniform float uDuration;
+      uniform float uSpeed;
+      uniform float uRadius;
+      uniform float uAmp;
+      uniform float uSpread;
+      uniform float uMaxDist;
+      void main(void){
+        vec2 delta=vTextureCoord-uCenter;
+        float dist=max(length(delta),0.0005);
+        vec2 dir=delta/dist;
+        float falloff=clamp(1.0-dist/uMaxDist,0.0,1.0);
+        falloff=falloff*falloff*(3.0-2.0*falloff);
+        float fade=1.0-smoothstep(0.0,uDuration,uTime);
+        float travel=dist*uRadius-uTime*uSpeed;
+        // 単一の波面（sinの多重リングを廃止 → 1回だけ広がる波紋）
+        float band=exp(-travel*travel*uSpread);
+        vec2 disp=dir*band*uAmp*falloff*fade;
+        vec2 uv=clamp(vTextureCoord+disp,0.001,0.999);
+        gl_FragColor=texture2D(uSampler,uv);
+      }
+    `;
+    const f=new PIXI.Filter(undefined,fragSrc,{
+      uCenter:[0.5,0.5],uTime:(this._rippleDuration)/1000+1,uDuration:(this._rippleDuration)/1000,
+      uSpeed:52,uRadius:16,uAmp:0.05,uSpread:0.12,uMaxDist:0.72
+    });
+    f.padding=24;
+    // 描画負荷対策: ultra以外は半分解像度でレンダリング
+    f.resolution=(settings.quality==='ultra')?1:0.5;
+    return f;
+  }
+
+  _updateRippleFx(dt){
+    if(!this._rippleActive||!this._rippleFilter)return;
+    this._rippleT+=dt;
+    this._rippleFilter.uniforms.uTime=this._rippleT/1000;
+    if(this._rippleT>=this._rippleDuration){
+      this._rippleActive=false;
+      // フィルタは常時適用のまま（uTime>=uDurationでfade=0に戻り歪みなし）→ パス開始/終了の黒フラッシュなし
+    }
+  }
+
+  // ライン送信時: 置いたミノの位置から相手の盤面のどこかへ矢印（数に応じたサイズ・ランダム明色・ベジェ軌道）
+  onLinesSent(attack,lockX,lockY,type,rot){
+    if(!this.boardCont||settings.particles==='off'||settings.quality==='minimum')return;
+    const startP=this._boardCenterLocal(lockX,lockY,type,rot);
+    const start=this.boardCont.toGlobal(new PIXI.Point(startP.x,startP.y));
+    const targets=this.opponentPlayers.filter(p=>{
+      const d=this.opBoardData[p.id];
+      return d&&!d.dead&&d.cont.visible;
+    });
+    if(targets.length===0)return;
+    const dur=Math.min(950,500+attack*40)/1.5;
+    const size=Math.min(46,10+attack*4);
+    const color=this._arrowColor();
+    for(const p of targets){
+      const d=this.opBoardData[p.id];
+      // ゴミゲージではなく相手の盤面内のランダムな位置へ
+      this._spawnArrow(start,this._boardRandomPoint(d.cont,d.boardW,d.boardH),size,color,dur);
+    }
+  }
+
+  // 相手から攻撃を受けた時: 相手の盤面から自分の盤面へ矢印
+  onLinesReceived(lines,fromId){
+    if(!this.boardCont||settings.particles==='off'||settings.quality==='minimum')return;
+    const d=this.opBoardData[fromId];
+    let start;
+    if(d&&d.cont.visible){
+      start=this._boardRandomPoint(d.cont,d.boardW,d.boardH);
+    }else{
+      // 盤面が見えない相手: 画面外の左右から飛んでくる
+      const cx=Math.random()<0.5?0:this.W;
+      start={x:cx,y:this.H*(0.15+Math.random()*0.7)};
+    }
+    const end=this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H);
+    const dur=Math.min(950,500+lines*40)/1.5;
+    const size=Math.min(46,10+lines*4);
+    this._spawnArrow(start,end,size,this._arrowColor(),dur);
+  }
+
+  // 盤面ローカル座標内のランダムな点をスクリーン座標で返す
+  _boardRandomPoint(cont,w,h){
+    const tl=cont.toGlobal(new PIXI.Point(0,0));
+    const br=cont.toGlobal(new PIXI.Point(w,h));
+    return {x:tl.x+Math.random()*(br.x-tl.x),y:tl.y+Math.random()*(br.y-tl.y)};
+  }
+
+  _arrowColor(){
+    const palette=[0xff006e,0xffaa00,0x00ffaa,0x00f5ff,0xaa00ff,0xffe600,0xff4dd2,0x4dff50];
+    return palette[Math.floor(Math.random()*palette.length)];
+  }
+
+  _spawnArrow(p0,p2,size,color,dur){
+    if(!this.effectsLayer)return;
+    const p1={x:this.W*(0.15+Math.random()*0.7),y:this.H*(0.2+Math.random()*0.6)};
+    const g=new PIXI.Graphics();
+    this.effectsLayer.addChild(g);
+    this._sendArrows.push({g,p0:{x:p0.x,y:p0.y},p1,p2:{x:p2.x,y:p2.y},t:0,dur,size,color,trail:[]});
+  }
+
+  // 矢印の進行を更新（ベジェ曲線に沿って描画＋軌跡）
+  _updateSendArrows(dt){
+    if(!this._sendArrows||this._sendArrows.length===0)return;
+    this._sendArrows=this._sendArrows.filter(a=>{
+      a.t+=dt;
+      if(a.t>=a.dur){try{a.g.destroy();}catch(e){}return false;}
+      const p=a.t/a.dur,inv=1-p;
+      const cx=inv*inv*a.p0.x+2*inv*p*a.p1.x+p*p*a.p2.x;
+      const cy=inv*inv*a.p0.y+2*inv*p*a.p1.y+p*p*a.p2.y;
+      const tx=2*inv*(a.p1.x-a.p0.x)+2*p*(a.p2.x-a.p1.x);
+      const ty=2*inv*(a.p1.y-a.p0.y)+2*p*(a.p2.y-a.p1.y);
+      const ang=Math.atan2(ty,tx);
+      a.trail.push({x:cx,y:cy});
+      if(a.trail.length>14)a.trail.shift();
+      const g=a.g;g.clear();
+      const sz=a.size;
+      // 軌跡: 後ろほど小さく薄く
+      for(let i=0;i<a.trail.length;i++){
+        const tr=a.trail[i];
+        const k=(i+1)/a.trail.length;
+        g.beginFill(a.color,(0.5*k));
+        g.drawCircle(tr.x,tr.y,Math.max(1.5,sz*0.5*k));
+        g.endFill();
+      }
+      // 矢印本体（接線方向に三角形）
+      g.beginFill(a.color,0.9);
+      g.moveTo(cx+Math.cos(ang)*sz,cy+Math.sin(ang)*sz);
+      g.lineTo(cx+Math.cos(ang+2.5)*sz*0.5,cy+Math.sin(ang+2.5)*sz*0.5);
+      g.lineTo(cx+Math.cos(ang-2.5)*sz*0.5,cy+Math.sin(ang-2.5)*sz*0.5);
+      g.closePath();g.endFill();
+      return true;
+    });
   }
 
   // 敵ボードの煙エフェクト更新
@@ -9295,6 +9520,8 @@ socket.on('receive_garbage',({lines,fromId,holes3,targetMod})=>{
     return;
   }
   if(!gameState){console.log('[RCV GARBAGE] -> no gameState, drop');return;}
+  // 受信攻撃: 相手の盤面→自分の盤面へ矢印
+  if(renderer&&renderer.onLinesReceived)renderer.onLinesReceived(lines,fromId);
   console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3}`);
   gameState.queueGarbage(lines,fromId,h3,targetMod);
 });
