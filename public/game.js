@@ -1005,9 +1005,9 @@ function updateRoomSettingsUI(rs){
   const gd=document.getElementById('gravity-dec-input');if(gd){gd.value=rs.gravityDec??80;document.getElementById('gravity-dec-val').textContent=(rs.gravityDec??80)+'ms';}
   const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
-  const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||3));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
+  const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
   const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin')?'allspin':'normal';
-  const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??1.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||1.5).toFixed(1)+' PPS';}
+  const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
@@ -1085,9 +1085,9 @@ function updateRoomSetting(key,val){
 }
 
 function addBot(){
-  const lvl=parseInt(document.getElementById('bot-level-input')?.value)||roomSettings.botLevel||3;
+  const lvl=parseInt(document.getElementById('bot-level-input')?.value)||roomSettings.botLevel||5;
   const type=document.getElementById('bot-type-select')?.value||roomSettings.botType||'normal';
-  const pps=parseFloat(document.getElementById('bot-pps-input')?.value)||roomSettings.botPps||1.5;
+  const pps=parseFloat(document.getElementById('bot-pps-input')?.value)||roomSettings.botPps||2.5;
   const fi=document.getElementById('bot-code-input');
   const file=fi&&fi.files[0]?fi.files[0]:null;
   const fname=file?file.name.replace(/\.[^.]+$/, ''):null;
@@ -7747,7 +7747,7 @@ class GameRenderer{
     const targetY = sy + dir.y * distance;
 
     const anim={txt,startX:sx,startY:sy,targetX,targetY,alive:true,popT:0,fadeDelay:1000,fadeT:0,fading:false};
-    const ALPHA_MAX=0.30;
+    const ALPHA_MAX=0.70;
     this._customLabels.push(anim);
     const update=()=>{
       if(!anim.alive)return;
@@ -8868,7 +8868,7 @@ class GameRenderer{
       return d&&!d.dead&&d.cont.visible;
     });
     if(targets.length===0)return;
-    const dur=Math.min(950,500+attack*40)/1.5;
+    const dur=Math.min(950,500+attack*40)/2;
     const size=Math.min(52,16+attack*4);
     const color=this._arrowColor();
     for(const p of targets){
@@ -8891,7 +8891,7 @@ class GameRenderer{
       start={x:cx,y:this.H*(0.15+Math.random()*0.7)};
     }
     const end=this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H);
-    const dur=Math.min(950,500+lines*40)/1.5;
+    const dur=Math.min(950,500+lines*40)/2;
     const size=Math.min(52,16+lines*4);
     this._spawnArrow(start,end,size,this._arrowColor(),dur);
   }
@@ -8928,7 +8928,7 @@ class GameRenderer{
       const d=this.opBoardData[p.id];
       return d&&!d.dead&&d.cont.visible;
     });
-    const dur=500/1.5;
+    const dur=500/2;
     const size=36;
     const colors=[0xff006e,0xffbe0b,0x00f5ff];
     let ends=[];
@@ -8963,7 +8963,7 @@ class GameRenderer{
       const ty=2*inv*(a.p1.y-a.p0.y)+2*p*(a.p2.y-a.p1.y);
       const ang=Math.atan2(ty,tx);
       a.trail.push({x:cx,y:cy});
-      if(a.trail.length>14)a.trail.shift();
+      if(a.trail.length>18)a.trail.shift();
       const g=a.g;g.clear();
       const sz=a.size;
       // 軌跡: 後ろほど小さく薄く
@@ -9546,8 +9546,8 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
 });
 
 socket.on('receive_garbage',({lines,fromId,holes3,targetMod})=>{
-  // 全プレイヤー共通: 相手から送られたラインの50%はキューに一切入らない
-  if(Math.random()<0.5)return;
+  // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
+  if(targetMod==='badhole'&&Math.random()<0.5)return;
   const h3 = holes3 || 0;
   console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
   ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:h3});

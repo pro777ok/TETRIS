@@ -236,7 +236,7 @@ function detectSpin(board, type, rot, x, y, wasKicked) {
 
   if (!atBottom) return null;
 
-  if (type === 'I' && atBottom) return 'ISPIN';
+  if (type === 'I' && wasKicked && atBottom) return 'ISPIN';
   // S/Z/L/J: only count as spin when wall-kick was required (not plain drop)
   if (type === 'S' && wasKicked && atBottom) return 'SSPIN';
   if (type === 'Z' && wasKicked && atBottom) return 'ZSPIN';
@@ -384,7 +384,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   score -= coveredDepth * 150.0;  // 深い穴は致命的
   score -= floorGaps    * 200.0;  // 底の隙間は最悪
   score -= overhangs    * 200.0;  // 張り出しもペナルティ
-  score -= bumpiness    * 8.0;
+  score -= bumpiness    * 15.0;
   score -= sumH         * 2.5;
 
   if (garbageRows > 0) {
@@ -462,7 +462,12 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // T-spin禁止のため評価しない
 
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / cols;
-  score -= variance * 3.0;
+  score -= variance * 6.0;
+
+  // 2次差分（凹凸のギザギザ）を罰す → 平坦で滑らかな積みを促す
+  let smoothness = 0;
+  for (let c = 1; c < cols-1; c++) smoothness += Math.abs(heights[c+1] - 2*heights[c] + heights[c-1]);
+  score -= smoothness * 10.0;
 
   // 縦積みペナルティ（大幅強化）+ 孤立柱ペナルティ
   for (let c = 0; c < cols; c++) {
@@ -600,7 +605,11 @@ function getAllPlacementsFast(board, type) {
         const key2 = `${fromRot}->${toRot}`;
         const kicks = (type === 'I' ? SRS_KICKS['I'] : SRS_KICKS['default'])[key2] || [];
         for (const [kx] of kicks) {
-          for (let x = -2; x < cols + 2; x++) add(toRot, x + kx, true);
+          for (let x = -2; x < cols + 2; x++) {
+            // Kick is only meaningful if the piece was actually placeable in the
+            // pre-rotation orientation first — otherwise this is a fake spin/reachability
+            if (isValid(board, type, fromRot, x, 0)) add(toRot, x + kx, true);
+          }
         }
       }
     }
@@ -1429,7 +1438,7 @@ class BotPlayer {
     this.botType = botType === 'allspin' ? 'allspin' : 'normal';
     const room = rooms[roomId];
     this.botPps = (typeof botPps === 'number' && botPps > 0) ? botPps
-      : (room && room.roomSettings && room.roomSettings.botPps) || 1.5;
+      : (room && room.roomSettings && room.roomSettings.botPps) || 2.5;
     // Determine column count from the room if possible, otherwise default to 10
     this.cols = (room && room.roomSettings && room.roomSettings.fourWideMode) ? COLS_4WIDE : COLS;
     this.board = Array.from({length:ROWS+HIDDEN},()=>Array(this.cols).fill(0));
@@ -2679,10 +2688,11 @@ class BotPlayer {
   }
 
   queueGarbage(lines, fromId, holes3) {
-    // 全プレイヤー共通: 相手から送られたラインの50%はキューに一切入らない
-    if (Math.random() < 0.5) return;
-    // バッチコンボ: 蓄積バッファからゴミを相殺
     const room = rooms[this.roomId];
+    // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
+    const isBadhole = !!(room && room.playerMods && room.playerMods[this.id] === 'badhole');
+    if (isBadhole && Math.random() < 0.5) return;
+    // バッチコンボ: 蓄積バッファからゴミを相殺
     if (room && room.roomSettings && room.roomSettings.batchComboMode && this.batchComboBuffer > 0) {
       const canCancel = Math.min(lines, this.batchComboBuffer);
       this.batchComboBuffer -= canCancel;
@@ -2732,8 +2742,8 @@ function createRoom(roomId) {
     lastActivity: Date.now(),
     roomSettings: {
       mutationRate: 60, gravityBase: 1000, gravityDec: 80,
-      gravityMin: 50, lockDelay: 1000, botLevel: 3, shogiMode: false,
-      botType: 'normal', botPps: 1.5,  // ボット種類(通常AI/allspin)・PPS設定
+      gravityMin: 50, lockDelay: 1000, botLevel: 5, shogiMode: false,
+      botType: 'normal', botPps: 2.5,  // ボット種類(通常AI/allspin)・PPS設定
       recordTraining: false,  // ホストが設置データ記録を有効化できる
       soloMode: false,         // 1人でもゲーム開始できる
       fortyLineMode: false,    // 40ラインモード
@@ -2898,7 +2908,7 @@ io.on('connection', (socket) => {
 
     const lvl=Math.max(1,Math.min(5,parseInt(botLevel)||room.roomSettings.botLevel||3));
     const type = botType === 'allspin' ? 'allspin' : 'normal';
-    const pps = Math.max(0.5, Math.min(3, parseFloat(botPps) || (room.roomSettings.botPps) || 1.5));
+    const pps = Math.max(0.5, Math.min(6, parseFloat(botPps) || (room.roomSettings.botPps) || 2.5));
     const cbc=room.customBot||customBotCode.get(socket.roomId);
     const baseName = botFileName || (cbc ? cbc.filename : null) || 'CUSTOM';
     let fullName;
@@ -2973,7 +2983,7 @@ io.on('connection', (socket) => {
     if (ns.lockDelay!==undefined) rs.lockDelay=Math.max(200,Math.min(3000,parseInt(ns.lockDelay)||1000));
     if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(5,parseInt(ns.botLevel)||3));
     if (ns.botType!==undefined) rs.botType = ns.botType === 'allspin' ? 'allspin' : 'normal';
-    if (ns.botPps!==undefined) rs.botPps=Math.max(0.5,Math.min(3,parseFloat(ns.botPps)||1.5));
+    if (ns.botPps!==undefined) rs.botPps=Math.max(0.5,Math.min(6,parseFloat(ns.botPps)||2.5));
     if (ns.shogiMode!==undefined) rs.shogiMode=!!ns.shogiMode;
     if (ns.recordTraining!==undefined) rs.recordTraining=!!ns.recordTraining;
     if (ns.soloMode!==undefined) rs.soloMode=!!ns.soloMode;
