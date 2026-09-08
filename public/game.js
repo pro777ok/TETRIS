@@ -4705,6 +4705,8 @@ function openReplayViewer(replayData, mode) {
 // B2B切れ「脱力」エフェクト: ボードがぐったり落下してから戻る
 function _replayB2bBreak(rend, b2bCount) {
   if (!rend || settings.quality === 'minimum') return;
+  // B2B解除: ロック位置から3本の矢印（リプレイ再現）
+  if (rend._spawnB2BBreakArrows) rend._spawnB2BBreakArrows();
   // 「脱力」: ボードが一瞬下にドロップしてゆっくり戻る
   // + 白い放電ライン
   if (rend._breakB2bLightning) rend._breakB2bLightning();
@@ -7781,6 +7783,8 @@ class GameRenderer{
   onB2BBreak(b2bCount){
     this.showAttackBadge(b2bCount,'b2b_break');
     if(settings.quality==='low'||settings.quality==='minimum')return;
+    // B2B解除: ロック位置から3本の矢印
+    this._spawnB2BBreakArrows();
     const sc=this._uiScale||1;
     const bx=this.mainBX,by=this.mainBY;
     const bw=BOARD_W*sc,bh=BOARD_H*sc;
@@ -8865,7 +8869,7 @@ class GameRenderer{
     });
     if(targets.length===0)return;
     const dur=Math.min(950,500+attack*40)/1.5;
-    const size=Math.min(46,10+attack*4);
+    const size=Math.min(52,16+attack*4);
     const color=this._arrowColor();
     for(const p of targets){
       const d=this.opBoardData[p.id];
@@ -8888,7 +8892,7 @@ class GameRenderer{
     }
     const end=this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H);
     const dur=Math.min(950,500+lines*40)/1.5;
-    const size=Math.min(46,10+lines*4);
+    const size=Math.min(52,16+lines*4);
     this._spawnArrow(start,end,size,this._arrowColor(),dur);
   }
 
@@ -8910,6 +8914,40 @@ class GameRenderer{
     const g=new PIXI.Graphics();
     this.effectsLayer.addChild(g);
     this._sendArrows.push({g,p0:{x:p0.x,y:p0.y},p1,p2:{x:p2.x,y:p2.y},t:0,dur,size,color,trail:[]});
+  }
+
+  // B2B解除時: ロック位置から3本の矢印が飛び出す
+  _spawnB2BBreakArrows(){
+    if(!this.effectsLayer||settings.particles==='off'||settings.quality==='minimum')return;
+    const gs=this.gs||gameState;
+    const lx=(gs&&gs._lockX!=null)?gs._lockX:Math.floor(BOARD_W/2);
+    const ly=(gs&&gs._lockY!=null)?gs._lockY:(HIDDEN+Math.floor(BOARD_H/2));
+    const c=this._boardCenterLocal(lx,ly,(gs&&gs._lockType)||0,(gs&&gs._lockRot)||0);
+    const start=this.boardCont.toGlobal(new PIXI.Point(c.x,c.y));
+    const targets=this.opponentPlayers.filter(p=>{
+      const d=this.opBoardData[p.id];
+      return d&&!d.dead&&d.cont.visible;
+    });
+    const dur=500/1.5;
+    const size=36;
+    const colors=[0xff006e,0xffbe0b,0x00f5ff];
+    let ends=[];
+    if(targets.length>0){
+      for(let i=0;i<3;i++){
+        const t=targets[i%targets.length];
+        const d=this.opBoardData[t.id];
+        ends.push(this._boardRandomPoint(d.cont,d.boardW,d.boardH));
+      }
+    }else{
+      ends=[
+        {x:this.W*0.08,y:this.H*0.45},
+        {x:this.W*0.92,y:this.H*0.4},
+        {x:this.W*0.8,y:this.H*0.75}
+      ];
+    }
+    for(let i=0;i<3;i++){
+      this._spawnArrow(start,ends[i],size,colors[i%colors.length],dur);
+    }
   }
 
   // 矢印の進行を更新（ベジェ曲線に沿って描画＋軌跡）
