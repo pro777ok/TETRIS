@@ -387,6 +387,8 @@
     font-family: 'Share Tech Mono', monospace;
   }
   .settings-val { color: var(--neon-yellow); font-size: 0.85rem; float: right; }
+  .settings-sec-head { cursor: pointer; user-select: none; transition: color 0.15s; }
+  .settings-sec-head:hover { color: var(--neon-yellow); }
 
   /* RESULT */
   #result-overlay {
@@ -1375,7 +1377,8 @@
 <!-- Settings Modal -->
 <div id="settings-modal">
   <div class="settings-card">
-    <h2>⚙ GRAPHICS</h2>
+    <h2 class="settings-sec-head" onclick="toggleSettingsSection('sec-graphics')">▼ ⚙ GRAPHICS</h2>
+    <div id="sec-graphics" class="settings-sec">
     <div class="settings-row">
       <label>GHOST PIECE OPACITY <span class="settings-val" id="ghost-val">40%</span></label>
       <input type="range" id="ghost-opacity" min="0" max="100" value="40" oninput="updateSetting('ghost',this.value)">
@@ -1410,6 +1413,14 @@
       </select>
     </div>
     <div class="settings-row">
+      <label>SHAKE INTENSITY <span class="settings-val" id="shake-intensity-val">100%</span></label>
+      <input type="range" id="shake-intensity" min="0" max="200" step="5" value="100" oninput="updateSetting('shakeIntensity',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>SHAKE SPEED <span class="settings-val" id="shake-speed-val">100%</span></label>
+      <input type="range" id="shake-speed" min="25" max="300" step="5" value="100" oninput="updateSetting('shakeSpeed',this.value)">
+    </div>
+    <div class="settings-row">
       <label>SFX VOLUME <span class="settings-val" id="sfx-val">70%</span></label>
       <input type="range" id="sfx-volume" min="0" max="100" value="70" oninput="updateSetting('sfx',this.value)">
     </div>
@@ -1428,7 +1439,33 @@
       <label>MAX FRAMERATE <span class="settings-val" id="maxfps-val">144fps</span></label>
       <input type="range" id="maxfps-input" min="30" max="360" step="10" value="144" oninput="updateSetting('maxFPS',this.value)">
     </div>
-    <h2 style="margin-top:1rem">🖼 BACKGROUND</h2>
+    </div>
+    <h2 class="settings-sec-head" style="margin-top:1rem" onclick="toggleSettingsSection('sec-attack')">▼ 🎯 ATTACK EFFECTS</h2>
+    <div id="sec-attack" class="settings-sec">
+      <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ライン送信時の矢印と波紋エフェクト</div>
+      <div class="settings-row">
+        <label>ARROW SPEED <span class="settings-val" id="arrow-speed-val">100%</span></label>
+        <input type="range" id="arrow-speed" min="25" max="300" step="5" value="100" oninput="updateSetting('arrowSpeed',this.value)">
+      </div>
+      <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">矢印が飛ぶ速さ (大きい=速い)</div>
+      <div class="settings-row">
+        <label>ARROW SIZE <span class="settings-val" id="arrow-size-val">100%</span></label>
+        <input type="range" id="arrow-size" min="25" max="300" step="5" value="100" oninput="updateSetting('arrowSize',this.value)">
+      </div>
+      <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">矢印と軌跡の大きさ</div>
+      <div class="settings-row">
+        <label>RIPPLE STRENGTH <span class="settings-val" id="ripple-strength-val">100%</span></label>
+        <input type="range" id="ripple-strength" min="0" max="300" step="5" value="100" oninput="updateSetting('rippleStrength',this.value)">
+      </div>
+      <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">波紋の歪みの強さ (0=OFF)</div>
+      <div class="settings-row">
+        <label>RIPPLE SPEED <span class="settings-val" id="ripple-speed-val">100%</span></label>
+        <input type="range" id="ripple-speed" min="25" max="300" step="5" value="100" oninput="updateSetting('rippleSpeed',this.value)">
+      </div>
+      <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">波紋が広がる速さ</div>
+    </div>
+    <h2 class="settings-sec-head" style="margin-top:1rem" onclick="toggleSettingsSection('sec-background')">▼ 🖼 BACKGROUND</h2>
+    <div id="sec-background" class="settings-sec">
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の背景画像を設定</div>
     <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem">
       <label style="cursor:pointer;background:rgba(0,245,255,0.1);border:1px solid rgba(0,245,255,0.3);padding:0.3rem 0.8rem;border-radius:6px;font-size:0.75rem">
@@ -1442,7 +1479,9 @@
       <label>背景透明度 <span class="settings-val" id="bg-opacity-val">30%</span></label>
       <input type="range" id="bg-opacity-input" min="0" max="100" value="30" oninput="updateBgOpacity(this.value)">
     </div>
-    <h2 style="margin-top:1rem">🖥 UI LAYOUT</h2>
+    </div>
+    <h2 class="settings-sec-head" style="margin-top:1rem" onclick="toggleSettingsSection('sec-ui-layout')">▼ 🖥 UI LAYOUT</h2>
+    <div id="sec-ui-layout" class="settings-sec">
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の枠・数字の位置とサイズ（ゲーム再起動で反映）</div>
     <div class="settings-row">
       <label>BOARD Y <span class="settings-val" id="board-offset-y-val">0px</span></label>
@@ -1464,7 +1503,9 @@
       <input type="range" id="side-ui-font-scale" min="50" max="180" step="5" value="100"
         oninput="document.getElementById('side-ui-font-scale-val').textContent=this.value+'%';updateSetting('uiLayout',{sideUiFontScale:+this.value})">
     </div>
-    <h2 style="margin-top:1rem">⌨ CONTROLS</h2>
+    </div>
+    <h2 class="settings-sec-head" style="margin-top:1rem" onclick="toggleSettingsSection('sec-controls')">▼ ⌨ CONTROLS</h2>
+    <div id="sec-controls" class="settings-sec">
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">Left / Right key repeat settings</div>
     <div class="settings-row">
       <label>DAS DELAY <span class="settings-val" id="das-delay-val">133ms</span></label>
@@ -1492,6 +1533,7 @@
       <input type="range" id="swipe-threshold-input" min="5" max="80" step="1" value="10" oninput="updateSetting('swipeThreshold',this.value)">
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">タップとスワイプの判定距離 (小さい=敏感, 大きい=タップしやすい)</div>
+    </div>
     <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>
     <button class="btn" onclick="resetAllSettings()" style="margin-top:0.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;width:100%;">🗑 RESET ALL SETTINGS</button>
   </div>

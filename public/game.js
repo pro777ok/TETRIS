@@ -9,7 +9,7 @@ function _addGameTicker(fn) {
 }
 
 let mobileControlsEnabled = false; // Mobile controls toggle
-let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,
+let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',shakeIntensity:100,sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,arrowSpeed:100,arrowSize:100,shakeSpeed:100,rippleStrength:100,rippleSpeed:100,
   overlayOpacity:33,
   uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
   dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false}};
@@ -44,6 +44,12 @@ function updateSetting(key,val){
   else if(key==='quality'){settings.quality=val;document.getElementById('quality-val').textContent=val==='minimum'?'MINIMUM':val==='ultra'?'ULTRA':val.toUpperCase();}
   else if(key==='particles')settings.particles=val;
   else if(key==='shake')settings.shake=val;
+  else if(key==='shakeIntensity'){settings.shakeIntensity=parseInt(val);document.getElementById('shake-intensity-val').textContent=val+'%';}
+  else if(key==='shakeSpeed'){settings.shakeSpeed=parseInt(val);document.getElementById('shake-speed-val').textContent=val+'%';}
+  else if(key==='arrowSpeed'){settings.arrowSpeed=parseInt(val);document.getElementById('arrow-speed-val').textContent=val+'%';}
+  else if(key==='arrowSize'){settings.arrowSize=parseInt(val);document.getElementById('arrow-size-val').textContent=val+'%';}
+  else if(key==='rippleStrength'){settings.rippleStrength=parseInt(val);document.getElementById('ripple-strength-val').textContent=val+'%';}
+  else if(key==='rippleSpeed'){settings.rippleSpeed=parseInt(val);document.getElementById('ripple-speed-val').textContent=val+'%';}
   else if(key==='sfx'){settings.sfxVolume=parseInt(val);document.getElementById('sfx-val').textContent=val+'%';sfxVol=parseInt(val)/100;}
   else if(key==='tilt')settings.tilt=val;
   else if(key==='softDropInterval'){settings.softDropInterval=parseInt(val);document.getElementById('soft-drop-val').textContent=val==='0'?'INSTANT':val+'ms';}
@@ -57,6 +63,14 @@ function updateSetting(key,val){
   saveSettings();
 }
 function toggleSettings(){document.getElementById('settings-modal').classList.toggle('open');}
+function toggleSettingsSection(id){
+  const wrap=document.getElementById(id);
+  if(!wrap)return;
+  const closed=wrap.style.display==='none';
+  wrap.style.display=closed?'':'none';
+  const h=wrap.previousElementSibling;
+  if(h&&h.tagName==='H2')h.textContent=(closed?'▼ ':'▶ ')+h.textContent.replace(/^[▶▼]\s*/,'');
+}
 function toggleHostSettings(){const b=document.getElementById('host-settings-body');if(!b)return;const h=b.previousElementSibling;b.style.display=b.style.display==='none'?'':'none';if(h)h.textContent=b.style.display==='none'?'▶ ⚙ GAME SETTINGS':'▼ ⚙ GAME SETTINGS';}
 
 // ★ 背景画像機能
@@ -4705,8 +4719,10 @@ function openReplayViewer(replayData, mode) {
 // B2B切れ「脱力」エフェクト: ボードがぐったり落下してから戻る
 function _replayB2bBreak(rend, b2bCount) {
   if (!rend || settings.quality === 'minimum') return;
-  // B2B解除: ロック位置から3本の矢印（リプレイ再現）
-  if (rend._spawnB2BBreakArrows) rend._spawnB2BBreakArrows();
+  // B2B解除時のみ: カウンターから矢印（4以上溜まっている時のライン送信再現）
+  if (b2bCount>=4 && rend._spawnB2BBreakArrows) rend._spawnB2BBreakArrows(b2bCount);
+  // バッジが少し大きくなり→小さくなり→消える
+  if (rend._popB2bBadge) rend._popB2bBadge();
   // 「脱力」: ボードが一瞬下にドロップしてゆっくり戻る
   // + 白い放電ライン
   if (rend._breakB2bLightning) rend._breakB2bLightning();
@@ -5419,6 +5435,10 @@ class GameRenderer{
     this.b2bBadgeCont.y=this.mainBY+sOffY+90;
     this.root.addChild(this.b2bBadgeCont);
     this.b2bBadgeBg=new PIXI.Graphics();this.b2bBadgeCont.addChild(this.b2bBadgeBg);
+    // 12個の点で構成する星形の枠線（回転する）
+    this.b2bBadgeDots=new PIXI.Graphics();
+    this.b2bBadgeDots.x=28;this.b2bBadgeDots.y=28;
+    this.b2bBadgeCont.addChild(this.b2bBadgeDots);
     this.b2bBadgeLbl=new PIXI.Text('B2B',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:7,fill:0x888888,letterSpacing:2}));
     this.b2bBadgeLbl.anchor.set(0.5);this.b2bBadgeLbl.x=28;this.b2bBadgeLbl.y=13;
     this.b2bBadgeCont.addChild(this.b2bBadgeLbl);
@@ -5440,6 +5460,8 @@ class GameRenderer{
     }catch(e){console.warn('[b2b glitch] canvas init failed:',e);this._b2bGlitchSpr=null;this._b2bGlitchTex=null;this._b2bGlitchCtx=null;}
     this._b2bPunching=false;this._b2bPunchTime=0;this._b2bGlitchTime=0;this._b2bBadgeColor=0xffbe0b;
     this._b2bNoiseTimer=0;
+    this._b2bBadgeDotRot=0;
+    this._b2bBreakPop=null;
     this.b2bBadgeCont.visible=false;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
@@ -6072,9 +6094,10 @@ class GameRenderer{
       }
     }
     if(d.shakeX!==0||d.shakeY!==0){
-      d._shakeT=(d._shakeT||0)+0.9;
-      const sx=Math.sin(d._shakeT*3.8)*Math.abs(d.shakeX)*Math.sign(d.shakeX||1);
-      d.shakeX*=0.85;
+      const _ss=(settings.shakeSpeed||100)/100;
+      d._shakeT=(d._shakeT||0)+0.32*_ss;
+      const sx=Math.sin(d._shakeT*1.15)*Math.abs(d.shakeX)*Math.sign(d.shakeX||1);
+      d.shakeX*=0.9;
       if(Math.abs(d.shakeX)<0.15){d.shakeX=0;d._shakeT=0;}
       if(!d.gameOverTick){
         if(d.tilt===undefined)d.tilt=0;
@@ -6335,10 +6358,12 @@ class GameRenderer{
     if(!this.b2bBadgeCont)return;
     const cnt=this._b2bCount||0;
     if(cnt<1){
-      this.b2bBadgeCont.visible=false;
+      // 解除ポップアニメーション中は消さない（アニメーション側でフェードアウト）
+      if(!this._b2bBreakPop)this.b2bBadgeCont.visible=false;
       return;
     }
     this.b2bBadgeCont.visible=true;
+    this.b2bBadgeCont.alpha=1;
     const col=cnt>=8?0x0088ff:cnt>=5?0x00ccff:cnt>=3?0x00ff88:0xffbe0b;
     this.b2bBadgeNum.style.fill=col;
     this.b2bBadgeNum.text='x'+cnt;
@@ -6358,6 +6383,30 @@ class GameRenderer{
     bg.drawCircle(R,R,R);bg.endFill();
     // 内側リング
     bg.lineStyle(1,col,0.35);bg.drawCircle(R,R,R*0.75);
+    // 枠線: 12個の点で構成する星 = 外周12/内周12のギザギザ（角は少し丸める）
+    if(this.b2bBadgeDots){
+      const g=this.b2bBadgeDots;g.clear();
+      const N=24; // 12個の点の星 = 外側12 + 内側12 の頂点
+      const outer=R+4, inner=R-2;
+      const f=0.35; // 角の丸め（エッジ上の割合）
+      const verts=[];
+      for(let i=0;i<N;i++){
+        const a=(i/N)*Math.PI*2-Math.PI/2; // 上向きに点を開始
+        const rr=i%2===0?outer:inner;
+        verts.push([Math.cos(a)*rr,Math.sin(a)*rr]);
+      }
+      const ps=i=>{const p=verts[(i-1+N)%N],v=verts[i%N];return [p[0]+(v[0]-p[0])*f,p[1]+(v[1]-p[1])*f];};
+      const pe=i=>{const v=verts[i],n=verts[(i+1)%N];return [v[0]+(n[0]-v[0])*f,v[1]+(n[1]-v[1])*f];};
+      const s=ps(0);
+      g.lineStyle(2,col,0.95);
+      g.moveTo(s[0],s[1]);
+      for(let i=0;i<N;i++){
+        const e=pe(i),n=ps(i+1);
+        g.quadraticCurveTo(verts[i][0],verts[i][1],e[0],e[1]);
+        g.lineTo(n[0],n[1]);
+      }
+      g.closePath();
+    }
     // グリッチスキャンライン
     if(glitchAmt>0){
       const numLines=Math.floor(glitchAmt*4);
@@ -6384,6 +6433,13 @@ class GameRenderer{
     this._b2bPunchTime=0;
     this._b2bPunching=true;
     this._b2bGlitchTime=180; // 180ms グリッチ持続
+  }
+
+  // B2B解除時: バッジが少し大きくなり→小さくなり→消える
+  _popB2bBadge(){
+    if(!this.b2bBadgeCont||this._b2bBreakPop)return;
+    this.b2bBadgeCont.visible=true;
+    this._b2bBreakPop={t:0};
   }
 
   // B2Bカウンター常時グリッチノイズ更新
@@ -7149,6 +7205,7 @@ class GameRenderer{
         _b2bBreakCount=this._b2bCount;
         this._breakB2bLightning(); // B2B途切れ白稲妻
         this._triggerDatsuroku(this._b2bCount); // B2B切れ「脱力」エフェクト
+        this._popB2bBadge(); // バッジが少し大きくなり→小さくなり→消える
       }
       this._b2bCount=0;
     }
@@ -7781,10 +7838,12 @@ class GameRenderer{
 
   // B2B break: 枠からスパークルが上に上がりながらフェードアウト
   onB2BBreak(b2bCount){
-    this.showAttackBadge(b2bCount,'b2b_break');
+    // B2B解除時のライン送信は4以上溜まっている時のみ（矢印はB2Bカウンターから飛ばす）
+    if(b2bCount>=4){
+      this.showAttackBadge(b2bCount,'b2b_break');
+      if(settings.quality!=='low'&&settings.quality!=='minimum')this._spawnB2BBreakArrows(b2bCount);
+    }
     if(settings.quality==='low'||settings.quality==='minimum')return;
-    // B2B解除: ロック位置から3本の矢印
-    this._spawnB2BBreakArrows();
     const sc=this._uiScale||1;
     const bx=this.mainBX,by=this.mainBY;
     const bw=BOARD_W*sc,bh=BOARD_H*sc;
@@ -8174,6 +8233,14 @@ class GameRenderer{
     setTimeout(elimTick,300);
   }
 
+  // こちらが攻撃を与えた際: 相手の盤面を揺らす（settings.shakeIntensity で強さ可変）
+  shakeOpponentBoard(d,attack){
+    if(!d||d.dead||settings.shake==='off'||!settings.shakeIntensity)return;
+    const amp=Math.min(26,3+attack*3)*(settings.shakeIntensity/100);
+    if(amp<=0)return;
+    d.shakeX=(Math.random()<0.5?-1:1)*amp;
+  }
+
   triggerOpponentSpin(pid,spinType){
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     const isTSpin=spinType&&spinType.startsWith('T');
@@ -8366,9 +8433,10 @@ class GameRenderer{
     if(Math.abs(this.tiltAngle)<0.0005&&Math.abs(this.tiltTarget)<0.0005)this.tiltAngle=0;
     if(settings.tilt==='on')this.boardCont.rotation=this.tiltAngle;else this.boardCont.rotation=0;
     if(this.shakePower>0){
-      this._shakeT=(this._shakeT||0)+0.9;
-      this.boardOffsetX=Math.sin(this._shakeT*3.8)*this.shakePower;
-      this.shakePower*=0.52;
+      const _ss=(settings.shakeSpeed||100)/100;
+      this._shakeT=(this._shakeT||0)+0.3*_ss;
+      this.boardOffsetX=Math.sin(this._shakeT*1.1)*this.shakePower;
+      this.shakePower*=0.6;
       if(this.shakePower<0.15){this.shakePower=0;this.boardOffsetX=0;this._shakeT=0;}
     }
     this.wallBumpX*=0.55;
@@ -8417,6 +8485,27 @@ class GameRenderer{
 
     // B2Bバッジ パンチ＆グリッチアニメーション
     if(this.b2bBadgeCont&&this.b2bBadgeCont.visible){
+      // 解除ポップ: 少し大きくなり→小さくなり→消える
+      if(this._b2bBreakPop){
+        this._b2bBreakPop.t+=dt;
+        const t=this._b2bBreakPop.t/420;
+        if(t>=1){
+          this._b2bBreakPop=null;
+          this.b2bBadgeCont.visible=false;
+          this.b2bBadgeCont.scale.set(1);
+          this.b2bBadgeNum.scale.set(1);
+          this.b2bBadgeCont.alpha=1;
+        }else{
+          // 0→1→0 の山（約0.35で頂点）: 少し大きくなり→小さくなり→フェードアウト
+          const e=t<0.35?t/0.35:1-(t-0.35)/0.65;
+          this.b2bBadgeCont.scale.set(1+e*0.35);
+          this.b2bBadgeCont.alpha=Math.max(0,1-t*t);
+        }
+      }else if(this.b2bBadgeDots){
+        // 12個の点で構成する星（枠線）を回転
+        this._b2bBadgeDotRot=(this._b2bBadgeDotRot||0)+dt*0.0018;
+        this.b2bBadgeDots.rotation=this._b2bBadgeDotRot;
+      }
       // パンチ: 数字がスケールアップ→戻る
       if(this._b2bPunching){
         this._b2bPunchTime=(this._b2bPunchTime||0)+dt;
@@ -8807,6 +8896,8 @@ class GameRenderer{
     const vv=Math.max(0.001,Math.min(0.999,(sp.y-a.y)/a.height));
     this._rippleFilter.uniforms.uCenter=[u,vv];
     this._rippleFilter.uniforms.uTime=0;
+    this._rippleFilter.uniforms.uAmp=0.05*((settings.rippleStrength??100)/100);
+    this._rippleFilter.uniforms.uSpeed=52*((settings.rippleSpeed??100)/100);
     this._rippleActive=true;this._rippleT=0;
   }
 
@@ -8868,8 +8959,9 @@ class GameRenderer{
       return d&&!d.dead&&d.cont.visible;
     });
     if(targets.length===0)return;
-    const dur=Math.min(950,500+attack*40)/2;
-    const size=Math.min(52,16+attack*4);
+    const _as=(settings.arrowSpeed||100)/100;
+    const dur=(Math.min(950,500+attack*40)/2)*(1/_as);
+    const size=Math.min(52,16+attack*4)*((settings.arrowSize||100)/100);
     const color=this._arrowColor();
     for(const p of targets){
       const d=this.opBoardData[p.id];
@@ -8880,7 +8972,13 @@ class GameRenderer{
 
   // 相手から攻撃を受けた時: 相手の盤面から自分の盤面へ矢印
   onLinesReceived(lines,fromId){
-    if(!this.boardCont||settings.particles==='off'||settings.quality==='minimum')return;
+    if(!this.boardCont)return;
+    // 敵から攻撃が来たら自分の盤面を揺らす（揺れの大きさは settings.shakeIntensity 可変）
+    if(lines>0&&settings.shake!=='off'&&settings.shakeIntensity>0){
+      const amp=Math.min(24,4+lines*4)*(settings.shakeIntensity/100);
+      this.shakePower=Math.max(this.shakePower||0,amp);
+    }
+    if(settings.particles==='off'||settings.quality==='minimum')return;
     const d=this.opBoardData[fromId];
     let start;
     if(d&&d.cont.visible){
@@ -8891,16 +8989,18 @@ class GameRenderer{
       start={x:cx,y:this.H*(0.15+Math.random()*0.7)};
     }
     const end=this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H);
-    const dur=Math.min(950,500+lines*40)/2;
-    const size=Math.min(52,16+lines*4);
+    const _as=(settings.arrowSpeed||100)/100;
+    const dur=(Math.min(950,500+lines*40)/2)*(1/_as);
+    const size=Math.min(52,16+lines*4)*((settings.arrowSize||100)/100);
     this._spawnArrow(start,end,size,this._arrowColor(),dur);
   }
 
   // 盤面ローカル座標内のランダムな点をスクリーン座標で返す
+  // ばらつきを少なくするため中央付近に集中させる（散らし: ±0.30）
   _boardRandomPoint(cont,w,h){
     const tl=cont.toGlobal(new PIXI.Point(0,0));
     const br=cont.toGlobal(new PIXI.Point(w,h));
-    return {x:tl.x+Math.random()*(br.x-tl.x),y:tl.y+Math.random()*(br.y-tl.y)};
+    return {x:tl.x+(br.x-tl.x)*(0.5+(Math.random()-0.5)*0.6),y:tl.y+(br.y-tl.y)*(0.5+(Math.random()-0.5)*0.6)};
   }
 
   _arrowColor(){
@@ -8916,21 +9016,23 @@ class GameRenderer{
     this._sendArrows.push({g,p0:{x:p0.x,y:p0.y},p1,p2:{x:p2.x,y:p2.y},t:0,dur,size,color,trail:[]});
   }
 
-  // B2B解除時: ロック位置から3本の矢印が飛び出す
-  _spawnB2BBreakArrows(){
+  // B2B解除時: B2Bカウンターからカウント分の矢印が相手の盤面へ飛ぶ
+  _spawnB2BBreakArrows(b2bCount){
     if(!this.effectsLayer||settings.particles==='off'||settings.quality==='minimum')return;
-    const gs=this.gs||gameState;
-    const lx=(gs&&gs._lockX!=null)?gs._lockX:Math.floor(BOARD_W/2);
-    const ly=(gs&&gs._lockY!=null)?gs._lockY:(HIDDEN+Math.floor(BOARD_H/2));
-    const c=this._boardCenterLocal(lx,ly,(gs&&gs._lockType)||0,(gs&&gs._lockRot)||0);
-    const start=this.boardCont.toGlobal(new PIXI.Point(c.x,c.y));
+    // 出発位置: B2Bカウンター（バッジ）中央
+    let start;
+    try{
+      if(this.b2bBadgeCont)start=this.b2bBadgeCont.toGlobal(new PIXI.Point(28,28));
+    }catch(e){}
+    if(!start)start={x:this.mainBX-90,y:this.mainBY+90};
     const targets=this.opponentPlayers.filter(p=>{
       const d=this.opBoardData[p.id];
       return d&&!d.dead&&d.cont.visible;
     });
-    const dur=500/2;
-    const size=36;
-    const colors=[0xff006e,0xffbe0b,0x00f5ff];
+    const _as=(settings.arrowSpeed||100)/100;
+    const dur=500/2*(1/_as);
+    const size=30*((settings.arrowSize||100)/100);
+    const colors=[0xff006e,0xffbe0b,0x00f5ff,0x00ffcc,0xaa00ff];
     let ends=[];
     if(targets.length>0){
       for(let i=0;i<3;i++){
@@ -9637,6 +9739,13 @@ socket.on('attack_sent',({fromId,toId,attack,clearRows,cancelledByGarbage,lockX,
     // My attack going to opponent — update gauge immediately
     const opData=renderer.opPuyoData?.[toId]||renderer.opBoardData?.[toId];
     if(opData) opData.ojamaQueue=(opData.ojamaQueue||0)+(attack&~1);
+    // こちらが攻撃 → 相手の盤面を揺らす（揺れの大きさは settings.shakeIntensity 可変）
+    try{
+      const targetD=renderer.opBoardData?.[toId];
+      if(renderer.shakeOpponentBoard && targetD && attack>0){
+        renderer.shakeOpponentBoard(targetD,attack);
+      }
+    }catch(e){}
     // Show cancellation on opponent's board from lock position
     if(cancelledByGarbage>0 && renderer.opBoardData && renderer.opBoardData[toId]){
       const d=renderer.opBoardData[toId];
@@ -12654,6 +12763,30 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('quality-val').textContent=settings.quality==='minimum'?'MINIMUM':settings.quality==='ultra'?'ULTRA':settings.quality.toUpperCase();
   document.getElementById('particles-select').value=settings.particles;
   document.getElementById('shake-select').value=settings.shake;
+  const siEl=document.getElementById('shake-intensity');
+  const siValEl=document.getElementById('shake-intensity-val');
+  if(siEl)siEl.value=settings.shakeIntensity??100;
+  if(siValEl)siValEl.textContent=(settings.shakeIntensity??100)+'%';
+  const shsEl=document.getElementById('shake-speed');
+  const shsValEl=document.getElementById('shake-speed-val');
+  if(shsEl)shsEl.value=settings.shakeSpeed??100;
+  if(shsValEl)shsValEl.textContent=(settings.shakeSpeed??100)+'%';
+  const arsEl=document.getElementById('arrow-speed');
+  const arsValEl=document.getElementById('arrow-speed-val');
+  if(arsEl)arsEl.value=settings.arrowSpeed??100;
+  if(arsValEl)arsValEl.textContent=(settings.arrowSpeed??100)+'%';
+  const arsZEl=document.getElementById('arrow-size');
+  const arsZValEl=document.getElementById('arrow-size-val');
+  if(arsZEl)arsZEl.value=settings.arrowSize??100;
+  if(arsZValEl)arsZValEl.textContent=(settings.arrowSize??100)+'%';
+  const rpsEl=document.getElementById('ripple-strength');
+  const rpsValEl=document.getElementById('ripple-strength-val');
+  if(rpsEl)rpsEl.value=settings.rippleStrength??100;
+  if(rpsValEl)rpsValEl.textContent=(settings.rippleStrength??100)+'%';
+  const rptrEl=document.getElementById('ripple-speed');
+  const rptrValEl=document.getElementById('ripple-speed-val');
+  if(rptrEl)rptrEl.value=settings.rippleSpeed??100;
+  if(rptrValEl)rptrValEl.textContent=(settings.rippleSpeed??100)+'%';
   document.getElementById('sfx-volume').value=settings.sfxVolume;
   document.getElementById('sfx-val').textContent=settings.sfxVolume+'%';
   document.getElementById('tilt-select').value=settings.tilt;
