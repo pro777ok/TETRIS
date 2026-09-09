@@ -2663,7 +2663,8 @@ class BotPlayer {
       io.to(this.roomId).emit('opponent_spin', { id: this.id, spinType: effectiveSpin || 'LOCK' });
       if (lines > 0) {
         io.to(this.roomId).emit('opponent_line_clear', {
-          id: this.id, count: lines, spinType: effectiveSpin, isB2B, ren: this.ren, allClear
+          id: this.id, count: lines, spinType: effectiveSpin, isB2B, ren: this.ren, allClear,
+          attack: attack || 0, lockX: x, lockY: y
         });
       }
       const garbageLines=this.garbageQueue?this.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
@@ -3392,8 +3393,8 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('opponent_puyo_update', {id: socket.id, ...data});
   });
 
-  socket.on('line_clear_effect', ({count,spinType,isB2B,ren,allClear}) => {
-    socket.to(socket.roomId).emit('opponent_line_clear',{id:socket.id,count,spinType,isB2B,ren,allClear});
+  socket.on('line_clear_effect', ({count,spinType,isB2B,ren,allClear,attack,lockX,lockY}) => {
+    socket.to(socket.roomId).emit('opponent_line_clear',{id:socket.id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY});
   });
 
   socket.on('get_rooms', () => {

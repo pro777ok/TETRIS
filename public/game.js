@@ -4668,7 +4668,7 @@ function openReplayViewer(replayData, mode) {
         break;
       }
       case 'opponent_line_clear': {
-        renderer.triggerOpponentLineClear && renderer.triggerOpponentLineClear(data.id, data.count, data.spinType, data.isB2B, data.ren, data.allClear);
+        renderer.triggerOpponentLineClear && renderer.triggerOpponentLineClear(data.id, data.count, data.spinType, data.isB2B, data.ren, data.allClear, data.attack||0, data.lockX, data.lockY);
         break;
       }
       case 'receive_garbage': {
@@ -5128,6 +5128,98 @@ class FloatLabel{
   destroy(){this.alive=false;try{this.txt.destroy();}catch(e){}}
 }
 
+// ─── 相手盤面レンズ波紋（相手が6ライン以上の攻撃を送った「瞬間」に相手自身の盤面で発火） ───
+const _OP_RIPPLE_DURATION=1150;
+const _RIPPLE_FRAG=`
+  precision mediump float;
+  varying vec2 vTextureCoord;
+  uniform sampler2D uSampler;
+  uniform vec2 uCenter;
+  uniform float uTime;
+  uniform float uDuration;
+  uniform float uSpeed;
+  uniform float uRadius;
+  uniform float uAmp;
+  uniform float uSpread;
+  uniform float uMaxDist;
+  void main(void){
+    vec2 delta=vTextureCoord-uCenter;
+    float dist=max(length(delta),0.0005);
+    vec2 dir=delta/dist;
+    float falloff=clamp(1.0-dist/uMaxDist,0.0,1.0);
+    falloff=falloff*falloff*(3.0-2.0*falloff);
+    float fade=1.0-smoothstep(0.0,uDuration,uTime);
+    float travel=dist*uRadius-uTime*uSpeed;
+    // 単一の波面（sinの多重リングを廃止 → 1回だけ広がる波紋）
+    float band=exp(-travel*travel*uSpread);
+    vec2 disp=dir*band*uAmp*falloff*fade;
+    vec2 uv=clamp(vTextureCoord+disp,0.001,0.999);
+    gl_FragColor=texture2D(uSampler,uv);
+  }
+`;
+
+function _buildRippleFilter(quality){
+  const f=new PIXI.Filter(undefined,_RIPPLE_FRAG,{
+    uCenter:[0.5,0.5],uTime:_OP_RIPPLE_DURATION/1000+1,uDuration:_OP_RIPPLE_DURATION/1000,
+    uSpeed:52,uRadius:16,uAmp:0.05,uSpread:0.12,uMaxDist:0.72
+  });
+  f.padding=24;
+  // 描画負荷対策: ultra以外は半分解像度でレンダリング
+  f.resolution=(quality==='ultra')?1:0.5;
+  return f;
+}
+
+// 相手盤面コンテナへ波紋フィルタを用意する（初回のみ構築・常時適用で黒フラッシュ防止）
+function _opRippleEnsure(d,cont,bw,bh){
+  if(!cont)return false;
+  if(d._opRippleFilter)return true;
+  const f=_buildRippleFilter(settings.quality);
+  const pad=48;
+  const tl=cont.toGlobal(new PIXI.Point(0,0));
+  const br=cont.toGlobal(new PIXI.Point(bw,bh));
+  d._opRippleArea=new PIXI.Rectangle(tl.x-pad,tl.y-pad,(br.x-tl.x)+pad*2,(br.y-tl.y)+pad*2);
+  d._opRippleFilter=f;
+  cont.filterArea=d._opRippleArea;
+  cont.filters=[f];
+  return true;
+}
+
+// 相手盤面レンズ波紋を発火（中心: ロック位置があればそこ、なければ盤面中央）
+function _opRippleLaunch(d,cont,bw,bh,cellLocal,lockX,lockY){
+  if(!d||settings.quality==='minimum')return;
+  if(d._opRippleActive)return;
+  if(!_opRippleEnsure(d,cont,bw,bh))return;
+  const a=d._opRippleArea;
+  let gx,gy;
+  if(lockX!=null&&lockY!=null&&cellLocal){
+    const cLoc=new PIXI.Point((lockX+0.5)*cellLocal,(lockY-HIDDEN+0.5)*cellLocal);
+    const g=cont.toGlobal(cLoc);
+    gx=g.x;gy=g.y;
+  }else{
+    const tl=cont.toGlobal(new PIXI.Point(0,0));
+    gx=tl.x+bw*0.5;gy=tl.y+bh*0.5;
+  }
+  const uv=[Math.max(0.001,Math.min(0.999,(gx-a.x)/a.width)),Math.max(0.001,Math.min(0.999,(gy-a.y)/a.height))];
+  const f=d._opRippleFilter;
+  f.uniforms.uCenter=[uv[0],uv[1]];
+  f.uniforms.uTime=0;
+  f.uniforms.uAmp=0.05*((settings.rippleStrength??100)/100);
+  f.uniforms.uSpeed=52*((settings.rippleSpeed??100)/100);
+  d._opRippleActive=true;d._opRippleT=0;
+}
+
+// 相手盤面波紋の進み更新（1フレームごとに全相手分）
+function _opRippleUpdateAll(opData,dt){
+  if(settings.quality==='minimum')return;
+  for(const pid in opData){
+    const d=opData[pid];
+    if(!d||!d._opRippleActive||!d._opRippleFilter)continue;
+    d._opRippleT+=dt;
+    d._opRippleFilter.uniforms.uTime=d._opRippleT/1000;
+    if(d._opRippleT>=_OP_RIPPLE_DURATION)d._opRippleActive=false;
+  }
+}
+
 class GameRenderer{
   constructor(app,players,gs){
     this.app=app;this.players=players;this.gs=gs;
@@ -5142,6 +5234,7 @@ class GameRenderer{
     this.comboLabel=null;this.attackLabel=null;this._attackAccum=0;
     this.opBoardData={};this._flashAlpha=0;
     this._gameOverTick=null;
+    this._incomingShakes=[];
     // B2B 雷エフェクト
     this._b2bCount=0;this._lightningBolts=[];this._lightningTimer=0;
     // 6ライン以上送信時の魚眼レンズ・波紋エフェクト
@@ -8256,9 +8349,15 @@ class GameRenderer{
     }
   }
 
-  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear){
+  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear,attack,lockX,lockY){
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     if(settings.quality==='minimum')return;
+
+    // 6ライン以上の攻撃を送った「瞬間」→ 相手自身の盤面でレンズ波紋
+    if((attack||0)>=6){
+      const cellLocal=d.boardW/getGameCols();
+      _opRippleLaunch(d,d.cont,d.boardW,d.boardH,cellLocal,lockX,lockY);
+    }
 
     // フラッシュはテトリス(4ライン)のときのみ
     const isTDouble=spinType==='TSPIN'&&count===2;
@@ -8410,6 +8509,17 @@ class GameRenderer{
   }
 
   updateBoardAnim(dt){
+    // 相手からの攻撃着弾（矢印が自盤面に届くタイミング）: 揺れのみ（レンズ波紋は相手盤面側で発火）
+    if(this._incomingShakes&&this._incomingShakes.length){
+      this._incomingShakes=this._incomingShakes.filter(s=>{
+        s.t+=dt;
+        if(s.t>=s.dur){
+          if(s.amp>0)this.shakePower=Math.max(this.shakePower||0,s.amp);
+          return false;
+        }
+        return true;
+      });
+    }
     if(this.boardOffsetY>0){this.boardOffsetY*=0.95;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
     // T-spin afterimage fade
     if(this._afterimageAlpha>0.01){
@@ -8839,6 +8949,7 @@ class GameRenderer{
     this._drawDangerWarning();
     this.updateParticlesEtc(dt);
     this._updateRippleFx(dt);
+    _opRippleUpdateAll(this.opBoardData,dt);
     this._updateSendArrows(dt);
     // ── Elapsed time ──
     if(this.elapsedText){
@@ -8881,20 +8992,33 @@ class GameRenderer{
     if(!this.boardCont||settings.quality==='minimum')return;
     // 既に波紋が広がっている最中は再発動しない（連なる多重波紋を防ぐ）
     if(this._rippleActive)return;
-    if(!this._rippleFilter){
-      this._rippleFilter=this._buildRippleFilter();
-      const sc=this._uiScale||1,pad=48;
-      this._rippleFilterArea=new PIXI.Rectangle(this.mainBX-pad,this.mainBY-pad,BOARD_W*sc+pad*2,BOARD_H*sc+pad*2);
-      this.boardCont.filterArea=this._rippleFilterArea;
-      this.boardCont.filters=[this._rippleFilter];
-    }
     // ロック位置をスクリーン座標に変換 → filterArea（スクリーン座標）内のUVとして中心指定
     const c=this._boardCenterLocal(lockX,lockY,type,rot);
     const sp=this.boardCont.toGlobal(new PIXI.Point(c.x,c.y));
+    this._launchRippleAtUV(this._uvForGlobalPoint(sp.x,sp.y));
+  }
+
+  _ensureRippleFilter(){
+    if(this._rippleFilter)return true;
+    if(!this.boardCont)return false;
+    this._rippleFilter=this._buildRippleFilter();
+    const sc=this._uiScale||1,pad=48;
+    this._rippleFilterArea=new PIXI.Rectangle(this.mainBX-pad,this.mainBY-pad,BOARD_W*sc+pad*2,BOARD_H*sc+pad*2);
+    this.boardCont.filterArea=this._rippleFilterArea;
+    this.boardCont.filters=[this._rippleFilter];
+    return true;
+  }
+
+  _uvForGlobalPoint(globalX,globalY){
+    if(!this._ensureRippleFilter()||!this._rippleFilterArea)return null;
     const a=this._rippleFilterArea;
-    const u=Math.max(0.001,Math.min(0.999,(sp.x-a.x)/a.width));
-    const vv=Math.max(0.001,Math.min(0.999,(sp.y-a.y)/a.height));
-    this._rippleFilter.uniforms.uCenter=[u,vv];
+    return [Math.max(0.001,Math.min(0.999,(globalX-a.x)/a.width)),Math.max(0.001,Math.min(0.999,(globalY-a.y)/a.height))];
+  }
+
+  _launchRippleAtUV(uv){
+    if(!uv||!this._rippleFilter||settings.quality==='minimum')return;
+    if(this._rippleActive)return;
+    this._rippleFilter.uniforms.uCenter=[uv[0],uv[1]];
     this._rippleFilter.uniforms.uTime=0;
     this._rippleFilter.uniforms.uAmp=0.05*((settings.rippleStrength??100)/100);
     this._rippleFilter.uniforms.uSpeed=52*((settings.rippleSpeed??100)/100);
@@ -8902,41 +9026,7 @@ class GameRenderer{
   }
 
   _buildRippleFilter(){
-    const fragSrc=`
-      precision mediump float;
-      varying vec2 vTextureCoord;
-      uniform sampler2D uSampler;
-      uniform vec2 uCenter;
-      uniform float uTime;
-      uniform float uDuration;
-      uniform float uSpeed;
-      uniform float uRadius;
-      uniform float uAmp;
-      uniform float uSpread;
-      uniform float uMaxDist;
-      void main(void){
-        vec2 delta=vTextureCoord-uCenter;
-        float dist=max(length(delta),0.0005);
-        vec2 dir=delta/dist;
-        float falloff=clamp(1.0-dist/uMaxDist,0.0,1.0);
-        falloff=falloff*falloff*(3.0-2.0*falloff);
-        float fade=1.0-smoothstep(0.0,uDuration,uTime);
-        float travel=dist*uRadius-uTime*uSpeed;
-        // 単一の波面（sinの多重リングを廃止 → 1回だけ広がる波紋）
-        float band=exp(-travel*travel*uSpread);
-        vec2 disp=dir*band*uAmp*falloff*fade;
-        vec2 uv=clamp(vTextureCoord+disp,0.001,0.999);
-        gl_FragColor=texture2D(uSampler,uv);
-      }
-    `;
-    const f=new PIXI.Filter(undefined,fragSrc,{
-      uCenter:[0.5,0.5],uTime:(this._rippleDuration)/1000+1,uDuration:(this._rippleDuration)/1000,
-      uSpeed:52,uRadius:16,uAmp:0.05,uSpread:0.12,uMaxDist:0.72
-    });
-    f.padding=24;
-    // 描画負荷対策: ultra以外は半分解像度でレンダリング
-    f.resolution=(settings.quality==='ultra')?1:0.5;
-    return f;
+    return _buildRippleFilter(settings.quality);
   }
 
   _updateRippleFx(dt){
@@ -8973,12 +9063,6 @@ class GameRenderer{
   // 相手から攻撃を受けた時: 相手の盤面から自分の盤面へ矢印
   onLinesReceived(lines,fromId){
     if(!this.boardCont)return;
-    // 敵から攻撃が来たら自分の盤面を揺らす（揺れの大きさは settings.shakeIntensity 可変）
-    if(lines>0&&settings.shake!=='off'&&settings.shakeIntensity>0){
-      const amp=Math.min(24,4+lines*4)*(settings.shakeIntensity/100);
-      this.shakePower=Math.max(this.shakePower||0,amp);
-    }
-    if(settings.particles==='off'||settings.quality==='minimum')return;
     const d=this.opBoardData[fromId];
     let start;
     if(d&&d.cont.visible){
@@ -8992,6 +9076,11 @@ class GameRenderer{
     const _as=(settings.arrowSpeed||100)/100;
     const dur=(Math.min(950,500+lines*40)/2)*(1/_as);
     const size=Math.min(52,16+lines*4)*((settings.arrowSize||100)/100);
+    // 矢印が自盤面に着弾するタイミングで揺れ（レンズ波紋は相手盤面側で発生させるため自盤面では発火しない）
+    const amp=(lines>0&&settings.shake!=='off'&&settings.shakeIntensity>0)?Math.min(24,4+lines*4)*(settings.shakeIntensity/100):0;
+    if(!this._incomingShakes)this._incomingShakes=[];
+    this._incomingShakes.push({t:0,dur:Math.max(1,dur),amp});
+    if(settings.particles==='off'||settings.quality==='minimum')return;
     this._spawnArrow(start,end,size,this._arrowColor(),dur);
   }
 
@@ -9411,6 +9500,7 @@ class SpectatorRenderer{
         });
       }
     });
+    _opRippleUpdateAll(this.opBoardData,dt);
   }
   markDead(pid){
     const d=this.opBoardData[pid];if(!d)return;
@@ -9426,8 +9516,13 @@ class SpectatorRenderer{
     setTimeout(()=>{if(d)d.tiltTarget=0;},500);
   }
 
-  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear){
+  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear,attack,lockX,lockY){
     const d=this.opBoardData[pid];if(!d||d.dead)return;
+    // 6ライン以上の攻撃を送った「瞬間」→ 相手自身の盤面でレンズ波紋
+    if((attack||0)>=6){
+      const cellLocal=d.bw/getGameCols();
+      _opRippleLaunch(d,d.cont,d.bw,d.bh,cellLocal,lockX,lockY);
+    }
     // 傾き
     const isTDouble=spinType==='TSPIN'&&count===2;
     const isTTriple=spinType==='TSPIN'&&count===3;
@@ -9727,9 +9822,9 @@ socket.on('opponent_spin',({id,spinType})=>{
   if(renderer&&renderer.triggerOpponentSpin)renderer.triggerOpponentSpin(id,spinType);
 });
 
-socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear})=>{
-  ReplayRecorder.record('opponent_line_clear',{id,count,spinType,isB2B,ren,allClear});
-  if(renderer&&renderer.triggerOpponentLineClear)renderer.triggerOpponentLineClear(id,count,spinType,isB2B,ren,allClear);
+socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY})=>{
+  ReplayRecorder.record('opponent_line_clear',{id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY});
+  if(renderer&&renderer.triggerOpponentLineClear)renderer.triggerOpponentLineClear(id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY);
 });
 
 socket.on('attack_sent',({fromId,toId,attack,clearRows,cancelledByGarbage,lockX,lockY})=>{
@@ -12293,6 +12388,8 @@ class PuyoRenderer {
       this.root.x=0; this.root.y=0; this._shakePower=0;
     }
 
+    _opRippleUpdateAll(this.opPuyoData,dt);
+
     this.drawAll();
   }
 
@@ -12424,9 +12521,14 @@ class PuyoRenderer {
   }
 
   // ─── Tetris opponent effects (cross-mode) ───
-  triggerOpponentLineClear(id, count, spinType, isB2B, ren, allClear){
+  triggerOpponentLineClear(id, count, spinType, isB2B, ren, allClear, attack, lockX, lockY){
     const d=this.opPuyoData[id];
     if(!d||!d._cont||!d._isTetrisBoard)return;
+    // 6ライン以上の攻撃を送った「瞬間」→ 相手自身の盤面でレンズ波紋
+    if((attack||0)>=6){
+      const cellLocal=d._bW/getGameCols();
+      _opRippleLaunch(d,d._cont,d._bW,d._bH,cellLocal,lockX,lockY);
+    }
     if(!d.sinkOffset)d.sinkOffset=0;
     const renScale=Math.min(ren||0,10)/10;
     if(count===1||count===2||count===3){
