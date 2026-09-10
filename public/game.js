@@ -6460,8 +6460,8 @@ class GameRenderer{
     const col=cnt>=8?0x0088ff:cnt>=5?0x00ccff:cnt>=3?0x00ff88:0xffbe0b;
     this.b2bBadgeNum.style.fill=col;
     this.b2bBadgeNum.text='x'+cnt;
-    // B2Bが高いほどバッジも大きく
-    const badgeScale=1+Math.min(cnt*0.06,0.5);
+    // B2Bが高いほどバッジも大きく、10・20…と10の倍数ごとに1.2倍
+    const badgeScale=(1+Math.min(cnt*0.06,0.5))*Math.pow(1.2,Math.floor(cnt/10));
     this.b2bBadgeCont.scale.set(badgeScale);
     this._b2bBadgeColor=col;
     this._drawB2bBadgeBg(col,0);
@@ -8349,7 +8349,7 @@ class GameRenderer{
     }
   }
 
-  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear,attack,lockX,lockY){
+  triggerOpponentLineClear(pid,count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount){
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     if(settings.quality==='minimum')return;
 
@@ -8386,8 +8386,10 @@ class GameRenderer{
     }
 
     // B2B雷
+    // サーバーから正確なb2bCountが来たらそれを使う（解除時は0）
+    if(b2bCount!==undefined) d.b2bCount=b2bCount;
+    else if(isB2B) d.b2bCount=(d.b2bCount||0)+1;
     if(isB2B&&settings.quality!=='low'){
-      d.b2bCount=(d.b2bCount||0)+1;
       d.lightTimer=Math.min(80,40+d.b2bCount*8);
     }
 
@@ -8939,6 +8941,77 @@ class GameRenderer{
     this._updateBadge(dt);
   }
 
+  // 相手がB2Bを4以上貯めたら自分の盤面の中心より少し上に薄く「-N」を表示。
+  // B2Bが解除されたら少し大きくなって→小さくなって消える。
+  _updateOpponentThreats(dt){
+    if(!this.opBoardData||!this.effectsLayer)return;
+    if(!this._threats)this._threats={};
+    const sc=this._uiScale||1;
+    const bW=BOARD_W*sc,bH=BOARD_H*sc;
+    const baseX=this.mainBX+bW/2,baseY=this.mainBY+bH*0.34;
+    const threatened=this.opponentPlayers.filter(p=>{
+      const d=this.opBoardData[p.id];
+      return d&&!d.dead&&(d.b2bCount||0)>=4;
+    });
+    // 複数敵は横にずらして並べる
+    const n=threatened.length;
+    threatened.forEach((p,idx)=>{
+      const d=this.opBoardData[p.id];
+      const b2b=d.b2bCount||0;
+      const x=baseX+(idx-(n-1)/2)*70;
+      const y=baseY+(idx%2)*22;
+      let th=this._threats[p.id];
+      if(!th){
+        const cont=new PIXI.Container();
+        const txt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron,sans-serif',fontSize:Math.floor(26*sc),fill:0xff5555,fontWeight:'700',stroke:0x000000,strokeThickness:4}));
+        txt.anchor.set(0.5);
+        cont.addChild(txt);
+        this.effectsLayer.addChild(cont);
+        th={cont,txt,shown:false,pop:null,appear:0};
+        this._threats[p.id]=th;
+      }
+      th.txt.text='-'+b2b;
+      th.cont.x=x;th.cont.y=y;
+      if(!th.shown){
+        th.shown=true;
+        th.pop=null;
+        th.appear=0;
+        th.cont.visible=true;
+      }
+    });
+    for(const pid of Object.keys(this._threats)){
+      const th=this._threats[pid];
+      if(!th)continue;
+      const active=threatened.some(p=>p.id===pid);
+      if(active){
+        // 表示中: 軽く出現アニメーション後、薄く固定表示
+        th.appear+=dt;
+        const a=Math.min(th.appear/180,1);
+        th.cont.alpha=0.5*a;
+        th.cont.scale.set(0.85+0.15*a);
+        continue;
+      }
+      if(th.shown&&!th.pop){
+        th.pop={t:0};
+        th.appear=180;
+        th.cont.alpha=0.5;
+      }
+      if(th.pop){
+        th.pop.t+=dt;
+        const t=th.pop.t/480;
+        if(t>=1){
+          th.pop=null;th.shown=false;
+          th.cont.visible=false;th.cont.scale.set(1);th.cont.alpha=0.5;
+        }else{
+          // 少し大きくなり(→1.35)→小さくなり(→0)→フェードアウト
+          const s=t<0.3?1+(t/0.3)*0.35:1.35-(t-0.3)/0.7*1.35;
+          th.cont.scale.set(s);
+          th.cont.alpha=Math.max(0,0.5*(1-t));
+        }
+      }
+    }
+  }
+
   update(dt){
     this.drawBoard();this.drawGhost();this.drawCurrent();
     this.drawNextPieces();this.drawHold();
@@ -8951,6 +9024,7 @@ class GameRenderer{
     this._updateRippleFx(dt);
     _opRippleUpdateAll(this.opBoardData,dt);
     this._updateSendArrows(dt);
+    this._updateOpponentThreats(dt);
     // ── Elapsed time ──
     if(this.elapsedText){
       const gs=this.gs||gameState||puyoGameState;
@@ -9063,6 +9137,12 @@ class GameRenderer{
   // 相手から攻撃を受けた時: 相手の盤面から自分の盤面へ矢印
   onLinesReceived(lines,fromId){
     if(!this.boardCont)return;
+    // バッチコンボフラッシュ直後は onBatchComboFlush が3本を出すため1本は省略
+    let skipArrow=false;
+    if(this._batchFlushArrows&&this._batchFlushArrows[fromId]&&(performance.now()-this._batchFlushArrows[fromId])<2000){
+      delete this._batchFlushArrows[fromId];
+      skipArrow=true;
+    }
     const d=this.opBoardData[fromId];
     let start;
     if(d&&d.cont.visible){
@@ -9080,16 +9160,18 @@ class GameRenderer{
     const amp=(lines>0&&settings.shake!=='off'&&settings.shakeIntensity>0)?Math.min(24,4+lines*4)*(settings.shakeIntensity/100):0;
     if(!this._incomingShakes)this._incomingShakes=[];
     this._incomingShakes.push({t:0,dur:Math.max(1,dur),amp});
+    if(skipArrow)return;
     if(settings.particles==='off'||settings.quality==='minimum')return;
     this._spawnArrow(start,end,size,this._arrowColor(),dur);
   }
 
   // 盤面ローカル座標内のランダムな点をスクリーン座標で返す
-  // ばらつきを少なくするため中央付近に集中させる（散らし: ±0.30）
-  _boardRandomPoint(cont,w,h){
+  // ばらつきを少なくするため中央付近に集中させる（散らし: ±0.30、spread指定で拡大可能）
+  _boardRandomPoint(cont,w,h,spread){
     const tl=cont.toGlobal(new PIXI.Point(0,0));
     const br=cont.toGlobal(new PIXI.Point(w,h));
-    return {x:tl.x+(br.x-tl.x)*(0.5+(Math.random()-0.5)*0.6),y:tl.y+(br.y-tl.y)*(0.5+(Math.random()-0.5)*0.6)};
+    const s=spread!==undefined?Math.max(0,Math.min(0.5,spread)):0.30;
+    return {x:tl.x+(br.x-tl.x)*(0.5+(Math.random()-0.5)*s*2),y:tl.y+(br.y-tl.y)*(0.5+(Math.random()-0.5)*s*2)};
   }
 
   _arrowColor(){
@@ -9106,14 +9188,16 @@ class GameRenderer{
   }
 
   // B2B解除時: B2Bカウンターからカウント分の矢印が相手の盤面へ飛ぶ
+  // 出発位置をバッジ中心から扇状に、目的場所を盤面全体にばらけさせる
   _spawnB2BBreakArrows(b2bCount){
     if(!this.effectsLayer||settings.particles==='off'||settings.quality==='minimum')return;
-    // 出発位置: B2Bカウンター（バッジ）中央
-    let start;
+    const N=4;
+    // 出発基準点: B2Bカウンター（バッジ）中央
+    let base;
     try{
-      if(this.b2bBadgeCont)start=this.b2bBadgeCont.toGlobal(new PIXI.Point(28,28));
+      if(this.b2bBadgeCont)base=this.b2bBadgeCont.toGlobal(new PIXI.Point(28,28));
     }catch(e){}
-    if(!start)start={x:this.mainBX-90,y:this.mainBY+90};
+    if(!base)base={x:this.mainBX-90,y:this.mainBY+90};
     const targets=this.opponentPlayers.filter(p=>{
       const d=this.opBoardData[p.id];
       return d&&!d.dead&&d.cont.visible;
@@ -9122,21 +9206,32 @@ class GameRenderer{
     const dur=500/2*(1/_as);
     const size=30*((settings.arrowSize||100)/100);
     const colors=[0xff006e,0xffbe0b,0x00f5ff,0x00ffcc,0xaa00ff];
+    // 目的場所: 相手盤面全体にばらけさせる（中央集中しない・互いの近接を回避）
     let ends=[];
     if(targets.length>0){
-      for(let i=0;i<3;i++){
+      for(let i=0;i<N;i++){
         const t=targets[i%targets.length];
         const d=this.opBoardData[t.id];
-        ends.push(this._boardRandomPoint(d.cont,d.boardW,d.boardH));
+        let p;
+        for(let retry=0;retry<8;retry++){
+          p=this._boardRandomPoint(d.cont,d.boardW,d.boardH,0.5);
+          if(!ends.some(e=>Math.abs(e.x-p.x)<90&&Math.abs(e.y-p.y)<90))break;
+        }
+        ends.push(p);
       }
     }else{
       ends=[
         {x:this.W*0.08,y:this.H*0.45},
         {x:this.W*0.92,y:this.H*0.4},
-        {x:this.W*0.8,y:this.H*0.75}
+        {x:this.W*0.8,y:this.H*0.75},
+        {x:this.W*0.16,y:this.H*0.82}
       ];
     }
-    for(let i=0;i<3;i++){
+    // 出発位置: バッジ中心の周囲を90°ずつ扇状にずらして4方向から飛ばす
+    const offR=(36*(this._uiScale||1))*(0.85+Math.random()*0.3);
+    for(let i=0;i<N;i++){
+      const ang=(i/N)*Math.PI*2+((Math.random()-0.5)*0.4);
+      const start={x:base.x+Math.cos(ang)*offR,y:base.y+Math.sin(ang)*offR};
       this._spawnArrow(start,ends[i],size,colors[i%colors.length],dur);
     }
   }
@@ -9241,6 +9336,10 @@ class GameRenderer{
     if (!this.opBoardData) return;
     const d = this.opBoardData[fromId];
     if (!d) return;
+    // バッチコンボ蓄積分の一括送信は既に onLinesReceived の1本を後続で受けるため、
+    // 3本同時の矢印に置き換える（直後の receive_garbage では二重にならないよう抑制）
+    if (!this._batchFlushArrows) this._batchFlushArrows = {};
+    this._batchFlushArrows[fromId] = performance.now();
     // 相手ボードにフラッシュエフェクト
     if (d.flashGfx) {
       d.flashGfx.clear();
@@ -9249,6 +9348,16 @@ class GameRenderer{
       d.flashGfx.endFill();
       d.flashGfx.alpha = 1;
       setTimeout(() => { d.flashGfx.alpha = 0; }, 300);
+    }
+    // 3本同時: 相手の盤面から自分の盤面のランダム位置へ
+    if (!this.boardCont || settings.particles==='off' || settings.quality==='minimum') return;
+    const start = this._boardRandomPoint(d.cont, d.boardW, d.boardH);
+    const _as=(settings.arrowSpeed||100)/100;
+    const dur=(Math.min(950,500+total*40)/2)*(1/_as);
+    const size=Math.min(52,16+total*4)*((settings.arrowSize||100)/100);
+    const colors=[0xff006e,0xffbe0b,0x00f5ff];
+    for(let i=0;i<3;i++){
+      this._spawnArrow(start,this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H),size,colors[i],dur);
     }
   }
 } // end class GameRenderer
@@ -9822,9 +9931,9 @@ socket.on('opponent_spin',({id,spinType})=>{
   if(renderer&&renderer.triggerOpponentSpin)renderer.triggerOpponentSpin(id,spinType);
 });
 
-socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY})=>{
-  ReplayRecorder.record('opponent_line_clear',{id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY});
-  if(renderer&&renderer.triggerOpponentLineClear)renderer.triggerOpponentLineClear(id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY);
+socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount})=>{
+  ReplayRecorder.record('opponent_line_clear',{id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount});
+  if(renderer&&renderer.triggerOpponentLineClear)renderer.triggerOpponentLineClear(id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount);
 });
 
 socket.on('attack_sent',({fromId,toId,attack,clearRows,cancelledByGarbage,lockX,lockY})=>{

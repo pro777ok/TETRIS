@@ -3393,8 +3393,8 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('opponent_puyo_update', {id: socket.id, ...data});
   });
 
-  socket.on('line_clear_effect', ({count,spinType,isB2B,ren,allClear,attack,lockX,lockY}) => {
-    socket.to(socket.roomId).emit('opponent_line_clear',{id:socket.id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY});
+  socket.on('line_clear_effect', ({count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount}) => {
+    socket.to(socket.roomId).emit('opponent_line_clear',{id:socket.id,count,spinType,isB2B,ren,allClear,attack,lockX,lockY,b2bCount});
   });
 
   socket.on('get_rooms', () => {
