@@ -814,7 +814,9 @@ const MOD_DESCRIPTIONS = {
   helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。完全ランダムだが各ミノに30%の確率で1〜3回連続して出る',
   rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
   rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
-  expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現'
+  expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現',
+  messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
+  gravity: '1ブロック置くごとに落下速度が1.1倍になる'
 };
 
 function setPlayerMod(mod) {
@@ -1160,8 +1162,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -1552,6 +1554,7 @@ class TetrisGame{
 
   spawnPiece(){
     this.pieceCount++;
+    this._lockResetCount=0;
     this._updateStats();
     const entry=this.nextQueue.shift();
     this.nextQueue.push(this._makeNextEntry(this._nextType()));
@@ -1766,6 +1769,8 @@ class TetrisGame{
 
   tryResetLock(){
     if(this.lockTimer){
+      // リセットごとにロック遅延を-40ms減らす（ミノごとに0からカウント）
+      this._lockResetCount=(this._lockResetCount||0)+1;
       clearTimeout(this.lockTimer);this.lockTimer=null;this._lockHalf=false;this.startLockTimer();
     }
   }
@@ -1786,12 +1791,14 @@ class TetrisGame{
 
   ghostY(){let gy=this.current.y;while(this.isValid({...this.current,y:gy+1}))gy++;return gy;}
 
-  startLockTimer(){if(this.lockTimer)return;this.lockStartTime=performance.now();const delay=this._lockHalf?this.lockDelay*0.75:this.lockDelay;this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},delay);}
+  startLockTimer(){if(this.lockTimer)return;this.lockStartTime=performance.now();const base=this._lockHalf?this.lockDelay*0.75:this.lockDelay;const delay=Math.max(40,base-40*(this._lockResetCount||0));this._lockDelayActual=delay;this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},delay);}
   cancelLock(){if(this.lockTimer){clearTimeout(this.lockTimer);this.lockTimer=null;this.lockStartTime=null;}}
 
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
+    // ── MOD: Gravity (自プレイヤー) ── 1ブロック置くごとに落下速度を1.1倍する
+    if((playerMods[socket.id]||'none')==='gravity')this._gravityMult=(this._gravityMult||1)*1.1;
     // B2B値を保存（clearLines内でリセットされる前に）
     this._b2bCancelRemain = this.b2bCount || 0;
     // Re-evaluate spin at lock time (at current position)
@@ -2526,6 +2533,10 @@ class TetrisGame{
               const hc=Math.floor(Math.random()*cols);
               row[hc]=0;
             }
+          }else if(g.messy){
+            // ── Messiness: 穴が乱雑(アナバラ、1行に1個ランダム) ──
+            const hc=Math.floor(Math.random()*cols);
+            row[hc]=0;
           }else if(g.helmet){
             // 2つ隣り合わせの穴
             const base=g.holeBase!==undefined?g.holeBase:0;
@@ -2898,6 +2909,13 @@ class TetrisGame{
       }
       return;
     }
+    // ── MOD: Messiness (受ける側) ── 受けるゴミの穴が乱雑(アナバラ)・出現まで3秒
+    if(mod==='messiness'){
+      const readyAt=performance.now()+3000;
+      const holeCol=Math.floor(Math.random()*getGameCols());
+      this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,messy:true});
+      return;
+    }
     // ── MOD: Helmet (受ける側) ── 2つ隣り合わせの穴・直列・次キューごとに±1列ずつ蛇行
     if(mod==='helmet'){
       if(this._helmetHoleBase===undefined){
@@ -2991,7 +3009,9 @@ class TetrisGame{
     const base=roomSettings.gravityBase||1000;
     const dec=roomSettings.gravityDec||80;
     const min=roomSettings.gravityMin||50;
-    const msPerDrop=Math.max(min,base-(this.level-1)*dec);
+    let msPerDrop=Math.max(min,base-(this.level-1)*dec);
+    // ── MOD: Gravity (自プレイヤー) ── 置いたブロック数ぶん1.1倍ずつ落下速度アップ
+    if((playerMods[socket.id]||'none')==='gravity')msPerDrop/=Math.max(1,this._gravityMult||1);
     this.gravityMs+=dt;
     if(this.gravityMs>=msPerDrop){
       this.gravityMs=0;
@@ -5885,7 +5905,8 @@ class GameRenderer{
     let lockFlash=0;
     if(gs.lockTimer&&gs.lockStartTime!=null){
       const elapsed=performance.now()-gs.lockStartTime;
-      lockFlash=Math.max(0,1-(elapsed/gs.lockDelay));
+      const dd=gs._lockDelayActual||gs.lockDelay;
+      lockFlash=Math.max(0,1-(elapsed/dd));
     }
     const shape=gs._getShapeForPiece(gs.current);
     let maxDr=-Infinity;
@@ -7934,6 +7955,7 @@ class GameRenderer{
     // B2B解除時のライン送信は4以上溜まっている時のみ（矢印はB2Bカウンターから飛ばす）
     if(b2bCount>=4){
       this.showAttackBadge(b2bCount,'b2b_break');
+      this._spawnMyB2BBreakMarkers(b2bCount);
       if(settings.quality!=='low'&&settings.quality!=='minimum')this._spawnB2BBreakArrows(b2bCount);
     }
     if(settings.quality==='low'||settings.quality==='minimum')return;
@@ -9012,6 +9034,40 @@ class GameRenderer{
     }
   }
 
+  // 自分がB2Bを4以上貯めたら、自分の画面の相手ミニ盤面パネル上にも同じ「-N」警告を表示
+  // 自分がB2Bを解除した瞬間だけ、相手ミニ盤面パネル上で「-N」が大きくなって消える表示
+  _spawnMyB2BBreakMarkers(n){
+    if(!this.opBoardData)return;
+    if(!this._opB2bPops)this._opB2bPops=[];
+    for(const pid of Object.keys(this.opBoardData)){
+      const d=this.opBoardData[pid];
+      if(!d||d.dead||!d.cont||d.cont._destroyed)continue;
+      const txt=new PIXI.Text('-'+n,new PIXI.TextStyle({fontFamily:'Orbitron,sans-serif',fontSize:Math.max(9,Math.round(14*(d.cell||7)/7)),fill:0xff3333,fontWeight:'700',stroke:0x000000,strokeThickness:3}));
+      txt.anchor.set(0.5);
+      txt.x=d.boardW/2;txt.y=Math.round(d.boardH*0.4);
+      d.cont.addChild(txt);
+      this._opB2bPops.push({txt,d,t:0});
+    }
+  }
+
+  // 解除ポップのアニメーション進行（大きくなる→小さくなり→消える）
+  _updateMyB2BBreakPops(dt){
+    if(!this._opB2bPops||this._opB2bPops.length===0)return;
+    this._opB2bPops=this._opB2bPops.filter(p=>{
+      p.t+=dt;
+      const t=p.t/480;
+      if(t>=1){
+        try{p.d.cont.removeChild(p.txt);p.txt.destroy();}catch(e){}
+        return false;
+      }
+      // 大きくなる(→1.5)→小さくなり(→0)→フェードアウト
+      const s=t<0.35?1+(t/0.35)*0.5:1.5-(t-0.35)/0.65*1.5;
+      p.txt.scale.set(s);
+      p.txt.alpha=Math.max(0,1-t);
+      return true;
+    });
+  }
+
   update(dt){
     this.drawBoard();this.drawGhost();this.drawCurrent();
     this.drawNextPieces();this.drawHold();
@@ -9025,6 +9081,7 @@ class GameRenderer{
     _opRippleUpdateAll(this.opBoardData,dt);
     this._updateSendArrows(dt);
     this._updateOpponentThreats(dt);
+    this._updateMyB2BBreakPops(dt);
     // ── Elapsed time ──
     if(this.elapsedText){
       const gs=this.gs||gameState||puyoGameState;
