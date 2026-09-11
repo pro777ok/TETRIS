@@ -1799,6 +1799,19 @@ class TetrisGame{
     this.locking=true;this.cancelLock();
     // ── MOD: Gravity (自プレイヤー) ── 1ブロック置くごとに落下速度を1.1倍する
     if((playerMods[socket.id]||'none')==='gravity')this._gravityMult=(this._gravityMult||1)*1.1;
+    // ── Solo MOD: アンドゥ用に配置前の状態を保存 ──
+    if(isOfflineSolo||isSoloGame){
+      if(!this._undoStack)this._undoStack=[];
+      this._undoStack.push({
+        board:this.board.map(r=>[...r]),
+        garbageQueue:this.garbageQueue.map(g=>({...g})),
+        score:this.score,lines:this.lines,level:this.level,
+        ren:this.ren,combo:this.combo,b2b:this.b2b,b2bCount:this.b2bCount,
+        holdPiece:this.holdPiece,holdCustomShape:this.holdCustomShape,holdUsed:this.holdUsed,
+        current:{type:this.current.type,rotation:this.current.rotation,x:this.current.x,y:this.current.y,customShape:this.current.customShape||null}
+      });
+      if(this._undoStack.length>50)this._undoStack.shift();
+    }
     // B2B値を保存（clearLines内でリセットされる前に）
     this._b2bCancelRemain = this.b2bCount || 0;
     // Re-evaluate spin at lock time (at current position)
@@ -1883,6 +1896,45 @@ class TetrisGame{
     if (cheeseMode && this.alive) {
       cheeseHandCount++;
     }
+  }
+
+  // ── Solo MOD: 1手前の盤面に戻す（アンドゥ） ──
+  undo(){
+    if(!this._undoStack||this._undoStack.length===0)return false;
+    const s=this._undoStack.pop();
+    this.board=s.board.map(r=>[...r]);
+    this.garbageQueue=s.garbageQueue.map(g=>({...g}));
+    this.score=s.score;this.lines=s.lines;this.level=s.level;
+    this.ren=s.ren;this.combo=s.combo;this.b2b=s.b2b;this.b2bCount=s.b2bCount;
+    this.holdPiece=s.holdPiece;this.holdCustomShape=s.holdCustomShape;this.holdUsed=s.holdUsed;
+    if(this.current){
+      // 戻したミノはスポーン位置から再スポーン
+      const cols=getGameCols();
+      this.current={type:s.current.type,rotation:0,x:Math.floor((cols-4)/2),y:SPAWN_Y,customShape:s.current.customShape};
+    }
+    this.cancelLock();this.locking=false;this.gravityMs=0;this._lockHalf=false;this._garbagePushY=0;
+    SFX.hold();
+    return true;
+  }
+
+  // ── Solo MOD: 盤面を全消去（リセット） ──
+  resetBoard(){
+    const cols=getGameCols();
+    this.board=Array(ROWS+HIDDEN).fill(0).map(()=>Array(cols).fill(0));
+    this.garbageQueue=[];
+    this._undoStack=[];
+    // ── Solo MOD: 次のミノもリセット（新しい7バッグで作り直し、現在のミノもbagから引いて再スポーン） ──
+    this.bag=new Bag();
+    this._helmetLastType=null;this._helmetStreak=0;
+    this.nextQueue=[];
+    if(this.current){
+      const t=this._nextType();
+      const cx=Math.floor((cols-4)/2);
+      this.current={type:t,rotation:0,x:cx,y:SPAWN_Y,customShape:this._makeNextEntry(t).customShape||null};
+    }
+    for(let i=0;i<6;i++)this.nextQueue.push(this._makeNextEntry(this._nextType()));
+    this.gravityMs=0;this._lockHalf=false;this.cancelLock();this._garbagePushY=0;
+    SFX.hold();
   }
 
   getSeason1B2BBonus(b2bCount){
@@ -9773,6 +9825,8 @@ function handleKeyDown(e){
     case 'ArrowDown':startSoftDrop();break;
     case 'Space':gameState.hardDrop();break;
     case 'ShiftLeft':case 'ShiftRight':case 'KeyC':gameState.hold();break;
+    case 'KeyU':if(isOfflineSolo||isSoloGame)gameState.undo();break;
+    case 'KeyR':if(isOfflineSolo||isSoloGame)gameState.resetBoard();break;
   }
 }
 function handleKeyUp(e){
