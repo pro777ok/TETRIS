@@ -807,7 +807,7 @@ const MOD_DESCRIPTIONS = {
   none: '',
   doubleGarbage: '攻撃が2倍になる（送るゴミ×2）',
   allspin: 'MINI→TSPIN + 連続同種消除で耐久ゴミ出現',
-  warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミ穴がバラバラ',
+  warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミは穴バラバラ・半減・3秒準備、送る攻撃もB2B解除時以外は半減、重力がレベルで増えない',
   laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
   badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
   tower: '永久ゴミ段数=10-レベル(最初10ライン、常に最下段)。レベルは攻撃したミノライン分で上昇、時間経過で減少(0.02/0.1秒)。受けるゴミ量×(Lv+5)/10',
@@ -2124,6 +2124,11 @@ class TetrisGame{
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
+      // ── MOD: Warlock ── 送る攻撃は半分(B2B解除時以外)
+      if(myMod==='warlock' && !(wasB2B && !isB2Bable && count>0)){
+        attack=Math.ceil(attack/2);
+      }
+
       // ── Tower MOD: 階層上昇は「攻撃したミノライン分」をそのまま加算 ──
       if(myMod==='tower' && attack>0){
         this._towerLevel=Math.min(9,Math.max(0, this._towerLevel + attack));
@@ -2900,9 +2905,9 @@ class TetrisGame{
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,badHole:true});
       return;
     }
-    // ── MOD: Warlock (受ける側) ── 穴がバラバラ
+    // ── MOD: Warlock (受ける側) ── 半減・3秒準備・穴がバラバラ
     if(mod==='warlock'){
-      const readyAt=performance.now()+(puyotetMode?0:1000);
+      const readyAt=performance.now()+3000;
       for(let i=0;i<lines;i++){
         const hc=Math.floor(Math.random()*getGameCols());
         this.garbageQueue.push({lines:1,fromId,readyAt,holeCol:hc,holes3:0,scatteredHole:true});
@@ -3009,7 +3014,9 @@ class TetrisGame{
     const base=roomSettings.gravityBase||1000;
     const dec=roomSettings.gravityDec||80;
     const min=roomSettings.gravityMin||50;
-    let msPerDrop=Math.max(min,base-(this.level-1)*dec);
+    // ── MOD: Warlock ── 重力はレベルで増えない
+    const lvDrop=(playerMods[socket.id]==='warlock')?0:(this.level-1)*dec;
+    let msPerDrop=Math.max(min,base-lvDrop);
     // ── MOD: Gravity (自プレイヤー) ── 置いたブロック数ぶん1.1倍ずつ落下速度アップ
     if((playerMods[socket.id]||'none')==='gravity')msPerDrop/=Math.max(1,this._gravityMult||1);
     this.gravityMs+=dt;

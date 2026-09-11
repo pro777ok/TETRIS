@@ -92,10 +92,11 @@ function applyDoubleGarbage(room, senderId, lines) {
   return lines;
 }
 
-// Bad Hole MOD: 受ける側の攻撃を半減
+// Bad Hole / Warlock MOD: 受ける側の攻撃を半減
 function adjustForTargetMod(room, targetId, lines) {
   if (!room || !room.playerMods) return lines;
   if (room.playerMods[targetId] === 'badhole') return Math.max(1, Math.ceil(lines / 2));
+  if (room.playerMods[targetId] === 'warlock') return Math.max(1, Math.ceil(lines / 2));
   return lines;
 }
 
