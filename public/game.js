@@ -816,7 +816,8 @@ const MOD_DESCRIPTIONS = {
   rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
   expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現',
   messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
-  gravity: '1ブロック置くごとに落下速度が1.1倍になる'
+  gravity: '1ブロック置くごとに落下速度が1.1倍になる',
+  solid: '受けるゴミはAllSpinと同じ耐久ペナルティライン5段(5回ラインを消すと変化)。変化した時は相手へ1ライン送信し、一度に変化した分は直列(同じ穴列)'
 };
 
 function setPlayerMod(mod) {
@@ -1162,8 +1163,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', solid:'SL'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', solid:'#a78bfa'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -1808,6 +1809,7 @@ class TetrisGame{
         score:this.score,lines:this.lines,level:this.level,
         ren:this.ren,combo:this.combo,b2b:this.b2b,b2bCount:this.b2bCount,
         holdPiece:this.holdPiece,holdCustomShape:this.holdCustomShape,holdUsed:this.holdUsed,
+        nextQueue:this.nextQueue.map(e=>e&&{...e}),
         current:{type:this.current.type,rotation:this.current.rotation,x:this.current.x,y:this.current.y,customShape:this.current.customShape||null}
       });
       if(this._undoStack.length>50)this._undoStack.shift();
@@ -1907,6 +1909,7 @@ class TetrisGame{
     this.score=s.score;this.lines=s.lines;this.level=s.level;
     this.ren=s.ren;this.combo=s.combo;this.b2b=s.b2b;this.b2bCount=s.b2bCount;
     this.holdPiece=s.holdPiece;this.holdCustomShape=s.holdCustomShape;this.holdUsed=s.holdUsed;
+    if(s.nextQueue)this.nextQueue=s.nextQueue.map(e=>e&&{...e});
     if(this.current){
       // 戻したミノはスポーン位置から再スポーン
       const cols=getGameCols();
@@ -1923,6 +1926,7 @@ class TetrisGame{
     this.board=Array(ROWS+HIDDEN).fill(0).map(()=>Array(cols).fill(0));
     this.garbageQueue=[];
     this._undoStack=[];
+    this.holdPiece=null;this.holdCustomShape=null;this.holdUsed=false;
     // ── Solo MOD: 次のミノもリセット（新しい7バッグで作り直し、現在のミノもbagから引いて再スポーン） ──
     this.bag=new Bag();
     this._helmetLastType=null;this._helmetStreak=0;
@@ -2334,20 +2338,37 @@ class TetrisGame{
     // ── Durable Garbage: 耐久値减少 → 通常ゴミに変換 ──
     if(count>0){
       const cols=getGameCols();
+      const _isSolid=(playerMods[socket.id]||'none')==='solid';
+      let solidHole=-1; // Solid: 一度に変化したゴミは全て直列（同じ穴列）
+      let solidConv=0;  // Solid: 変化した行数（1行ごとに相手へ1ライン送信）
       for(let r=0;r<this.board.length;r++){
         for(let c=0;c<cols;c++){
           const v=this.board[r][c];
           if(typeof v==='number'&&v>=1&&v<=10){
             if(v-1<=0){
-              // 耐久消滅: 通常ゴミ行に変換（穴はランダム）
-              const holeCol=Math.floor(Math.random()*cols);
-              this.board[r]=Array(cols).fill('G');
-              this.board[r][holeCol]=0;
+              if(_isSolid){
+                // Solid: 同じライン消しで変化した行は全行直列（1つの穴列）
+                if(solidHole<0)solidHole=Math.floor(Math.random()*cols);
+                this.board[r]=Array(cols).fill('G');
+                this.board[r][solidHole]=0;
+                solidConv++;
+              }else{
+                // 耐久消滅: 通常ゴミ行に変換（穴はランダム）
+                const holeCol=Math.floor(Math.random()*cols);
+                this.board[r]=Array(cols).fill('G');
+                this.board[r][holeCol]=0;
+              }
             } else {
               this.board[r][c]=v-1;
             }
           }
         }
+      }
+      // ── Solid MOD: 耐久→ゴミに変化した1行ごとに相手へ1ライン送信 ──
+      if(_isSolid&&solidConv>0){
+        this.totalAttackSent+=solidConv;
+        socket.emit('lines_cleared',{attack:solidConv,allClear:false,spinType:null,clearRows:[],totalLines:this.lines,ren:this.ren,holes3:0});
+        if(renderer&&renderer.onLinesSent)renderer.onLinesSent(solidConv,this._lockX||0,this._lockY||0,this._lockType||'',this._lockRot||0);
       }
     }
 
@@ -2497,6 +2518,10 @@ class TetrisGame{
         }
         const row=Array(cols).fill('G');
         row[holeCol]=0;
+        // ── Solid MOD: 受けたゴミをAllSpinと同じ耐久ペナルティライン5段にする ──
+        if((playerMods[socket.id]||'none')==='solid'){
+          for(let c=0;c<cols;c++) row[c]=5;
+        }
         rows.push(row);
         this._lastGarbageHoleCol=holeCol;
       }
@@ -2605,6 +2630,10 @@ class TetrisGame{
           // ── Rock MOD: 受けたゴミを穴なし(R)にする ──
           if((playerMods[socket.id]||'none')==='rock'){
             for(let c=0;c<cols;c++) row[c]='R';
+          }
+          // ── Solid MOD: 受けたゴミをAllSpinと同じ耐久ペナルティライン5段にする ──
+          if((playerMods[socket.id]||'none')==='solid'){
+            for(let c=0;c<cols;c++) row[c]=5;
           }
           // ── Last Stand: 0.2秒ごとに1段ずつ出現 ──
           if(g.laststandConsecutive){
