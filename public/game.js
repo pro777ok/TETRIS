@@ -1023,7 +1023,7 @@ function updateRoomSettingsUI(rs){
   const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
   const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
-  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin')?'allspin':'normal';
+  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear')?rs.botType:'normal';
   const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
@@ -1074,7 +1074,7 @@ function updateRoomSettingsUI(rs){
     const spd=rs.gravityBase??1000;
     const spdLabel=spd>=1500?'SLOW':spd>=900?'NORMAL':spd>=500?'FAST':'VERY FAST';
     const bots=roomPlayers.filter(p=>p.isBot);
-    const botStr=bots.length>0?bots.map(b=>`${b.name} ${b.botType==='allspin'?'ALLSPIN':'Lv.'+b.botLevel}`).join(', '):'None';
+    const botStr=bots.length>0?bots.map(b=>`${b.name} ${botTypeLabel(b.botType,b.botLevel)}`).join(', '):'None';
     const gmLabel=rs.puyotetMode?`×${rs.garbageMultiplier??2}`:'—';
     const md=(rs.multiplierDelayMin??1.6).toFixed(1)+'min';const mi=(rs.multiplierIntervalSec??1).toFixed(1)+'s';const mr=(rs.multiplierRate??0.03).toFixed(3);
 vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div><div class="settings-view-row"><span>🤖 BOT(s)</span><span style="color:var(--neon-cyan)">${botStr}</span></div><div class="settings-view-row"><span>📏 Board Height</span><span style="color:var(--neon-cyan)">${rows}</span></div><div class="settings-view-row"><span>🔄 Garbage Rate</span><span style="color:var(--neon-yellow)">${gmLabel}</span></div><div class="settings-view-row"><span>⏱ Mult</span><span style="color:rgba(255,200,100,0.8)">${md}/${mi}/${mr}</span></div>${rs.shogiMode?'<div class="settings-view-row"><span>♟ Shogi</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.soloMode?'<div class="settings-view-row"><span>🎮 Solo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.season1Mode?'<div class="settings-view-row"><span>🏆 Season1</span><span style="color:var(--neon-green)">ON</span></div>':''}${rs.cheeseMode?'<div class="settings-view-row"><span>🧀 Cheese</span><span style="color:var(--neon-yellow)">ON</span></div>':''}${rs.puyotetMode?'<div class="settings-view-row"><span>🍬 PuyoTet</span><span style="color:var(--neon-pink)">ON</span></div>':''}${rs.batchComboMode?'<div class="settings-view-row"><span>🔗 Batch Combo</span><span style="color:var(--neon-cyan)">ON</span></div>':''}${rs.recordTraining?'<div class="settings-view-row"><span>🔴 Recording</span><span style="color:#ff006e">ON</span></div>':''}`;
@@ -1082,6 +1082,9 @@ vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span styl
 }
 function getBotLevelLabel(lvl){
   return ['','BEGINNER','EASY','STRONG','EXPERT','GOD'][lvl]||'STRONG';
+}
+function botTypeLabel(bt,lvl){
+  return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':'Lv.'+(lvl||'?');
 }
 function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
@@ -1105,6 +1108,7 @@ function addBot(){
   const lvl=parseInt(document.getElementById('bot-level-input')?.value)||roomSettings.botLevel||5;
   const type=document.getElementById('bot-type-select')?.value||roomSettings.botType||'normal';
   const pps=parseFloat(document.getElementById('bot-pps-input')?.value)||roomSettings.botPps||2.5;
+  const botMod=document.getElementById('bot-mod-select')?.value||'none';
   const fi=document.getElementById('bot-code-input');
   const file=fi&&fi.files[0]?fi.files[0]:null;
   const fname=file?file.name.replace(/\.[^.]+$/, ''):null;
@@ -1116,12 +1120,17 @@ function addBot(){
       document.getElementById('bot-code-status').textContent='✅ Uploaded: '+file.name;
       _hasCustomBotCode=true;
       if(typeof updateBotList==='function')updateBotList(roomPlayers);
-      socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botCode:code});
+      socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botCode:code,botMod});
     };
     reader.readAsText(file);
   } else {
-    socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname});
+    socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botMod:botMod});
   }
+}
+
+function setBotMod(botId, mod){
+  socket.emit('set_bot_mod',{botId,mod});
+  if(playerMods)playerMods[botId]=mod;
 }
 
 let _hasCustomBotCode=false;
@@ -1155,7 +1164,14 @@ function updateBotList(players){
   const bots=players.filter(p=>p.isBot);
   const el=document.getElementById('bot-list');
   if(!el)return;
-  el.innerHTML=bots.map(b=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${b.botType==='allspin'?'ALLSPIN':'Lv.'+b.botLevel}</span>${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem">KICK</button></div>`).join('');
+  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', solid:'SL'};
+  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', solid:'#a78bfa'};
+  el.innerHTML=bots.map(b=>{
+    const mod=(playerMods&&playerMods[b.id])||b.mod||'none';
+    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','solid'];
+    const modSel=isHost?`<select onchange="setBotMod('${b.id}',this.value)" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:4px;padding:0.1rem 0.3rem;font-size:0.65rem;margin-left:0.3rem">${modOpts.map(o=>`<option value="${o}" ${o===mod?'selected':''}>${o==='none'?'なし':(modLabels[o]||o)}</option>`).join('')}</select>`:`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${botTypeLabel(b.botType,b.botLevel)}</span>${mod!=='none'&&!isHost?'<span style="font-size:0.6rem;color:'+modColors[mod]+';background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">'+modLabels[mod]+'</span>':''}${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><span style="display:flex;align-items:center">${modSel}<button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem;margin-left:0.3rem">KICK</button></span></div>`;
+  }).join('');
 }
 
 function updatePlayerList(players){
@@ -1169,7 +1185,7 @@ function updatePlayerList(players){
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
       <div style="display:flex;flex-direction:column;margin-left:0.5rem">
-        <span style="font-weight:700">${p.name}${p.isBot?` <span style="color:var(--neon-yellow);font-size:0.7rem">${p.botType==='allspin'?'ALLSPIN':'Lv.'+p.botLevel}</span>`:''}${modBadge}</span>
+        <span style="font-weight:700">${p.name}${p.isBot?` <span style="color:var(--neon-yellow);font-size:0.7rem">${botTypeLabel(p.botType,p.botLevel)}</span>`:''}${modBadge}</span>
         <span style="font-size:0.6rem;color:${modeColor};letter-spacing:0.1em">${mode}</span>
       </div>
       ${i===0&&!p.isBot?'<span class="host-badge">HOST</span>':''}
@@ -5436,7 +5452,7 @@ class GameRenderer{
       cont.addChild(bg);      const nameCol=isBot?0xffbe0b:0x00f5ff;
       const fSz=this.opponentPlayers.length===1?Math.round(12*sc):10;
       const nst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:fSz,fill:nameCol,letterSpacing:2});
-      const nameLabel=isBot?`${p.name.toUpperCase()} ${p.botType==='allspin'?'ALLSPIN':'Lv.'+(p.botLevel||'?')}`:p.name.toUpperCase();
+      const nameLabel=isBot?`${p.name.toUpperCase()} ${botTypeLabel(p.botType,p.botLevel||'?')}`:p.name.toUpperCase();
       const ntxt=new PIXI.Text(nameLabel,nst);ntxt.x=0;ntxt.y=-fSz-6;cont.addChild(ntxt);
       const boardGfx=new PIXI.Graphics();cont.addChild(boardGfx);
       const nextGfx=[];
@@ -5452,7 +5468,16 @@ class GameRenderer{
       const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xff8500}));apmTxt.x=0;apmTxt.y=oBH+ppsSz*2;cont.addChild(apmTxt);
       const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=oBH+ppsSz*3;cont.addChild(vsTxt);
       const renTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b}));renTxt.x=0;renTxt.y=oBH+ppsSz*4;cont.addChild(renTxt);
-      const b2bTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b,fontWeight:'700'}));b2bTxt.x=0;b2bTxt.y=oBH+ppsSz*5;cont.addChild(b2bTxt);
+      // 相手B2Bバッジ（自画面と同じ見た目・盤面の左側）
+      const obR=Math.max(11,Math.round(ppsSz*1.6));
+      const b2bBadge=new PIXI.Container();b2bBadge.visible=false;b2bBadge.x=-Math.round(obR*2.2);b2bBadge.y=Math.round(oBH*0.5);cont.addChild(b2bBadge);
+      const b2bBadgeBg=new PIXI.Graphics();b2bBadge.addChild(b2bBadgeBg);
+      const b2bBadgeDots=new PIXI.Graphics();b2bBadgeDots.x=obR;b2bBadgeDots.y=obR;b2bBadge.addChild(b2bBadgeDots);
+      const b2bBadgeLbl=new PIXI.Text('B2B',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(6,Math.round(obR*0.32)),fill:0x888888,letterSpacing:1}));
+      b2bBadgeLbl.anchor.set(0.5);b2bBadgeLbl.x=obR;b2bBadgeLbl.y=Math.round(obR*0.42);b2bBadge.addChild(b2bBadgeLbl);
+      const b2bTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(obR*0.6),fill:0xffbe0b,fontWeight:'700'}));
+      b2bTxt.anchor.set(0.5);b2bTxt.x=obR;b2bTxt.y=Math.round(obR*1.02);b2bBadge.addChild(b2bTxt);
+      b2bBadge._R=obR;
 
       const flashGfx=new PIXI.Graphics();flashGfx.alpha=0;cont.addChild(flashGfx);
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
@@ -5478,7 +5503,7 @@ class GameRenderer{
         flashGfx,flashAlpha:0,
         batchGfx,batchTxt,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
-        ren:0,renColor:0x00f5ff,renTxt,b2bTxt,
+        ren:0,renColor:0x00f5ff,renTxt,b2bTxt,b2bBadge,b2bBadgeBg,b2bBadgeDots,b2bBadgeLbl,
         smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
         sinkOffset:0, // ハードドロップ時の沈み込みオフセット
       };
@@ -6284,15 +6309,22 @@ class GameRenderer{
       this._drawZigzag(d.lightGfx,d.boardW,0,d.boardW,d.boardH,segs,amp,'v');
       if(d.lightTimer<=0){d.lightGfx.clear();d.lightGfx.alpha=0;}
     }
-    // 相手B2Bカウント表示（B2Bバッジ）
-    if(d.b2bTxt){
+    // 相手B2Bカウント表示（自画面と同じ「B2B」バッジ・12点星）
+    if(d.b2bBadge){
       const bc=d.b2bCount||0;
       if(bc>=2){
+        const R=d.b2bBadge._R||12;
         const col=bc>=8?0x0088ff:bc>=3?0x00ff88:0xffbe0b;
-        d.b2bTxt.text=`B2B ×${bc}`;
-        d.b2bTxt.style=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12),fill:col,fontWeight:'700'});
+        d.b2bTxt.text=`x${bc}`;
+        d.b2bTxt.style=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(R*0.6),fill:col,fontWeight:'700'});
+        const bg=d.b2bBadgeBg;bg.clear();
+        bg.beginFill(0x000011,0.82);bg.lineStyle(2,col,0.85);bg.drawCircle(R,R,R);bg.endFill();
+        bg.lineStyle(1,col,0.35);bg.drawCircle(R,R,R*0.72);
+        this._drawStarInto(d.b2bBadgeDots,col,Math.max(6,R-2),1.4);
+        if(d.b2bBadgeLbl)d.b2bBadgeLbl.style.fill=bc>=8?0x88ccff:bc>=5?0x88eeff:bc>=3?0x88ffcc:0xffdd88;
+        d.b2bBadge.visible=true;
       }else{
-        d.b2bTxt.text='';
+        d.b2bBadge.visible=false;
       }
     }
     if(d.shakeX!==0||d.shakeY!==0){
@@ -6627,6 +6659,32 @@ class GameRenderer{
       bg.lineStyle(1,0x0000ff,glitchAmt*0.4);
       bg.drawCircle(R-glitchAmt*2,R,R);
     }
+  }
+
+  // 12点星のギザギザ枠を描画する共通ヘルパー（中心原点・上向き開始、角は少し丸める）
+  _drawStarInto(g,col,R,lineW){
+    if(!g)return;
+    g.clear();
+    const N=24; // 12個の点の星 = 外側12 + 内側12 の頂点
+    const outer=R+4, inner=R-2;
+    const f=0.35; // 角の丸め（エッジ上の割合）
+    const verts=[];
+    for(let i=0;i<N;i++){
+      const a=(i/N)*Math.PI*2-Math.PI/2; // 上向きに点を開始
+      const rr=i%2===0?outer:inner;
+      verts.push([Math.cos(a)*rr,Math.sin(a)*rr]);
+    }
+    const ps=i=>{const p=verts[(i-1+N)%N],v=verts[i%N];return [p[0]+(v[0]-p[0])*f,p[1]+(v[1]-p[1])*f];};
+    const pe=i=>{const v=verts[i],n=verts[(i+1)%N];return [v[0]+(n[0]-v[0])*f,v[1]+(n[1]-v[1])*f];};
+    const s=ps(0);
+    g.lineStyle(lineW,col,0.95);
+    g.moveTo(s[0],s[1]);
+    for(let i=0;i<N;i++){
+      const e=pe(i),n=ps(i+1);
+      g.quadraticCurveTo(verts[i][0],verts[i][1],e[0],e[1]);
+      g.lineTo(n[0],n[1]);
+    }
+    g.closePath();
   }
 
   // B2Bカウント更新パンチエフェクト (数字がスケールアップして戻る)
@@ -8497,8 +8555,15 @@ class GameRenderer{
 
     // B2B雷
     // サーバーから正確なb2bCountが来たらそれを使う（解除時は0）
+    const prevB2b=d.b2bCount||0;
     if(b2bCount!==undefined) d.b2bCount=b2bCount;
     else if(isB2B) d.b2bCount=(d.b2bCount||0)+1;
+    // ボットB2B解除: 4本の矢印をボット側から自分の盤面へ
+    const _b2bNow=performance.now();
+    if(prevB2b>=4&&(d.b2bCount||0)===0&&settings.quality!=='low'&&settings.quality!=='minimum'&&(_b2bNow-(d._b2bBreakArrowsAt||0))>1500){
+      this._spawnBotB2BBreakArrows(d,prevB2b);
+      d._b2bBreakArrowsAt=_b2bNow;
+    }
     if(isB2B&&settings.quality!=='low'){
       d.lightTimer=Math.min(80,40+d.b2bCount*8);
     }
@@ -9073,11 +9138,14 @@ class GameRenderer{
       let th=this._threats[p.id];
       if(!th){
         const cont=new PIXI.Container();
+        const star=new PIXI.Graphics();
+        this._drawStarInto(star,0xff5555,Math.max(10,Math.floor(16*sc)),2);
         const txt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron,sans-serif',fontSize:Math.floor(26*sc),fill:0xff5555,fontWeight:'700',stroke:0x000000,strokeThickness:4}));
         txt.anchor.set(0.5);
+        cont.addChild(star);
         cont.addChild(txt);
         this.effectsLayer.addChild(cont);
-        th={cont,txt,shown:false,pop:null,appear:0};
+        th={cont,star,txt,shown:false,pop:null,appear:0};
         this._threats[p.id]=th;
       }
       th.txt.text='-'+b2b;
@@ -9133,8 +9201,12 @@ class GameRenderer{
       const txt=new PIXI.Text('-'+n,new PIXI.TextStyle({fontFamily:'Orbitron,sans-serif',fontSize:Math.max(9,Math.round(14*(d.cell||7)/7)),fill:0xff3333,fontWeight:'700',stroke:0x000000,strokeThickness:3}));
       txt.anchor.set(0.5);
       txt.x=d.boardW/2;txt.y=Math.round(d.boardH*0.4);
+      const star=new PIXI.Graphics();
+      this._drawStarInto(star,0xff3333,Math.max(10,Math.round(11*(d.cell||7)/7)),2);
+      star.x=txt.x;star.y=txt.y;
+      d.cont.addChild(star);
       d.cont.addChild(txt);
-      this._opB2bPops.push({txt,d,t:0});
+      this._opB2bPops.push({txt,star,d,t:0});
     }
   }
 
@@ -9145,13 +9217,15 @@ class GameRenderer{
       p.t+=dt;
       const t=p.t/480;
       if(t>=1){
-        try{p.d.cont.removeChild(p.txt);p.txt.destroy();}catch(e){}
+        try{p.d.cont.removeChild(p.txt);p.txt.destroy();if(p.star){p.d.cont.removeChild(p.star);p.star.destroy();}}catch(e){}
         return false;
       }
       // 大きくなる(→1.5)→小さくなり(→0)→フェードアウト
       const s=t<0.35?1+(t/0.35)*0.5:1.5-(t-0.35)/0.65*1.5;
       p.txt.scale.set(s);
+      if(p.star)p.star.scale.set(s);
       p.txt.alpha=Math.max(0,1-t);
+      if(p.star)p.star.alpha=Math.max(0,1-t);
       return true;
     });
   }
@@ -9161,7 +9235,16 @@ class GameRenderer{
     this.drawNextPieces();this.drawHold();
     this.updateScoreUI();
     this.updateBoardAnim(dt);
-    this.opponentPlayers.forEach(p=>{this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);});
+    this.opponentPlayers.forEach(p=>{
+      const od=this.opBoardData[p.id];
+      // ボットの操作中のミノ: 落下位置へ線形補間
+      if(od&&od.currentPiece&&od._pieceLerpTargetY!==undefined&&od._pieceLerpStep){
+        od._pieceLerpY=Math.min(od._pieceLerpTargetY,od._pieceLerpY+od._pieceLerpStep*dt);
+        if(od._pieceLerpY>=od._pieceLerpTargetY-0.01){od._pieceLerpY=od._pieceLerpTargetY;od._pieceLerpStep=0;}
+        od.currentPiece.y=Math.round(od._pieceLerpY);
+      }
+      this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);
+    });
     this.drawGarbageMeter();
     this._drawDangerWarning();
     this.updateParticlesEtc(dt);
@@ -9373,6 +9456,48 @@ class GameRenderer{
       ];
     }
     // 出発位置: バッジ中心の周囲を90°ずつ扇状にずらして4方向から飛ばす
+    const offR=(36*(this._uiScale||1))*(0.85+Math.random()*0.3);
+    for(let i=0;i<N;i++){
+      const ang=(i/N)*Math.PI*2+((Math.random()-0.5)*0.4);
+      const start={x:base.x+Math.cos(ang)*offR,y:base.y+Math.sin(ang)*offR};
+      this._spawnArrow(start,ends[i],size,colors[i%colors.length],dur);
+    }
+  }
+
+  // ボットのB2B解除時: ボットの盤面(バッジ)から自分の盤面へ4本の矢印
+  _spawnBotB2BBreakArrows(d,b2bCount){
+    if(!this.effectsLayer||settings.particles==='off'||settings.quality==='minimum')return;
+    if(!d||!d.cont||d.cont._destroyed)return;
+    const N=4;
+    // 出発基準点: 相手のB2Bバッジ中心（なければ盤面中央）
+    let base;
+    try{
+      if(d.b2bBadge&&d.b2bBadge.visible)base=d.b2bBadge.toGlobal(new PIXI.Point(d.b2bBadge._R||12,d.b2bBadge._R||12));
+    }catch(e){}
+    if(!base)base=this._boardRandomPoint(d.cont,d.boardW,d.boardH);
+    const _as=(settings.arrowSpeed||100)/100;
+    const dur=500/2*(1/_as);
+    const size=30*((settings.arrowSize||100)/100);
+    const colors=[0xff006e,0xffbe0b,0x00f5ff,0x00ffcc,0xaa00ff];
+    // 目的場所: 自分の盤面全体にばらけさせる（近接回避）
+    const ends=[];
+    if(this.boardCont){
+      for(let i=0;i<N;i++){
+        let p;
+        for(let retry=0;retry<8;retry++){
+          p=this._boardRandomPoint(this.boardCont,BOARD_W,BOARD_H,0.5);
+          if(!ends.some(e=>Math.abs(e.x-p.x)<90&&Math.abs(e.y-p.y)<90))break;
+        }
+        ends.push(p);
+      }
+    }else{
+      ends=[
+        {x:this.W*0.08,y:this.H*0.45},
+        {x:this.W*0.92,y:this.H*0.4},
+        {x:this.W*0.8,y:this.H*0.75},
+        {x:this.W*0.16,y:this.H*0.82}
+      ];
+    }
     const offR=(36*(this._uiScale||1))*(0.85+Math.random()*0.3);
     for(let i=0;i<N;i++){
       const ang=(i/N)*Math.PI*2+((Math.random()-0.5)*0.4);
@@ -9956,12 +10081,24 @@ socket.on('bot_update',(data)=>{
   ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue,b2bCount});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
+  // ボットB2B解除検出（line_clear経由との二重発火を防ぐためクールダウン付き）
+  if(b2bCount!==undefined){
+    const prevB2b=d.b2bCount||0;
+    const now=performance.now();
+    const lastFire=d._b2bBreakArrowsAt||0;
+    if(prevB2b>=4&&b2bCount===0&&(now-lastFire)>1500&&!d.dead){
+      if(renderer._spawnBotB2BBreakArrows&&settings.quality!=='low'&&settings.quality!=='minimum'){
+        renderer._spawnBotB2BBreakArrows(d,prevB2b);
+        d._b2bBreakArrowsAt=now;
+      }
+    }
+    d.b2bCount=b2bCount;
+  }
   d.board=board;
   if(nextPieces)d.nextPieces=nextPieces;
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
   if(garbageLines!==undefined)d.garbageLines=garbageLines;
-  if(b2bCount!==undefined) d.b2bCount=b2bCount;
   if(pps!==undefined) d.pps=pps;
   if(apm!==undefined) d.apm=apm;
   if(vs!==undefined) d.vs=vs;
@@ -9986,7 +10123,15 @@ socket.on('bot_piece_update',({id,currentPiece})=>{
   // PuyoRenderer: update opPuyoData
   if(renderer.opPuyoData&&renderer.opPuyoData[id]){renderer.opPuyoData[id].currentPiece=currentPiece;return;}
   const d=renderer.opBoardData[id];if(!d)return;
+  // ボットの操作が見えるよう、スポーン位置から着地位置へ落下補間
+  const prevType=d.currentPiece&&d.currentPiece.type;
   d.currentPiece=currentPiece;
+  // ボットの操作が見えるよう、スポーン位置から着地位置へ約320msで落下補間
+  if(currentPiece&&(!prevType||prevType!==currentPiece.type)&&currentPiece.y>=0){
+    d._pieceLerpY=-2;
+    d._pieceLerpTargetY=currentPiece.y;
+    d._pieceLerpStep=Math.max(0,(currentPiece.y+2)/320);
+  }
 });
 
 // 現在ミノのリアルタイム位置更新

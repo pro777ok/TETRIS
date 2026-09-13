@@ -3,11 +3,91 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
+const vm = require('vm');
 const { spawnSync } = require('child_process');
 const discordNotify = require('./discord-notify');
 require('dotenv').config();
 const TetrisPCFinder = require('../tetris-pc-finder.js');
 const AllSpinSearch = require('../allspin-search.js');
+
+// ── Cold Clear 2 bot engine (server-side WASM) ──────────────────────
+// coldclear2-standalone.html 内蔵の Rust→WASM Cold Clear 2 bot を
+// サーバー側 Node で駆動する。worker グルーを毎起動時に HTML から抽出し、
+// ボット毎に独立した vm コンテキストで起動する（globalThis.log の衝突回避）。
+const CC2_GLUE_CACHE = (() => {
+  try {
+    const htmlPath = path.join(__dirname, '..', 'coldclear2-standalone.html');
+    const html = fs.readFileSync(htmlPath, 'utf8');
+    const m = html.match(/<script type="text\/plain" id="botWorkerSrc">([\s\S]*?)<\/script>/);
+    return m ? m[1].replace(/^\n/, '') : null;
+  } catch (e) { console.warn('[CC2] glue extraction failed:', e.message); return null; }
+})();
+
+// CC2(TBP) のピースセル定義（viewer の PIECE_CELLS と同一）。y は上向き。
+const CC2_PIECE_CELLS = {
+  I: [[-1,0],[0,0],[1,0],[2,0]],
+  O: [[0,0],[1,0],[0,1],[1,1]],
+  T: [[-1,0],[0,0],[1,0],[0,1]],
+  L: [[-1,0],[0,0],[1,0],[1,1]],
+  J: [[-1,0],[0,0],[1,0],[-1,1]],
+  S: [[-1,0],[0,0],[0,1],[1,1]],
+  Z: [[-1,1],[0,1],[0,0],[1,0]],
+};
+function cc2RotateCell(x, y, orientation) {
+  switch (orientation) {
+    case 'north': return [x, y];
+    case 'east': return [y, -x];
+    case 'south': return [-x, -y];
+    case 'west': return [-y, x];
+    default: return null;
+  }
+}
+
+class CC2Engine {
+  constructor(botName) {
+    this.botName = botName;
+    this.out = [];
+    this.ready = false;
+    this.errored = null;
+    this.sandbox = null;
+    this._init();
+  }
+  _init() {
+    if (!CC2_GLUE_CACHE) { this.errored = 'glue not available'; return; }
+    try {
+      const sandbox = {
+        console, WebAssembly, TextDecoder, TextEncoder, atob, crypto, performance,
+        queueMicrotask, setTimeout, clearTimeout, Promise, Date, Math, JSON, Array,
+        Object, Uint8Array, ArrayBuffer, Float64Array, Int8Array, Uint16Array,
+        Error, TypeError, RangeError, Symbol, Number, String, Boolean, RegExp,
+        isNaN, parseInt, parseFloat
+      };
+      sandbox.self = sandbox;
+      sandbox.postMessage = (m) => this.out.push(m);
+      this.sandbox = sandbox;
+      const ctx = vm.createContext(sandbox);
+      vm.runInContext(CC2_GLUE_CACHE, ctx, { filename: 'cc2-worker.js' });
+    } catch (e) {
+      this.errored = String(e);
+      console.warn(`[CC2] init failed for ${this.botName}:`, e.message);
+    }
+  }
+  isReady() { return this.ready; }
+  checkReady() {
+    if (this.ready || this.errored) return this.ready;
+    this.ready = this.out.some(o => o.type === '__worker_ready');
+    if (this.ready) this.out = this.out.filter(o => o.type !== 'info' && o.type !== '__worker_ready' && o.type !== 'ready');
+    return this.ready;
+  }
+  send(msg) {
+    if (this.sandbox && this.sandbox.onmessage) this.sandbox.onmessage({ data: msg });
+  }
+  takeSuggestion() {
+    const i = this.out.findIndex(o => o.type === 'suggestion');
+    if (i < 0) return null;
+    return this.out.splice(i, 1)[0];
+  }
+}
 
 // ── CLI flags ──────────────────────────────────────────────────────
 // Usage: npm start -- --ai          (enable training data recording)
@@ -99,6 +179,10 @@ function adjustForTargetMod(room, targetId, lines) {
   if (room.playerMods[targetId] === 'warlock') return Math.max(1, Math.ceil(lines / 2));
   return lines;
 }
+
+// プレイヤー/ボット共通の付与可能MOD一覧
+const VALID_MODS = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','solid'];
+function sanitizeMod(mod) { return VALID_MODS.includes(mod) ? mod : 'none'; }
 
 const PIECE_SHAPES = {
   I:[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],[[0,0,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]],[[0,0,0,0],[0,0,0,0],[1,1,1,1],[0,0,0,0]],[[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]]],
@@ -1436,7 +1520,7 @@ class BotPlayer {
   constructor(id, name, level, roomId, bag, customCode, botType = 'normal', botPps = null) {
     this.id = id; this.name = name; this.level = level; this.roomId = roomId;
     this.isBot = true; this.botLevel = level;
-    this.botType = botType === 'allspin' ? 'allspin' : 'normal';
+    this.botType = botType === 'allspin' ? 'allspin' : (botType === 'coldclear' ? 'coldclear' : 'normal');
     const room = rooms[roomId];
     this.botPps = (typeof botPps === 'number' && botPps > 0) ? botPps
       : (room && room.roomSettings && room.roomSettings.botPps) || 2.5;
@@ -1989,8 +2073,155 @@ class BotPlayer {
     return false;
   }
 
+  // ── COLD CLEAR 2 (TBP) ───────────────────────────────────────────
+  // サーバーboard(Row0=上) → CC2 board(y=0=下, 40行) 変換
+  _toCcbBoard() {
+    const cols = this.cols;
+    const bottomRow = ROWS + HIDDEN - 1;
+    const rows = [];
+    for (let y = 0; y < 40; y++) {
+      const sr = bottomRow - y;
+      if (sr < 0 || sr >= this.board.length) {
+        rows.push(new Array(cols).fill(null));
+      } else {
+        const src = this.board[sr];
+        const r = new Array(cols);
+        for (let c = 0; c < cols; c++) r[c] = src[c] ? src[c] : null;
+        rows.push(r);
+      }
+    }
+    return rows;
+  }
+
+  _thinkCC2(onDone) {
+    if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
+
+    // CC2 は10列盤専用のため、4Wide等では通常AIにフォールバック
+    if (this.cols !== COLS) {
+      this._thinkNormalAI(onDone);
+      return;
+    }
+
+    if (!this._cc2Engine) this._cc2Engine = new CC2Engine(this.name);
+    if (!this._cc2Engine.checkReady()) {
+      setTimeout(() => {
+        if (!this.alive) { if (onDone) onDone(); return; }
+        if (this._cc2Engine.checkReady()) {
+          this._thinkCC2(onDone);
+        } else {
+          console.warn(`[CC2] ${this.name}: engine init timeout, fallback normal AI`);
+          this._thinkNormalAI(onDone);
+        }
+      }, 250);
+      return;
+    }
+    if (this._cc2Engine.errored) {
+      console.warn(`[CC2] ${this.name}: engine unavailable, fallback normal AI (${this._cc2Engine.errored})`);
+      this._thinkNormalAI(onDone);
+      return;
+    }
+
+    // TBP: start（現在ミノ + 次6枚 / hold / combo / b2b）→ suggest
+    const queue = [this.currentPiece.type, ...this.nextQueue.slice(0, 6)];
+    const tbpBoard = this._toCcbBoard();
+    const startMsg = {
+      type: 'start',
+      board: tbpBoard,
+      queue,
+      hold: this.holdPiece || null,
+      combo: Math.max(0, this.combo),
+      back_to_back: !!this.b2b,
+      randomizer: { type: 'seven_bag', bag_state: [] },
+    };
+    this._cc2Engine.send(startMsg);
+
+    // CC2 の探索はイベントループに依存するため、start と suggest の間に
+    // 一定の間隔を空ける（直列送信だと空 suggestion になる）
+    setTimeout(() => {
+      if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
+      this._cc2Engine.send({ type: 'suggest' });
+    }, 40);
+
+    const t0 = Date.now();
+    const poll = () => {
+      if (!this.alive) { if (onDone) onDone(); return; }
+      const sug = this._cc2Engine.takeSuggestion();
+      if (sug && sug.moves && sug.moves.length > 0) {
+        if (this._applyCC2Move(sug.moves[0], onDone)) return;
+        console.warn(`[CC2] ${this.name}: invalid move, fallback normal AI`);
+        this._thinkNormalAI(onDone);
+        return;
+      }
+      if (Date.now() - t0 > 3000) {
+        console.warn(`[CC2] ${this.name}: suggestion timeout, fallback normal AI`);
+        this._thinkNormalAI(onDone);
+        return;
+      }
+      setTimeout(poll, 20);
+    };
+    setTimeout(poll, 70);
+  }
+
+  // CC2 suggestion → executePlacement。配置が成立しなければ false を返す。
+  // CC2 とサーバーではピースのアンカー規約が異なるため、占有セル集合が
+  // 一致するサーバー座標 (rot,x,y) を全走査で特定する（接地状態のみ）。
+  // BFS の到達可能性判定は 180°回転やタックを網羅しないため使わない。
+  _applyCC2Move(mv, onDone) {
+    if (!this.alive || !this.currentPiece) return false;
+    const loc = mv.location;
+    if (!loc || !CC2_PIECE_CELLS[loc.type] || loc.x === undefined || loc.y === undefined) return false;
+
+    // CC2 の占有セルをサーバー座標（Row0=上）へ変換
+    const bottom = ROWS + HIDDEN - 1;
+    const target = new Set();
+    for (const [cx, cy] of CC2_PIECE_CELLS[loc.type]) {
+      const rc = cc2RotateCell(cx, cy, loc.orientation);
+      if (!rc) return false;
+      const [rx, ry] = rc;
+      target.add(`${bottom - (loc.y + ry)},${loc.x + rx}`);
+    }
+
+    // 全 (rot,x,y) から占有セル集合が一致する接地配置を探す
+    let match = null;
+    outer:
+    for (let rot = 0; rot < 4 && !match; rot++) {
+      for (let x = -2; x < this.cols + 2; x++) {
+        for (let y = -4; y < ROWS + HIDDEN; y++) {
+          if (!isValid(this.board, loc.type, rot, x, y)) continue;
+          if (isValid(this.board, loc.type, rot, x, y + 1)) continue; // 接地のみ
+          const shape = getShape(loc.type, rot);
+          const cells = new Set();
+          for (let r = 0; r < shape.length; r++)
+            for (let c = 0; c < shape[r].length; c++)
+              if (shape[r][c]) cells.add(`${y + r},${x + c}`);
+          if (cells.size !== target.size) continue;
+          let same = true;
+          for (const k of target) if (!cells.has(k)) { same = false; break; }
+          if (same) { match = { rot, x, y }; break outer; }
+        }
+      }
+    }
+    if (!match) return false;
+
+    const useHold = loc.type !== this.currentPiece.type;
+    // ホールド/ネクストから生成できる型チェック（不一致ならフォールバック）
+    const expectedType = !useHold
+      ? this.currentPiece.type
+      : (this.holdPiece || this.nextQueue[0]);
+    if (expectedType !== loc.type) return false;
+
+    const wasKicked = !!mv.spin && mv.spin !== 'none';
+    this.executePlacement({ rot: match.rot, x: match.x, y: match.y, exactY: true, useHold, wasKicked }, onDone);
+    return true;
+  }
+
   think(onDone) {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
+
+    // ── COLD CLEAR 2 (server-side WASM) ─────────────────────────────
+    if (this.botType === 'coldclear') {
+      return this._thinkCC2(onDone);
+    }
 
     // ── ALLSPIN MODE ────────────────────────────────────────────────
     if (this.botType === 'allspin') {
@@ -2636,7 +2867,7 @@ class BotPlayer {
           }
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-        for (const bt of botTargets) bt.queueGarbage(sentAttack, this.id, holes3);
+        for (const bt of botTargets) bt.queueGarbage(adjustForTargetMod(room, bt.id, sentAttack), this.id, holes3);
       }
     } else if (room && attack === 0 && _prevRen >= 1 && this.batchComboBuffer && this.batchComboBuffer > 0) {
       // コンボ終了 (ren was >=1, now 0) but attack=0 → 蓄積分だけ送信
@@ -2655,7 +2886,7 @@ class BotPlayer {
           io.to(t.id).emit('batch_combo_flush', { fromId: this.id, total: sentAttack });
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
-        for (const bt of botTargets) bt.queueGarbage(sentAttack, this.id, holes3);
+        for (const bt of botTargets) bt.queueGarbage(adjustForTargetMod(room, bt.id, sentAttack), this.id, holes3);
       }
     }
 
@@ -2665,7 +2896,7 @@ class BotPlayer {
       if (lines > 0) {
         io.to(this.roomId).emit('opponent_line_clear', {
           id: this.id, count: lines, spinType: effectiveSpin, isB2B, ren: this.ren, allClear,
-          attack: attack || 0, lockX: x, lockY: y
+          attack: attack || 0, lockX: x, lockY: y, b2bCount: this.b2bCount
         });
       }
       const garbageLines=this.garbageQueue?this.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
@@ -2731,6 +2962,7 @@ class BotPlayer {
   stop() {
     if (this.thinkTimer) { clearTimeout(this.thinkTimer); this.thinkTimer = null; }
     this.alive = false;
+    if (this._cc2Engine) { this._cc2Engine = null; }
   }
 }
 
@@ -2745,7 +2977,7 @@ function createRoom(roomId) {
     roomSettings: {
       mutationRate: 60, gravityBase: 1000, gravityDec: 80,
       gravityMin: 50, lockDelay: 1000, botLevel: 5, shogiMode: false,
-      botType: 'normal', botPps: 2.5,  // ボット種類(通常AI/allspin)・PPS設定
+      botType: 'normal', botPps: 2.5,  // ボット種類(通常AI/allspin/coldclear)・PPS設定
       recordTraining: false,  // ホストが設置データ記録を有効化できる
       soloMode: false,         // 1人でもゲーム開始できる
       fortyLineMode: false,    // 40ラインモード
@@ -2885,7 +3117,7 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate(room,roomId);
   });
 
-  socket.on('add_bot', ({botLevel,botFileName,botCode,botType,botPps}) => {
+  socket.on('add_bot', ({botLevel,botFileName,botCode,botType,botPps,botMod}) => {
     const room=getRoom(socket.roomId); if (!room) return;
     if (socket.id!==room.host) return;
     // ── 盤面拡大時はBot不可 ──────────────────────────────────────
@@ -2909,7 +3141,7 @@ io.on('connection', (socket) => {
 
 
     const lvl=Math.max(1,Math.min(5,parseInt(botLevel)||room.roomSettings.botLevel||3));
-    const type = botType === 'allspin' ? 'allspin' : 'normal';
+    const type = botType === 'allspin' ? 'allspin' : (botType === 'coldclear' ? 'coldclear' : 'normal');
     const pps = Math.max(0.5, Math.min(6, parseFloat(botPps) || (room.roomSettings.botPps) || 2.5));
     const cbc=room.customBot||customBotCode.get(socket.roomId);
     const baseName = botFileName || (cbc ? cbc.filename : null) || 'CUSTOM';
@@ -2923,8 +3155,13 @@ io.on('connection', (socket) => {
       fullName='🤖'+bname;
     }
     room.bots.push({id:botId,name:fullName,isBot:true,botLevel:lvl,botType:type,botPps:pps,alive:true});
+    // ボットMOD付与（デフォルトnone）
+    if (!room.playerMods) room.playerMods = {};
+    const safeBotMod = sanitizeMod(botMod);
+    room.bots[room.bots.length-1].mod = safeBotMod;
+    if (safeBotMod !== 'none') room.playerMods[botId] = safeBotMod;
     broadcastRoomUpdate(room,socket.roomId);
-    const lvlLabel = type === 'allspin' ? 'ALLSPIN' : `Lv.${lvl}`;
+    const lvlLabel = type === 'allspin' ? 'ALLSPIN' : (type === 'coldclear' ? 'COLD CLEAR' : `Lv.${lvl}`);
     addChatSys(socket.roomId,`🤖 ${fullName} (${lvlLabel}) joined the room!`);
   });
 
@@ -2952,6 +3189,7 @@ io.on('connection', (socket) => {
     const bot=room.bots.find(b=>b.id===botId);
     if (bot) {
       if (bot.stop) bot.stop();
+      if (room.playerMods) delete room.playerMods[botId];
       room.bots=room.bots.filter(b=>b.id!==botId);
       broadcastRoomUpdate(room,socket.roomId);
       addChatSys(socket.roomId,`🤖 ${bot.name} was kicked.`);
@@ -2984,7 +3222,7 @@ io.on('connection', (socket) => {
     if (ns.gravityMin!==undefined) rs.gravityMin=Math.max(20,Math.min(500,parseInt(ns.gravityMin)||50));
     if (ns.lockDelay!==undefined) rs.lockDelay=Math.max(200,Math.min(3000,parseInt(ns.lockDelay)||1000));
     if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(5,parseInt(ns.botLevel)||3));
-    if (ns.botType!==undefined) rs.botType = ns.botType === 'allspin' ? 'allspin' : 'normal';
+    if (ns.botType!==undefined) rs.botType = (ns.botType === 'allspin' || ns.botType === 'coldclear') ? ns.botType : 'normal';
     if (ns.botPps!==undefined) rs.botPps=Math.max(0.5,Math.min(6,parseFloat(ns.botPps)||2.5));
     if (ns.shogiMode!==undefined) rs.shogiMode=!!ns.shogiMode;
     if (ns.recordTraining!==undefined) rs.recordTraining=!!ns.recordTraining;
@@ -3132,9 +3370,21 @@ io.on('connection', (socket) => {
   socket.on('set_player_mod', ({mod}) => {
     const room = getRoom(socket.roomId); if (!room) return;
     if (!room.playerMods) room.playerMods = {};
-    const validMods = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','solid'];
-    room.playerMods[socket.id] = validMods.includes(mod) ? mod : 'none';
+    room.playerMods[socket.id] = sanitizeMod(mod);
     io.to(socket.roomId).emit('player_mods_update', {playerMods: room.playerMods});
+  });
+
+  // ボットにMODを付与（ホストのみ）
+  socket.on('set_bot_mod', ({botId, mod}) => {
+    const room = getRoom(socket.roomId); if (!room) return;
+    if (socket.id!==room.host) return;
+    const bot = room.bots.find(b=>b.id===botId);
+    if (!bot) return;
+    if (!room.playerMods) room.playerMods = {};
+    bot.mod = sanitizeMod(mod);
+    room.playerMods[botId] = bot.mod;
+    io.to(socket.roomId).emit('player_mods_update', {playerMods: room.playerMods});
+    broadcastRoomUpdate(room, socket.roomId);
   });
 
   socket.on('piece_update', ({currentPiece}) => {
@@ -3287,8 +3537,8 @@ io.on('connection', (socket) => {
         if (targetMod === 'laststand') {
           finalLines = sentTotal * 3;
           targetHoles3 = 0;
-        } else if (targetMod === 'badhole') {
-          // Bad Hole MOD: 受ける攻撃を半減
+        } else if (targetMod === 'badhole' || targetMod === 'warlock') {
+          // Bad Hole / Warlock MOD: 受ける攻撃を半減
           finalLines = Math.max(1, Math.ceil(sentTotal / 2));
           targetHoles3 = 0;
         }
@@ -3322,7 +3572,7 @@ io.on('connection', (socket) => {
     others.forEach(p=>{
       const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
       if (p.isBot && p.queueGarbage) {
-        p.queueGarbage(sentBuf, socket.id, 0);
+        p.queueGarbage(adjustForTargetMod(room, p.id, sentBuf), socket.id, 0);
       } else {
         if (senderMode === 'tetris' && targetMode === 'puyo') {
           const mult = room.roomSettings.garbageMultiplier || 2;
@@ -3350,7 +3600,7 @@ io.on('connection', (socket) => {
     others.forEach(p => {
       const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
       if (p.isBot && p.queueGarbage) {
-        p.queueGarbage(sentAttack, socket.id, 0);
+        p.queueGarbage(adjustForTargetMod(room, p.id, sentAttack), socket.id, 0);
       } else if (senderMode === 'tetris' && targetMode === 'tetris') {
         io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, sentAttack), fromId: socket.id, holes3: 0});
       }
@@ -3373,8 +3623,7 @@ io.on('connection', (socket) => {
       if (p.isBot && p.queueGarbage) {
         const mult = room.roomSettings.garbageMultiplier || 2;
         const lines = Math.floor(sentTotal / mult);
-        console.log(`[PUYO ATK] -> bot: mult=${mult} lines=${lines}`);
-        if (lines > 0) p.queueGarbage(lines, socket.id);
+        if (lines > 0) p.queueGarbage(adjustForTargetMod(room, p.id, lines), socket.id);
       } else if (targetMode === 'tetris') {
         const mult = room.roomSettings.garbageMultiplier || 2;
         const lines = Math.floor(sentTotal / mult);
@@ -3490,7 +3739,7 @@ io.on('connection', (socket) => {
     const hc=Math.floor(Math.random()*10);
     others.forEach(p=>{
       if(p.isBot && p.queueGarbage){
-        p.queueGarbage(sent20, socket.id);
+        p.queueGarbage(adjustForTargetMod(room, p.id, sent20), socket.id);
       } else {
         io.to(p.id).emit('receive_garbage',{lines:adjustForTargetMod(room, p.id, sent20),fromId:socket.id,holeCol:hc});
       }

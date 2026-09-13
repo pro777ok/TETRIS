@@ -1062,6 +1062,7 @@
               onchange="updateRoomSetting('botType',this.value)">
               <option value="normal">通常AI</option>
               <option value="allspin">ALLSPIN</option>
+              <option value="coldclear">COLD CLEAR</option>
             </select>
             <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">種類</span>
           </div>
@@ -1076,6 +1077,26 @@
             <input type="range" id="bot-pps-input" min="0.5" max="6" step="0.1" value="2.5"
               oninput="document.getElementById('bot-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('botPps',this.value)">
             <span class="hs-val" id="bot-pps-val">2.5 PPS</span>
+          </div>
+          <div class="hs-row">
+            <label>🔮 BOT MOD</label>
+            <select id="bot-mod-select" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:6px;padding:0.2rem 0.4rem;font-size:0.75rem">
+              <option value="none">なし</option>
+              <option value="doubleGarbage">ダブルガベージ</option>
+              <option value="allspin">オールスピン</option>
+              <option value="warlock">ウォーロック</option>
+              <option value="laststand">ラストスタンド</option>
+              <option value="badhole">バッドホール</option>
+              <option value="tower">タワー</option>
+              <option value="helmet">ヘルメット</option>
+              <option value="rock">ロック</option>
+              <option value="rebound">リバウンド</option>
+              <option value="expert">エキスパート</option>
+              <option value="messiness">メッシネス</option>
+              <option value="gravity">グラビティ</option>
+              <option value="solid">ソリッド</option>
+            </select>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">MOD</span>
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
