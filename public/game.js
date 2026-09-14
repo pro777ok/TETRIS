@@ -4792,7 +4792,7 @@ function openReplayViewer(replayData, mode) {
         break;
       }
       case 'opponent_line_clear': {
-        renderer.triggerOpponentLineClear && renderer.triggerOpponentLineClear(data.id, data.count, data.spinType, data.isB2B, data.ren, data.allClear, data.attack||0, data.lockX, data.lockY);
+        renderer.triggerOpponentLineClear && renderer.triggerOpponentLineClear(data.id, data.count, data.spinType, data.isB2B, data.ren, data.allClear, data.attack||0, data.lockX, data.lockY, data.b2bCount);
         break;
       }
       case 'receive_garbage': {
@@ -5218,7 +5218,7 @@ class FloatLabel{
   constructor(app,x,y,text,color,persistent=false){
     this.app=app;this.alive=true;this.persistent=persistent;
     this._ended=false;this.baseX=x;this.baseY=y;
-    this._timer=0;this._fadeDur=600;
+    this._timer=0;this._fadeDur=2000;
     const sz=persistent?20:17;
     const st=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:sz,fill:color,fontWeight:'400',letterSpacing:2,
       dropShadow:true,dropShadowColor:0x000000,dropShadowDistance:3,dropShadowBlur:4});
@@ -5240,7 +5240,7 @@ class FloatLabel{
     const a=Math.max(0,1-this._timer/this._fadeDur);
     this.txt.alpha=a;
     this.txt.scale.set(Math.max(0.1,1+this._timer*0.002),1);
-    this.txt.x=this.baseX+(this._timer*0.08);
+    this.txt.x=this.baseX-(this._timer*0.08);
     if(a<=0){this.alive=false;try{this.txt.destroy();}catch(e){}}
   }
   updateText(t){
@@ -5468,16 +5468,35 @@ class GameRenderer{
       const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xff8500}));apmTxt.x=0;apmTxt.y=oBH+ppsSz*2;cont.addChild(apmTxt);
       const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=oBH+ppsSz*3;cont.addChild(vsTxt);
       const renTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b}));renTxt.x=0;renTxt.y=oBH+ppsSz*4;cont.addChild(renTxt);
-      // 相手B2Bバッジ（自画面と同じ見た目・盤面の左側）
-      const obR=Math.max(11,Math.round(ppsSz*1.6));
-      const b2bBadge=new PIXI.Container();b2bBadge.visible=false;b2bBadge.x=-Math.round(obR*2.2);b2bBadge.y=Math.round(oBH*0.5);cont.addChild(b2bBadge);
+      // 相手B2Bバッジ（自画面（root上・半径28）と同じ見た目・大きさ・位置）
+      // 1v1 は contScale(=uiScale) が掛かるので 28/contScale で表示ピクセルを揃える
+      const obR=this.opponentPlayers.length===1
+        ? Math.max(14,Math.round(28/contScale))
+        : Math.max(11,Math.round(28*(oBH/BOARD_H)));
+      const b2bBadge=new PIXI.Container();b2bBadge.visible=false;
+      b2bBadge.x=-Math.round(obR*3.2);
+      b2bBadge.y=Math.round(this.opponentPlayers.length===1 ? 90/contScale : oBH*0.2);
+      cont.addChild(b2bBadge);
       const b2bBadgeBg=new PIXI.Graphics();b2bBadge.addChild(b2bBadgeBg);
       const b2bBadgeDots=new PIXI.Graphics();b2bBadgeDots.x=obR;b2bBadgeDots.y=obR;b2bBadge.addChild(b2bBadgeDots);
-      const b2bBadgeLbl=new PIXI.Text('B2B',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(6,Math.round(obR*0.32)),fill:0x888888,letterSpacing:1}));
-      b2bBadgeLbl.anchor.set(0.5);b2bBadgeLbl.x=obR;b2bBadgeLbl.y=Math.round(obR*0.42);b2bBadge.addChild(b2bBadgeLbl);
-      const b2bTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(obR*0.6),fill:0xffbe0b,fontWeight:'700'}));
-      b2bTxt.anchor.set(0.5);b2bTxt.x=obR;b2bTxt.y=Math.round(obR*1.02);b2bBadge.addChild(b2bTxt);
+      const b2bBadgeLbl=new PIXI.Text('B2B',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(obR*0.25),fill:0x888888,letterSpacing:2}));
+      b2bBadgeLbl.anchor.set(0.5);b2bBadgeLbl.x=obR;b2bBadgeLbl.y=Math.round(obR*0.46);b2bBadge.addChild(b2bBadgeLbl);
+      const b2bTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(obR*0.57),fill:0xffbe0b,fontWeight:'700'}));
+      b2bTxt.anchor.set(0.5);b2bTxt.x=obR;b2bTxt.y=Math.round(obR*1.07);b2bBadge.addChild(b2bTxt);
       b2bBadge._R=obR;
+      // 常時グリッチノイズ用スプライト（自画面バッジと同じ）
+      let _gc=null,_gt=null,_gs=null;
+      try{
+        const _cv=document.createElement('canvas');_cv.width=60;_cv.height=60;
+        _gc=_cv.getContext('2d');
+        _gt=new PIXI.Texture(new PIXI.BaseTexture(_cv));
+        _gs=new PIXI.Sprite(_gt);_gs.alpha=0;
+        try{_gs.blendMode=PIXI.BLEND_MODES.ADD;}catch(e2){}
+        b2bBadge.addChild(_gs);
+      }catch(e){_gc=null;_gt=null;_gs=null;}
+      // バッジ効果用の状態（自画面バッジと同一のパンチ/グリッチ/回転/解除ポップ）
+      const _b2bState={_b2bBadgeDotRot:0,_b2bPunching:false,_b2bPunchTime:0,_b2bGlitchTime:0,_b2bBadgeColor:0xffbe0b,_b2bBreakPop:null,_b2bFxLast:0,b2bScale:1,
+        _b2bGlitchCtx:_gc,_b2bGlitchTex:_gt,_b2bGlitchSpr:_gs,_b2bNoiseTimer:0};
 
       const flashGfx=new PIXI.Graphics();flashGfx.alpha=0;cont.addChild(flashGfx);
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
@@ -5506,6 +5525,7 @@ class GameRenderer{
         ren:0,renColor:0x00f5ff,renTxt,b2bTxt,b2bBadge,b2bBadgeBg,b2bBadgeDots,b2bBadgeLbl,
         smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
         sinkOffset:0, // ハードドロップ時の沈み込みオフセット
+        ..._b2bState,
       };
     });
     // スロット位置を保存
@@ -6309,22 +6329,74 @@ class GameRenderer{
       this._drawZigzag(d.lightGfx,d.boardW,0,d.boardW,d.boardH,segs,amp,'v');
       if(d.lightTimer<=0){d.lightGfx.clear();d.lightGfx.alpha=0;}
     }
-    // 相手B2Bカウント表示（自画面と同じ「B2B」バッジ・12点星）
+    // 相手B2Bカウント表示（自画面と同じ「B2B」バッジ・12点星・パンチ/グリッチ/解除ポップ）
     if(d.b2bBadge){
       const bc=d.b2bCount||0;
+      const R=d.b2bBadge._R||28;
+      const _nw=performance.now();
+      const _bf=(d._b2bFxLast||_nw);d._b2bFxLast=_nw;
+      const _dt=Math.min(_nw-_bf,50);
       if(bc>=2){
-        const R=d.b2bBadge._R||12;
-        const col=bc>=8?0x0088ff:bc>=3?0x00ff88:0xffbe0b;
+        const col=bc>=8?0x0088ff:bc>=5?0x00ccff:bc>=3?0x00ff88:0xffbe0b;
+        const badgeScale=(1+Math.min(bc*0.06,0.5))*Math.pow(1.2,Math.floor(bc/10));
+        d.b2bScale=badgeScale;
+        d._b2bBadgeColor=col;
         d.b2bTxt.text=`x${bc}`;
-        d.b2bTxt.style=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(R*0.6),fill:col,fontWeight:'700'});
-        const bg=d.b2bBadgeBg;bg.clear();
-        bg.beginFill(0x000011,0.82);bg.lineStyle(2,col,0.85);bg.drawCircle(R,R,R);bg.endFill();
-        bg.lineStyle(1,col,0.35);bg.drawCircle(R,R,R*0.72);
-        this._drawStarInto(d.b2bBadgeDots,col,Math.max(6,R-2),1.4);
+        d.b2bTxt.style=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(R*0.57),fill:col,fontWeight:'700'});
+        this._drawBadgeGfx(d.b2bBadgeBg,d.b2bBadgeDots,col,0,R);
+        // 解除ポップ: 少し大きくなり→小さくなり→消える
+        if(d._b2bBreakPop){
+          d._b2bBreakPop.t+=_dt;
+          const t=d._b2bBreakPop.t/420;
+          if(t>=1){
+            d._b2bBreakPop=null;d.b2bBadge.visible=false;d.b2bBadge.scale.set(1);
+            d.b2bTxt.scale.set(1);d.b2bBadge.alpha=1;
+          }else{
+            const e=t<0.35?t/0.35:1-(t-0.35)/0.65;
+            d.b2bBadge.scale.set(badgeScale*(1+e*0.35));
+            d.b2bBadge.alpha=Math.max(0,1-t*t);
+          }
+        }else{
+          d.b2bBadge.scale.set(badgeScale);
+          if(d.b2bBadgeDots){
+            // 12個の点で構成する星（枠線）を回転
+            d._b2bBadgeDotRot=(d._b2bBadgeDotRot||0)+_dt*0.0018;
+            d.b2bBadgeDots.rotation=d._b2bBadgeDotRot;
+          }
+          // 常時グリッチノイズ（B2Bが高いほど強く、自画面バッジと同じ間隔）
+          if(d._b2bGlitchTex&&d._b2bNoiseTimer!==undefined){
+            d._b2bNoiseTimer+=_dt;
+            const noiseInterval=Math.max(30,120-bc*10);
+            if(d._b2bNoiseTimer>=noiseInterval){
+              d._b2bNoiseTimer=0;
+              this._updateBotB2bGlitchNoise(d,bc);
+            }
+          }
+        }
+        // パンチ: 数字がスケールアップ→戻る
+        if(d._b2bPunching){
+          d._b2bPunchTime=(d._b2bPunchTime||0)+_dt;
+          const pt=Math.min(d._b2bPunchTime/120,1);
+          const psc= pt<0.4 ? 1+1.5*pt : 1+1.5*(1-pt)*0.67;
+          d.b2bTxt.scale.set(Math.max(1,psc));
+          if(pt>=1){d._b2bPunching=false;d.b2bTxt.scale.set(1);}
+        }
+        // グリッチ（パンチ時）
+        if(d._b2bGlitchTime>0){
+          d._b2bGlitchTime-=_dt;
+          const intensity=Math.min(1,d._b2bGlitchTime/180);
+          const jx=(Math.random()-0.5)*4*intensity;
+          d.b2bTxt.x=R+jx;
+          if(Math.random()<0.4)this._drawBadgeGfx(d.b2bBadgeBg,d.b2bBadgeDots,col,intensity,R);
+          if(d._b2bGlitchTime<=0){d.b2bTxt.x=R;this._drawBadgeGfx(d.b2bBadgeBg,d.b2bBadgeDots,col,0,R);}
+        }
         if(d.b2bBadgeLbl)d.b2bBadgeLbl.style.fill=bc>=8?0x88ccff:bc>=5?0x88eeff:bc>=3?0x88ffcc:0xffdd88;
         d.b2bBadge.visible=true;
       }else{
-        d.b2bBadge.visible=false;
+        // B2B切れ: 表示中ならポップアニメーションで消す
+        if(d.b2bBadge.visible&&!d._b2bBreakPop)d._b2bBreakPop={t:0};
+        if(!d._b2bBreakPop)d.b2bBadge.visible=false;
+        if(d._b2bGlitchSpr)d._b2bGlitchSpr.alpha=0;
       }
     }
     if(d.shakeX!==0||d.shakeY!==0){
@@ -6610,16 +6682,21 @@ class GameRenderer{
   }
 
   _drawB2bBadgeBg(col,glitchAmt){
-    const bg=this.b2bBadgeBg;bg.clear();
-    const R=28; // 半径
+    this._drawBadgeGfx(this.b2bBadgeBg,this.b2bBadgeDots,col,glitchAmt,28);
+  }
+
+  // バッジ枠・12点星・グリッチスキャンラインを描く共通ヘルパー（プレイヤー/ボット共用）
+  _drawBadgeGfx(bg,dots,col,glitchAmt,R){
+    if(!bg)return;
+    bg.clear();
     // メイン丸
     bg.beginFill(0x000011,0.82);bg.lineStyle(2,col,0.85);
     bg.drawCircle(R,R,R);bg.endFill();
     // 内側リング
     bg.lineStyle(1,col,0.35);bg.drawCircle(R,R,R*0.75);
     // 枠線: 12個の点で構成する星 = 外周12/内周12のギザギザ（角は少し丸める）
-    if(this.b2bBadgeDots){
-      const g=this.b2bBadgeDots;g.clear();
+    if(dots){
+      const g=dots;g.clear();
       const N=24; // 12個の点の星 = 外側12 + 内側12 の頂点
       const outer=R+4, inner=R-2;
       const f=0.35; // 角の丸め（エッジ上の割合）
@@ -6732,6 +6809,37 @@ class GameRenderer{
     // テクスチャ更新
     if(this._b2bGlitchTex&&this._b2bGlitchTex.baseTexture)this._b2bGlitchTex.baseTexture.update();
     if(this._b2bGlitchSpr)this._b2bGlitchSpr.alpha=Math.min(0.7,0.15+b2bCount*0.06);
+  }
+
+  // ボットB2Bバッジの常時グリッチノイズ（自画面バッジと同じ）
+  _updateBotB2bGlitchNoise(d,b2bCount){
+    if(!d._b2bGlitchCtx||!d._b2bGlitchTex)return;
+    const ctx=d._b2bGlitchCtx;
+    const W=60,H=60;
+    ctx.clearRect(0,0,W,H);
+    if(b2bCount<1)return;
+    const intensity=Math.min(1,0.1+b2bCount*0.07);
+    // スキャンライン
+    const numLines=Math.floor(intensity*8)+2;
+    for(let i=0;i<numLines;i++){
+      const y=Math.random()*H;
+      const h=Math.random()*3+1;
+      const col=b2bCount>=8?'rgba(0,140,255,':b2bCount>=3?'rgba(0,255,140,':'rgba(255,200,0,';
+      ctx.fillStyle=col+(Math.random()*0.5*intensity)+')';
+      const xoff=(Math.random()-0.5)*12*intensity;
+      ctx.fillRect(xoff,y,W,h);
+    }
+    // RGBずれブロック
+    if(b2bCount>=3){
+      const nb=Math.floor(intensity*4)+1;
+      for(let i=0;i<nb;i++){
+        const bx=Math.random()*W,by=Math.random()*H,bw=Math.random()*20+4,bh=Math.random()*4+1;
+        ctx.fillStyle='rgba(255,0,0,'+(Math.random()*0.25*intensity)+')';ctx.fillRect(bx-2,by,bw,bh);
+        ctx.fillStyle='rgba(0,0,255,'+(Math.random()*0.25*intensity)+')';ctx.fillRect(bx+2,by,bw,bh);
+      }
+    }
+    if(d._b2bGlitchTex&&d._b2bGlitchTex.baseTexture)d._b2bGlitchTex.baseTexture.update();
+    if(d._b2bGlitchSpr)d._b2bGlitchSpr.alpha=Math.min(0.7,0.15+b2bCount*0.06);
   }
 
   // B2B途切れ白稲妻
@@ -7476,8 +7584,15 @@ class GameRenderer{
       this._triggerRenEffect(ren,cleared);
     }
 
-    const lx=this.mainBX+BOARD_W+18;let ly=this.mainBY+BOARD_H*0.25;
+    let lx=this.mainBX+BOARD_W+18;let ly=this.mainBY+BOARD_H*0.25;
     let lbl='';
+    // B2Bバッジの下にテキストを表示（バッジ中央・その直下から縦に並ぶ）
+    if(this.b2bBadgeCont){
+      const bR=28;
+      const bscale=(this.b2bBadgeCont.scale&&this.b2bBadgeCont.scale.x)||1;
+      const bc=this.b2bBadgeCont.toGlobal(new PIXI.Point(bR,bR));
+      lx=bc.x;ly=bc.y+bR*bscale+8;
+    }
     if(spinType){
       if(spinType==='TSPIN')lbl={0:'T-SPIN',1:'T-SPIN SINGLE',2:'T-SPIN DOUBLE',3:'T-SPIN TRIPLE'}[count]||'T-SPIN';
       else if(spinType==='MINI_TSPIN')lbl='MINI T-SPIN';
@@ -7495,11 +7610,14 @@ class GameRenderer{
     if(ren>1)lbl+=(lbl?' │ ':'')+`REN ${ren-1}`;
     if(lbl){
       const col=allClear?0xffff44:0xffffff;
-      this.floatLabels.push(new FloatLabel(this.app,lx,ly,lbl,col,false));ly+=38;
+      const fl=new FloatLabel(this.app,lx,ly,lbl,col,false);
+      fl.txt.anchor.set(0.5,0.5);fl.txt.x=lx;
+      this.floatLabels.push(fl);ly+=38;
     }
     if(combo>0){
       if(!this.comboLabel||!this.comboLabel.alive){
         this.comboLabel=new FloatLabel(this.app,lx,ly,`COMBO ×${combo}`,0x06d6a0,true);
+        this.comboLabel.txt.anchor.set(0.5,0.5);this.comboLabel.txt.x=lx;
         this.floatLabels.push(this.comboLabel);
       } else {
         this.comboLabel.updateText(`COMBO ×${combo}`);
@@ -8553,6 +8671,41 @@ class GameRenderer{
       d.renTxt.style=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12),fill:d.renColor});
     }
 
+    // スピン文字（自分のonLineClearと同じ表記）を相手盤面上に表示
+    if(this.floatLabels){
+      let ol='';
+      if(spinType){
+        if(spinType==='TSPIN')ol={0:'T-SPIN',1:'T-SPIN SINGLE',2:'T-SPIN DOUBLE',3:'T-SPIN TRIPLE'}[count]||'T-SPIN';
+        else if(spinType==='MINI_TSPIN')ol='MINI T-SPIN';
+        else ol=spinType.replace('SPIN',' SPIN');
+      }
+      if(count===4&&!spinType)ol='QUAD';
+      if(count===1&&!spinType)ol='Single';
+      if(count===2&&!spinType)ol='Double';
+      if(count===3&&!spinType)ol='Triple';
+      if(allClear)ol='★ ALL CLEAR ★';
+      const b2bShow = b2bCount !== undefined ? b2bCount : (d.b2bCount||0);
+      if(isB2B&&b2bShow>1)ol=`B2B x${b2bShow} ${ol}`;
+      else if(isB2B)ol=`B2B ${ol}`;
+      if(ol){
+        // バッジの下にテキストを表示（プレイヤーと同様）
+        let olx,oly;
+        if(d.b2bBadge){
+          const bR=d.b2bBadge._R||28;
+          const bscale=(d.b2bBadge.scale&&d.b2bBadge.scale.x)||1;
+          const _bc=d.b2bBadge.toGlobal(new PIXI.Point(bR,bR));
+          olx=_bc.x;oly=_bc.y+bR*bscale+8;
+        }else{
+          const p0=d.cont.toGlobal(new PIXI.Point(0,0));
+          const p1=d.cont.toGlobal(new PIXI.Point(d.boardW,d.boardH));
+          olx=(p0.x+p1.x)/2;oly=p0.y+(p1.y-p0.y)*0.22;
+        }
+        const fl=new FloatLabel(this.app,olx,oly,ol,allClear?0xffff44:0xffffff,false);
+        fl.txt.anchor.set(0.5,0.5);fl.txt.x=olx;
+        this.floatLabels.push(fl);
+      }
+    }
+
     // B2B雷
     // サーバーから正確なb2bCountが来たらそれを使う（解除時は0）
     const prevB2b=d.b2bCount||0;
@@ -8566,6 +8719,13 @@ class GameRenderer{
     }
     if(isB2B&&settings.quality!=='low'){
       d.lightTimer=Math.min(80,40+d.b2bCount*8);
+      // カウント更新パンチ＆グリッチ（自画面バッジと同じ）
+      d._b2bPunching=true;d._b2bPunchTime=0;d._b2bGlitchTime=180;
+    }
+    if(prevB2b>=1&&(d.b2bCount||0)===0&&d.b2bBadge&&!d._b2bBreakPop){
+      // B2B切れ: バッジを少し大きく→小さく→消える
+      d.b2bBadge.visible=true;
+      d._b2bBreakPop={t:0};
     }
 
     // テトリス/スピン: 傾き（自分と同じ値に）
@@ -10132,6 +10292,45 @@ socket.on('bot_piece_update',({id,currentPiece})=>{
     d._pieceLerpTargetY=currentPiece.y;
     d._pieceLerpStep=Math.max(0,(currentPiece.y+2)/320);
   }
+});
+
+// CC2 ボットの操作列(回転→スライド→落下)をパスとして再生する。
+// ミノがプレイヤーの操作通りに動いているように見せる。
+let _botPathTimers = {}; // botId -> interval
+function _startBotPiecePlayback(id, d, type, path, stepMs){
+  if(_botPathTimers[id]){clearInterval(_botPathTimers[id]);delete _botPathTimers[id];}
+  if(!path||path.length<2||!d)return;
+  // 旧式の縦方向補間を無効化（パス再生と競合しないように）
+  d._pieceLerpTargetY=undefined; d._pieceLerpStep=0;
+  const w0=path[0];
+  d.currentPiece={type,rotation:w0.rotation,x:w0.x,y:w0.y};
+  const N=path.length;
+  let i=0,t=0;
+  _botPathTimers[id]=setInterval(()=>{
+    t+=16;
+    // セグメント進捗を更新
+    while(t>=stepMs&&i<N-1){t-=stepMs;i++;}
+    if(i>=N-1){
+      clearInterval(_botPathTimers[id]);delete _botPathTimers[id];
+      const last=path[N-1];
+      d.currentPiece={type,rotation:last.rotation,x:last.x,y:Math.round(last.y)};
+      d._pieceLerpTargetY=undefined;d._pieceLerpStep=0;
+      return;
+    }
+    const a=path[i],b=path[i+1];
+    const k=Math.min(1,t/stepMs);
+    // 回転は最短経路で補間し整数に丸める
+    let dr=((b.rotation-a.rotation+2)%4+4)%4-2;
+    let rot=Math.round((a.rotation+dr*k)%4+4)%4;
+    d.currentPiece={type,rotation:rot,x:a.x+(b.x-a.x)*k,y:Math.round(a.y+(b.y-a.y)*k)};
+  },16);
+}
+socket.on('bot_piece_path',({id,type,path,stepMs})=>{
+  if(!renderer||!type||!path||path.length<2)return;
+  let d;
+  if(renderer.opPuyoData&&renderer.opPuyoData[id])d=renderer.opPuyoData[id];
+  else if(renderer.opBoardData&&renderer.opBoardData[id])d=renderer.opBoardData[id];
+  if(d)_startBotPiecePlayback(id,d,type,path,stepMs||42);
 });
 
 // 現在ミノのリアルタイム位置更新

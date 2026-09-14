@@ -2147,6 +2147,15 @@ class BotPlayer {
       if (!this.alive) { if (onDone) onDone(); return; }
       const sug = this._cc2Engine.takeSuggestion();
       if (sug && sug.moves && sug.moves.length > 0) {
+        // season1: allspin はスピン扱いされない → T-spin 中心の B2B を優先。
+        // サーバー側の全配置探索と CC2 提案を同基準で採点し最良を選択する。
+        const room = rooms[this.roomId];
+        if (room && room.roomSettings && room.roomSettings.season1Mode) {
+          if (this._cc2Season1Best(sug.moves, onDone)) return;
+          console.warn(`[CC2] ${this.name}: season1 placement invalid, fallback normal AI`);
+          this._thinkNormalAI(onDone);
+          return;
+        }
         if (this._applyCC2Move(sug.moves[0], onDone)) return;
         console.warn(`[CC2] ${this.name}: invalid move, fallback normal AI`);
         this._thinkNormalAI(onDone);
@@ -2162,21 +2171,21 @@ class BotPlayer {
     setTimeout(poll, 70);
   }
 
-  // CC2 suggestion → executePlacement。配置が成立しなければ false を返す。
+  // CC2 suggestion → サーバー座標 (rot,x,y) への解決。成立しなければ null。
   // CC2 とサーバーではピースのアンカー規約が異なるため、占有セル集合が
   // 一致するサーバー座標 (rot,x,y) を全走査で特定する（接地状態のみ）。
   // BFS の到達可能性判定は 180°回転やタックを網羅しないため使わない。
-  _applyCC2Move(mv, onDone) {
-    if (!this.alive || !this.currentPiece) return false;
+  _cc2MatchLocation(mv) {
+    if (!this.alive || !this.currentPiece) return null;
     const loc = mv.location;
-    if (!loc || !CC2_PIECE_CELLS[loc.type] || loc.x === undefined || loc.y === undefined) return false;
+    if (!loc || !CC2_PIECE_CELLS[loc.type] || loc.x === undefined || loc.y === undefined) return null;
 
     // CC2 の占有セルをサーバー座標（Row0=上）へ変換
     const bottom = ROWS + HIDDEN - 1;
     const target = new Set();
     for (const [cx, cy] of CC2_PIECE_CELLS[loc.type]) {
       const rc = cc2RotateCell(cx, cy, loc.orientation);
-      if (!rc) return false;
+      if (!rc) return null;
       const [rx, ry] = rc;
       target.add(`${bottom - (loc.y + ry)},${loc.x + rx}`);
     }
@@ -2201,17 +2210,117 @@ class BotPlayer {
         }
       }
     }
-    if (!match) return false;
+    if (!match) return null;
 
     const useHold = loc.type !== this.currentPiece.type;
     // ホールド/ネクストから生成できる型チェック（不一致ならフォールバック）
     const expectedType = !useHold
       ? this.currentPiece.type
       : (this.holdPiece || this.nextQueue[0]);
-    if (expectedType !== loc.type) return false;
+    if (expectedType !== loc.type) return null;
 
     const wasKicked = !!mv.spin && mv.spin !== 'none';
-    this.executePlacement({ rot: match.rot, x: match.x, y: match.y, exactY: true, useHold, wasKicked }, onDone);
+    return { type: loc.type, rot: match.rot, x: match.x, y: match.y, exactY: true, useHold, wasKicked };
+  }
+
+  _applyCC2Move(mv, onDone) {
+    const m = this._cc2MatchLocation(mv);
+    if (!m) return false;
+    this.executePlacement({ rot: m.rot, x: m.x, y: m.y, exactY: true, useHold: m.useHold, wasKicked: m.wasKicked }, onDone);
+    return true;
+  }
+
+  // season1: allspin はスピン扱いにならず B2B も維持しないため、CC2 を主
+  // 選定にしつつ、T ピースではサーバー側の全配置探索（getAllPlacementsBFS）
+  // の TSPIN/MINI を最優先で強制する。非 T の ALLSPIN(ISPIN/SSPIN/LSPIN/
+  // JSPIN/ZSPIN) 提案は clean 配置（スピンなし）で同じ（以上の）ライン処理
+  // が可能なら置き換えて、T-spin 中心の B2B 拾いを損なわないようにする。
+  _cc2Season1Best(moves, onDone) {
+    if (!this.alive || !this.currentPiece) return false;
+    const board = this.board;
+    const type = this.currentPiece.type;
+    const exec = (p) => this.executePlacement(
+      { rot: p.rot, x: p.x, y: p.y, exactY: true, useHold: false, wasKicked: p.wasKicked, needsSoftDrop: p.needsSoftDrop || false },
+      onDone
+    );
+
+    // 1) サーバー側の全配置（BFS: スピン・キック・ソフトドロップも網羅）
+    let placements = [];
+    try { placements = getAllPlacementsBFS(board, type); } catch (e) { placements = []; }
+
+    // 2) T ピース: season1 では MINI_TSPIN は B2B 扱いにならないため、
+    //    フル TSPIN のみを最優先で強制する
+    if (type === 'T') {
+      let tp = null;
+      for (const p of placements) {
+        if (p.spin !== 'TSPIN' || p.lines <= 0) continue;
+        if (!tp || p.lines > tp.lines) tp = p;
+      }
+      if (tp) { exec(tp); return true; }
+    }
+
+    // 3) CC2 の次手を主選定として採用（ホールド使用を尊重）
+    const first = moves && moves[0];
+    if (first) {
+      const mt = this._cc2MatchLocation(first);
+      if (mt) {
+        const spin = detectSpin(board, mt.type, mt.rot, mt.x, mt.y, mt.wasKicked);
+        // TSPIN と無回転配置はそのまま踏襲（season1 で B2B を維持できるのは
+        // フル TSPIN とテトリスだけ）
+        if (spin === 'TSPIN' || !spin) { this._applyCC2Move(first, onDone); return true; }
+        // MINI_TSPIN は採点ステップへ（TSPIN が無理なときに狙う +15000）。
+        // ALLSPIN は season1 でスピン扱いされない → clean 配置で同じ/以上の
+        // ライン処理ができれば救出して採点ステップに落とす。
+        if (spin !== 'MINI_TSPIN') {
+          const { lines } = clearLines(placePiece(board, mt.type, mt.rot, mt.x, mt.y));
+          let clean = null;
+          for (const p of placements) {
+            if (p.spin) continue;
+            if (!clean || p.lines > clean.lines) clean = p;
+          }
+          if (clean && clean.lines >= lines) { exec(clean); return true; }
+        }
+        // 同等の clean が無い場合は 4) の採点へ落とす。allspin は最下位
+        // ランクなので BFS 配置（TSPIN/テトリス/clean）が必ず優先される。
+      }
+    }
+
+    // 4) CC2 次手が成立しない → BFS と CC2 全提案を TSPIN 優先で採点して選ぶ。
+    //    季節（season1）では B2B を維持できるのはフル TSPIN（isTSpin）と
+    //    テトリス（lines===4）だけなので、フル TSPIN が無理なときは
+    //    テトリス → MINI_TSPIN の順で狙う。
+    const scoreCandidate = (spin, cleared, lines) => {
+      const isFullT = spin === 'TSPIN';
+      const isMini = spin === 'MINI_TSPIN';
+      const isAllSpin2 = !!spin && !isFullT && !isMini;
+      // allspin はスピンボーナスを与えない（plain のライン値だけ）
+      const evalSpin = isAllSpin2 ? null : spin;
+      let sc = evaluateBoard(cleared, lines, evalSpin, false, 0, this.level || 100, 0);
+      if (isFullT && lines > 0) sc += 60000 + lines * 20000; // フル TSPIN 最優先（B2B 維持）
+      else if (lines === 4) sc += 25000;                     // テトリス（B2B を維持できるので mini より優先）
+      else if (isMini && lines > 0) sc += 15000;             // MINI_TSPIN（フル TSPIN が無理なら狙う）
+      if (isAllSpin2) sc -= 500000; // allspin はほぼ無価値
+      return { sc, rank: isAllSpin2 ? 1 : 0 };
+    };
+    let best = null, bestSc = -Infinity;
+    const consider = (cand) => {
+      const r = cand.rank, s = cand.sc;
+      if (!best || r < best.rank || (r === best.rank && s > bestSc)) { best = cand; bestSc = s; }
+    };
+    for (const p of placements) {
+      consider(Object.assign({ src: 'bfs', p }, scoreCandidate(p.spin, p.board, p.lines)));
+    }
+    for (let i = 0; i < moves.length; i++) {
+      const mt = this._cc2MatchLocation(moves[i]);
+      if (!mt) continue;
+      const spin = detectSpin(board, mt.type, mt.rot, mt.x, mt.y, mt.wasKicked);
+      const { board: cleared, lines } = clearLines(placePiece(board, mt.type, mt.rot, mt.x, mt.y));
+      consider(Object.assign({ src: 'cc2', mv: moves[i] }, scoreCandidate(spin, cleared, lines)));
+    }
+
+    if (!best) return false;
+    if (best.src === 'bfs') exec(best.p);
+    else this._applyCC2Move(best.mv, onDone);
     return true;
   }
 
@@ -2389,15 +2498,87 @@ class BotPlayer {
     });
   }
 
-  // Warp: broadcast final position immediately, lock is called by executePlacement callback
+  // CC2: 最終位置をワープさせず、スポーン→回転→スライド→落下の操作列を
+  // パスとして送り、クライアントでアニメーションさせる。ロックはアニメ完了後に。
+  // 他のボット種別は従来どおり即時反映。
   _animatePlacement(type, rot, x, targetY, needsSoftDrop, wasKicked, done) {
     const room = rooms[this.roomId];
-    if (room) {
-      io.to(this.roomId).emit('bot_piece_update', {
-        id: this.id, currentPiece: { type, rotation: rot, x, y: targetY, customShape: null }
-      });
+    const final = {
+      id: this.id, currentPiece: { type, rotation: rot, x, y: targetY, customShape: null }
+    };
+    if (room && this.botType === 'coldclear' && this.cols === COLS) {
+      const path = this._buildCC2VisualPath(type, rot, x, targetY);
+      const STEP_MS = 42;
+      const dur = Math.max(120, Math.min(900, Math.max(1, path.length - 1) * STEP_MS));
+      io.to(this.roomId).emit('bot_piece_path', { id: this.id, type, path, stepMs: STEP_MS, dur });
+      setTimeout(() => {
+        const r = rooms[this.roomId];
+        if (!this.alive) { if (done) done(); return; }
+        if (r) io.to(this.roomId).emit('bot_piece_update', final);
+        if (done) done();
+      }, dur);
+      return;
     }
+    if (room) io.to(this.roomId).emit('bot_piece_update', final);
     if (done) done();
+  }
+
+  // CC2 の配置を「プレイヤーの操作」風のパスに変換する:
+  //   1. スポーン位置で目標回転まで回転（SRS+キック）
+  //   2. 着地付近まで一気に降下（画面内で見える高さ）
+  //   3. 目標列まで横スライド（突っかかったら1段下げる）
+  //   4. 最終落下 → 正確な最終配置を末尾に付加
+  _buildCC2VisualPath(type, rot, x, targetY) {
+    const board = this.board;
+    const spawnX = Math.floor((this.cols - 4) / 2);
+    const steps = [];
+    const push = (cr, cx, cy) => {
+      const last = steps[steps.length - 1];
+      if (!last || last.rot !== cr || last.x !== cx || last.y !== cy) steps.push({ rot: cr, x: cx, y: cy });
+    };
+    push(0, spawnX, -2);
+
+    // 1) 回転（現在高さ → ダメなら y=0 で回転）
+    let cr = 0, cx = spawnX, cy = -2;
+    const cw = ((rot % 4) + 4) % 4;
+    const ccw = (4 - cw) % 4;
+    const dir = cw <= ccw ? 1 : -1;
+    const n = cw <= ccw ? cw : ccw;
+    for (let i = 0; i < n; i++) {
+      let res = tryRotate(board, type, cr, cx, cy, dir);
+      if (!res) res = tryRotate(board, type, cr, cx, 0, dir);
+      if (res) { cr = res.rot; cx = res.x; cy = Math.max(res.y, -2); }
+      push(cr, cx, cy);
+    }
+    cr = ((cr % 4) + 4) % 4;
+
+    // 2) 着地付近まで一気に降下（自列に空きがある間だけ）
+    const approach = Math.max(1, targetY - 1);
+    if (cy < approach) {
+      let t = cy;
+      while (t < approach && isValid(board, type, cr, cx, t + 1)) t++;
+      if (t > cy) { cy = t; push(cr, cx, cy); }
+    }
+
+    // 3) 目標列までスライド（動けなければ1段下げて越える）
+    let guard = 0;
+    while (cx !== x && guard++ < 40) {
+      const dx = cx < x ? 1 : -1;
+      if (isValid(board, type, cr, cx + dx, cy)) {
+        cx += dx; push(cr, cx, cy);
+      } else if (isValid(board, type, cr, cx, cy + 1)) {
+        cy += 1; push(cr, cx, cy);
+      } else {
+        break;
+      }
+    }
+
+    // 4) 最終落下（可能な限り）して正確な配置を末尾に付加
+    let fy = cy;
+    while (fy < targetY && isValid(board, type, cr, cx, fy + 1)) fy++;
+    push(cr, cx, fy);
+    push(rot, x, targetY);
+    return steps;
   }
 
   // Direct path (hard drop): rotate at top, slide, drop
