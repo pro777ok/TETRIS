@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "playerName": "Uni298",
+    "roomId": "QP-OIZX",
+    "startTime": 1789538861333,
+    "endTime": 1789538887345,
+    "pieceCount": 0,
+    "totalAttackSent": 0,
+    "totalGarbageReceived": 0,
+    "maxHeight": 0,
+    "finalAPM": 0,
+    "recordedAt": "2026-09-16T06:08:07.345Z"
+  },
+  "events": []
+}

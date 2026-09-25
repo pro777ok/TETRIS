@@ -156,6 +156,642 @@ function stopRecording(roomId, result) {
   console.log(`[AI] Saved: ${outPath} (${Object.values(out.players).reduce((s,p)=>s+p.frames.length,0)} frames)`);
 }
 
+// ══════════════════════════════════════════════════════════════════
+// ── QUICK PLAY (クイックプレイ・登山モード) ──────────────────────
+// ══════════════════════════════════════════════════════════════════
+const quickplayDataDir = path.join(__dirname, '../quickplay_data');
+
+// クライムレベル1〜11の色
+const QP_CLIMB_COLORS = ['#06d6a0','#7ef7c0','#ffbe0b','#ff9f1c','#ff5e00','#ff2e63','#ff006e','#e600ff','#8a2be2','#00f5ff','#ffffff'];
+function qpLevelColor(level){ const l=Math.max(1,Math.min(11,level|0)); return QP_CLIMB_COLORS[l-1]; }
+
+function qpIsQuickRoom(room){ return !!(room && room.quickPlayMode); }
+
+// ── DUO MODE (ペア登頂) ────────────────────────────────────────────
+// duo: 自分＋companion bot がチーム。攻撃は floor(x/2)（x>0 のとき最小1）。
+function qpIsDuo(room){ return qpIsQuickRoom(room) && !!(room.roomSettings && room.roomSettings.duoOn); }
+function qpIsDuoHard(room){ return qpIsDuo(room) && !!(room.roomSettings && room.roomSettings.duoHard); }
+function qpDuoAttack(room, x){ if (x <= 0) return x; if (qpIsDuo(room)) return Math.max(1, Math.floor(x / 2)); return x; }
+// duoの相方companion bot（いなければnull）
+function qpGetCompanion(room){ return (room && room.bots || []).find(b => b._qpCompanion) || null; }
+// duoメンバー（人間 or companion）か？
+function qpIsDuoMember(room, p){ return !!(p && qpIsDuo(room) && (!p.isBot || p._qpCompanion)); }
+// duoメンバーの相方を返す（companion→人間 / 人間→companion）
+function qpGetPartner(room, id){
+  const p = allPlayers(room).find(x => x.id === id);
+  if (!p || !qpIsDuo(room)) return null;
+  if (p.isBot && p._qpCompanion) return room.players.find(h => h.id !== id && h.alive) || room.players[0] || null;
+  if (!p.isBot) return qpGetCompanion(room);
+  return null;
+}
+// チーム判定: duoでは人間とcompanionのみ同チーム。それ以外は全員が敵（同種でも除外しない）。
+function qpIsTeammate(room, a, b){
+  if (!room || !a || !b || a.id === b.id) return false;
+  if (!qpIsDuo(room)) return false;
+  const aComp = !!(a.isBot && a._qpCompanion), bComp = !!(b.isBot && b._qpCompanion);
+  return (aComp && !b.isBot) || (bComp && !a.isBot);
+}
+
+// ── クイックプレイの録画（リプレイボット用） ────────────────────
+// roomId -> { startTime, seed, players: { id: { name, frames, lines } } }
+const qpRecordingSessions = {};
+function qpStartRecording(roomId) {
+  const room = rooms[roomId]; if (!room) return;
+  if (!fs.existsSync(quickplayDataDir)) { try { fs.mkdirSync(quickplayDataDir, { recursive: true }); } catch(e){} }
+  const players = {};
+  for (const p of room.players) players[p.id] = { name: p.name, frames: [], lines: 0 };
+  qpRecordingSessions[roomId] = { startTime: Date.now(), seed: room.bagSeed || 0, players };
+  console.log(`[QP] recording started (room ${roomId})`);
+}
+function qpRecordPlacement(roomId, playerId, frame) {
+  const s = qpRecordingSessions[roomId];
+  if (!s || !s.players || !s.players[playerId]) return;
+  s.players[playerId].frames.push({
+    timestamp: Date.now() - s.startTime,
+    placedPiece: frame.placedPiece,
+    holdPiece: frame.holdPiece || null,
+    linesCleared: frame.linesCleared || 0
+  });
+  s.players[playerId].lines += (frame.linesCleared || 0);
+}
+function qpStopRecording(roomId) {
+  const s = qpRecordingSessions[roomId];
+  if (!s) return;
+  delete qpRecordingSessions[roomId];
+  const endTime = Date.now();
+  const room = rooms[roomId];
+  const qp = room && room.qp;
+  for (const [pid, pd] of Object.entries(s.players)) {
+    const durMin = Math.max(0.01, (endTime - s.startTime) / 60000);
+    const apm = Math.round(pd.lines / durMin * 10) / 10;
+    const pps = Math.round(pd.frames.length / (durMin * 60) * 100) / 100;
+    const st = qp && qp.players && qp.players[pid];
+    const play = {
+      recordedAt: s.startTime,
+      seed: s.seed,
+      name: pd.name,
+      durationMs: endTime - s.startTime,
+      apm, pps,
+      lines: pd.lines,
+      finalM: Math.round((st ? st.m : 0) * 10) / 10,
+      frames: pd.frames
+    };
+    qpSavePlay(pd.name, play);
+  }
+}
+function qpSavePlay(playerName, play) {
+  const file = path.join(quickplayDataDir, `plays_${playerName}.json`);
+  let arr = [];
+  try { arr = JSON.parse(fs.readFileSync(file, 'utf8')); if (!Array.isArray(arr)) arr = []; } catch(e){ arr = []; }
+  arr = arr.filter(p => p && Array.isArray(p.frames) && p.frames.length >= 5);
+  arr.push(play);
+  if (arr.length > 50) arr = arr.slice(arr.length - 50);
+  try { fs.writeFileSync(file, JSON.stringify(arr, null, 2)); } catch(e){ console.warn('[QP] save play failed:', e.message); }
+}
+function qpLoadPlays(playerName) {
+  const file = path.join(quickplayDataDir, `plays_${playerName}.json`);
+  try {
+    const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(d) ? d.filter(p => p && Array.isArray(p.frames) && p.frames.length >= 5) : [];
+  } catch(e){ return []; }
+}
+
+// ── クライム状態 ─────────────────────────────────────────────────
+function qpInitState(){ return { m: 0, climbLevel: 1, climbXp: 0, targetId: null, mFromLines: 0, lastXpGain: 0, xpEarnedThisLevel: false }; }
+
+// duo: チーム共有のクライムゲージ（人間＋companionが同一ゲージにXP/mを蓄積）
+// note: 通常者は自分の qp.players[pid]、duoメンバーはチーム共有ゲージを指す
+function qpEnsureTeamGauge(room) {
+  if (!room._qpTeam) room._qpTeam = qpInitState();
+  return room._qpTeam;
+}
+function qpUseGauge(room, p) {
+  if (!p) return null;
+  if (qpIsDuoMember(room, p)) return qpEnsureTeamGauge(room);
+  return qpEnsureState(room).players[p.id];
+}
+
+function qpEnsureState(room) {
+  if (!room.qp) room.qp = { players: {}, reTargetAccum: 0 };
+  // duo: チーム共有クライムゲージ有効化（人間＋companionが同一ゲージへ、減衰は1回）
+  room.qp.useGauge = !!qpIsDuo(room);
+  // duo: チーム共有ゲージを有効にする（人間＋companionが同一ゲージへ、減衰は1回のみ）
+  room.qp.useGauge = qpIsDuo(room);
+  if (!room._qpPending) room._qpPending = {};   // targetId -> 保留中ゴミブロック配列 {lines,holes}（人間のみ）
+  if (!room._qpWarn) room._qpWarn = {};         // targetId -> { until, lines } 警告中
+  if (!room._qpWin) room._qpWin = {};           // targetId -> { start, count } 1秒間の累積ゴミ窓
+  const all = allPlayers(room);
+  for (const p of all) {
+    if (!room.qp.players[p.id]) room.qp.players[p.id] = qpInitState();
+  }
+  for (const pid of Object.keys(room.qp.players)) {
+    if (!all.find(p => p.id === pid)) delete room.qp.players[pid];
+  }
+  return room.qp;
+}
+
+// ランキング（m降順）
+function qpGetRankList(room) {
+  const qp = qpEnsureState(room);
+  const all = allPlayers(room);
+  return all.map(p => {
+    // duo: チーム共有ゲージのm/xp/levelをそのまま表示（companionも同一値）
+    const st = qp.useGauge ? qpUseGauge(room, p) : qp.players[p.id];
+    const targetedBy = all.filter(x => x.alive && qp.players[x.id] && qp.players[x.id].targetId === p.id).length;
+    return {
+      id: p.id,
+      name: p.name,
+      isBot: !!p.isBot,
+      botType: p.botType || null,
+      botLevel: p.botLevel || null,
+      botPps: p.botPps || null,
+      isCompanion: !!(p.isBot && p._qpCompanion),
+      m: Math.round(st.m * 10) / 10,
+      level: st.climbLevel,
+      xp: Math.round(st.climbXp * 10) / 10,
+      clearGain: Math.round((st.mFromLines || 0) * 10) / 10,
+      color: qpLevelColor(st.climbLevel),
+      targetedBy,
+      alive: !!p.alive,
+      targetId: st.targetId || null,
+      score: p.score || 0,
+      lines: p.lines || 0
+    };
+  }).sort((a,b) => (b.m - a.m) || (b.score - a.score));
+}
+
+function qpBroadcast(room) {
+  if (!room || !room._rid) return;
+  io.to(room._rid).emit('qp_update', { players: qpGetRankList(room), started: !!room.started });
+}
+
+// XP加算＋レベルアップ処理。余剰XPは持ち越して飛び級できる
+function qpAddXpAndLevel(room, pid, gain) {
+  if (!gain || gain <= 0) return;
+  const qp = qpEnsureState(room);
+  const p = allPlayers(room).find(x => x.id === pid);
+  const st = qp.useGauge ? qpUseGauge(room, p) : qp.players[pid];
+  if (!st) return;
+  st.climbXp += gain;
+  st.lastXpGain = Date.now();
+  st.xpEarnedThisLevel = true;
+  // 12XPごとにレベルアップ。余剰XPは0にせず保持（多くのラインを送ると飛び級できる）
+  while (st.climbXp >= QP_XP_PER_LEVEL && st.climbLevel < 11) {
+    st.climbLevel = Math.min(11, st.climbLevel + 1);
+    st.climbXp -= QP_XP_PER_LEVEL;
+  }
+  if (st.climbLevel >= 11) st.climbXp = Math.min(st.climbXp, QP_XP_PER_LEVEL);
+}
+
+// 攻撃ライン数 → クライムXP・m上昇
+// duo: メンバー（人間・companion bot含む）全員が同じ「チーム共有XPゲージ」へ蓄積し、XP・mともにそのまま上がる
+// XP12でclimbLevel+1（時間経過減少を無視した純粋な貢献12ラインで1レベル）
+function qpGainLines(room, pid, lines) {
+  if (!lines || lines <= 0) return;
+  const qp = qpEnsureState(room);
+  const p = allPlayers(room).find(x => x.id === pid);
+  // duo: チーム共有ゲージ（人間とcompanion botが同一ゲージに貢献）／ 通常は自分のゲージ
+  const st = qp.useGauge ? qpUseGauge(room, p) : qp.players[pid];
+  if (!st) return;
+  // duo: チームで合計した火力をそのままゲージへ（共有ゲージのため、メンバー各自の半分を加算する必要なし）
+  const gain = qpIsDuoMember(room, p) ? qpDuoAttack(room, lines) : lines;
+  qpAddXpAndLevel(room, pid, gain);
+  st.m += gain;
+  st.mFromLines = (st.mFromLines || 0) + gain;
+}
+
+// ── duo: 復活システム ─────────────────────────────────────────────
+// 相方が10回ラインを消すと、ダウンしたメンバーを空の盤面で復活させる
+// count は「ライン消去イベント数」で減算する（1回の消去=1）
+function qpAdvanceRevive(room, pid, events){
+  const rv = room._qpRevive;
+  if (!rv || !events || events <= 0) return;
+  for (const deadId of Object.keys(rv)) {
+    const info = rv[deadId];
+    if (!info || info.from !== pid) continue;
+    info.count -= 1;
+    if (info.count <= 0) {
+      delete rv[deadId];
+      qpReviveMember(room, deadId);
+    } else {
+      io.to(room._rid).emit('qp_revive_progress', { deadId, byId: pid, remaining: info.count });
+    }
+  }
+}
+
+function qpReviveMember(room, id){
+  const p = allPlayers(room).find(x => x.id === id);
+  if (!p || p.alive) return;
+  if (p.isBot) {
+    if (p.stop) p.stop();
+    qpResetBot(p);
+    if (p.resetReplay) p.resetReplay();
+    p.startAutonomous(400);
+  } else {
+    p.alive = true; p.board = null; p.score = 0; p.lines = 0; p.combo = 0; p.b2b = false;
+    io.to(id).emit('qp_revive', { id, bagSeed: room.bagSeed });
+  }
+  io.to(room._rid).emit('qp_revive_done', { id, name: p.name, isBot: !!p.isBot });
+  io.to(room._rid).emit('systemMessage', { msg: `💖 ${p.name} が復活した！`, type: 'revive' });
+}
+
+// 重み付き抽選: 自分より高いmの相手ほど狙われやすい（層が上の人に送られやすい）10秒ごとに再抽選
+function qpAssignTargets(room) {
+  const qp = qpEnsureState(room);
+  const alive = allPlayers(room).filter(p => p.alive);
+  if (alive.length < 2) {
+    for (const p of alive) qp.players[p.id].targetId = null;
+    return;
+  }
+  // duo: チーム共有ゲージのmを参照（人間とcompanionは同一値）
+  const pM = (o) => (qp.useGauge ? (qpUseGauge(room, o) || {}) : (qp.players[o.id] || {})).m || 0;
+  for (const p of alive) {
+    const st = qp.players[p.id];
+    const myM = pM(p);
+    // 自分より真に高いmを持つ相手だけが候補（同値以下には攻撃しない）／ duoではチーム同士を除外
+    const cands = alive.filter(o => o.id !== p.id && !qpIsTeammate(room, p, o) && pM(o) > myM);
+    if (!cands.length) { st.targetId = null; continue; }
+    // m差が大きいほど選ばれやすい重み
+    const weights = cands.map(o => Math.max(1, pM(o) - myM));
+    let r = Math.random() * weights.reduce((s, w) => s + w, 0);
+    let chosen = cands[0];
+    for (let i = 0; i < cands.length; i++) {
+      r -= weights[i];
+      if (r <= 0) { chosen = cands[i]; break; }
+    }
+    st.targetId = chosen.id;
+  }
+}
+
+function qpTargetOf(room, pid) {
+  const qp = qpEnsureState(room);
+  const st = qp.players[pid];
+  const alive = allPlayers(room).filter(p => p.alive);
+  // 通常は自分以上のmを持つ相手を狙う
+  if (st && st.targetId) {
+    const t = allPlayers(room).find(x => x.id === st.targetId && x.alive);
+    if (t) return t;
+  }
+  // #1（自分以上のmが誰もいない）などで選べない場合は、生存しているプレイヤー/ボットからランダムに1人へ送る
+  // duoではチーム同士には送らない
+  const me = allPlayers(room).find(x => x.id === pid);
+  const others = alive.filter(p => p.id !== pid && !(me && qpIsTeammate(room, me, p)));
+  return others.length ? others[Math.floor(Math.random() * others.length)] : null;
+}
+
+function qpSendLines(room, fromId, target, lines, clearRows, lockX, lockY) {
+  const fromP = allPlayers(room).find(p => p.id === fromId);
+  const duoMember = qpIsDuoMember(room, fromP);
+  // duo: メンバーの火力のみ半減（2人分のため）
+  const baseAttack = duoMember ? qpDuoAttack(room, lines) : lines;
+  const sentLines = applyDoubleGarbage(room, fromId, baseAttack);
+  const adj = adjustForTargetMod(room, target.id, sentLines);
+  const holes3 = 0;
+  // duo: 攻撃側・受信側とも「実効100%」で、各メンバーがフルで受け取る → チーム合計=2xではなく、受信は1人1人に対し100%
+  // （従来の送信半減+受信半減の1/4は撤廃し、duoメンバーは受けたラインをそのまま自分の盤面へ）
+  // 受けるゴミ量の倍率: 1mで0.5倍、100m登るごとに現状の1.1倍（qpClimbGarbageMult）
+  const received = Math.max(1, Math.round(Math.max(1, adj) * qpClimbGarbageMult(room, target)));
+  if (target.isBot && target.queueGarbage) {
+    target.queueGarbage(received, fromId, holes3, undefined, 0, qpGarbageSeriality(room, target));
+  } else if (room.started) {
+    // 人間: このまま保留ブロックとして積む（1秒窓で10行以上のバースト時のみ警告してから投入、未満は即時投入・穴もそのまま）
+    if (!room._qpPending) room._qpPending = {};
+    if (!room._qpPending[target.id]) room._qpPending[target.id] = [];
+    room._qpPending[target.id].push({ lines: received, holeCol: Math.floor(Math.random()*COLS), seriality: qpGarbageSeriality(room, target) });
+    if (!room._qpWin) room._qpWin = {};
+    let win = room._qpWin[target.id];
+    if (!win || Date.now() - win.start >= QP_GARBAGE_BATCH_SEC * 1000) {
+      win = { start: Date.now(), count: 0 };
+      room._qpWin[target.id] = win;
+    }
+    win.count += received;
+  }
+
+  io.to(room._rid).emit('attack_sent', {
+    fromId, toId: target.id, attack: sentLines,
+    clearRows: clearRows || [], lockX: lockX || 0, lockY: lockY || 0, cancelledByGarbage: 0
+  });
+  // duo hard: 相方コンパニオンとの相互フレンドリーファイア
+  // 自分の攻撃の半分を、相方の盤面へ直列穴・待ちなしで即出現させる
+  if (qpIsDuoHard(room) && duoMember) {
+    const partner = qpGetPartner(room, fromId);
+    if (partner && partner.alive && partner.id !== target.id) {
+      qpSendFriendlyFire(room, fromId, partner, Math.max(1, Math.floor(lines / 2)));
+    }
+  }
+}
+
+// duo hard: 相方へのフレンドリーファイア（直列穴・待ちなし即時）
+// duo hard: サーバー側で相方ヒューマンのボードへ「前の穴の直下」に直列で直付け
+// 1) 相方companion botの攻撃→人間: 待ち窓・アニメーション無しで、直前の穴と同じ列の直下へ即時投入
+//    人間の盤面はクライアント所有のため、サーバーは「直列穴・待ちなし」イベントを送り、
+//    クライアント側で holeCol の直下へまとめて直付けする。
+function qpSendFriendlyFire(room, fromId, target, lines){
+  if (!lines || lines <= 0) return;
+  const hc = Math.floor(Math.random()*COLS);
+  // duo hard: 待ちなし・直列穴（前の穴の位置から連続）でクライアント直付け
+  if (qpIsDuoHard(room)) {
+    // 直列: 前回送った穴と同じ列を使い続ける
+    let prevHole = (target._lastFfHoleCol !== undefined) ? target._lastFfHoleCol : hc;
+    target._lastFfHoleCol = prevHole;
+    if (target.isBot && target.queueGarbage) {
+      target.queueGarbage(lines, fromId, 0, prevHole, true);
+    } else if (room.started) {
+      io.to(target.id).emit('receive_garbage', {
+        lines, fromId, holeCol: prevHole, holes3: 0,
+        targetMod: (room.playerMods && room.playerMods[target.id]) || 'none',
+        duoHardDirect: true
+      });
+    }
+    io.to(room._rid).emit('attack_sent', {
+      fromId, toId: target.id, attack: lines,
+      clearRows: [], lockX: 0, lockY: 0, cancelledByGarbage: 0, friendly: true
+    });
+    return;
+  }
+  if (target.isBot && target.queueGarbage) {
+    target.queueGarbage(lines, fromId, 0, hc, false);
+  } else if (room.started) {
+    io.to(target.id).emit('receive_garbage', {
+      lines, fromId, holeCol: hc, holes3: 0,
+      targetMod: (room.playerMods && room.playerMods[target.id]) || 'none', duoHard: true
+    });
+  }
+  io.to(room._rid).emit('attack_sent', {
+    fromId, toId: target.id, attack: lines,
+    clearRows: [], lockX: 0, lockY: 0, cancelledByGarbage: 0, friendly: true
+  });
+}
+
+// 保留ゴミを実際に相手の盤面キューへ投入（受け付けたブロックをそのまま・穴もそのまま）
+function qpFlushGarbage(room, targetId, lines, holeCol, seriality) {
+  if (lines <= 0) return;
+  const hc = (holeCol === undefined || holeCol === null) ? Math.floor(Math.random() * COLS) : holeCol;
+  const ser = (seriality === undefined || seriality === null) ? QP_SERIAL_NATURAL : seriality;
+  io.to(targetId).emit('receive_garbage', {
+    lines, fromId: 'qp', holeCol: hc, holes3: 0, seriality: ser,
+    targetMod: (room.playerMods && room.playerMods[targetId]) || 'none'
+  });
+}
+
+// 100msティック: XP減衰・上昇・10秒ごと再ターゲット
+const QP_TICK_MS = 100;
+const QP_RETARGET_SEC = 10;
+const QP_GARBAGE_BATCH_SEC = 1;   // 1秒窓: この窓で10行以上なら警告、未満なら即時投入
+const QP_GARBAGE_WARN_MS = 3000;  // 10行以上のときの警告時間
+const QP_GARBAGE_WARN_MIN = 10;
+const QP_CLIMB_MULT_STEP = 100;         // 100m登るごとに
+const QP_CLIMB_MULT_BASE = 1.05;        // 受けるゴミの倍率を1.05倍していく
+const QP_CLIMB_MULT_AT_1M = 0.5;        // 1mのときの受けるゴミは0.5倍
+const QP_XP_PER_LEVEL = 12;             // XP12でclimbLevel+1（純粋な貢献12ライン相当）
+const QP_SERIAL_FULL_M = 1000;          // このmでゴミが「そのまま出る」形になる
+const QP_SERIAL_NATURAL = 0.3;          // そのまま出るときの穴追従率（従来挙動）
+
+// 対象の実効m（duoではチーム共有ゲージ）
+function qpEffM(room, target){
+  if (!room || !target) return 0;
+  const qp = qpEnsureState(room);
+  const st = qp.useGauge ? qpUseGauge(room, target) : (qp.players[target.id] || null);
+  return st ? (st.m || 0) : 0;
+}
+
+// 受けるゴミの倍率: 1mで0.5倍から始まり、100m登るごとに現状の1.1倍になっていく
+function qpClimbGarbageMult(room, target){
+  if (!room || !target || !qpIsQuickRoom(room)) return 1;
+  const m = qpEffM(room, target);
+  const steps = Math.floor(Math.max(1, m) / QP_CLIMB_MULT_STEP);
+  return QP_CLIMB_MULT_AT_1M * Math.pow(QP_CLIMB_MULT_BASE, steps);
+}
+
+// 受け取るゴミの「綺麗さ」（穴の直列度 1..0.3）: 低いmほど直列（綺麗）、1000mで自然な形
+function qpGarbageSeriality(room, target){
+  const m = qpEffM(room, target);
+  if (m <= 1) return 1;
+  if (m >= QP_SERIAL_FULL_M) return QP_SERIAL_NATURAL;
+  return 1 - (m - 1) / (QP_SERIAL_FULL_M - 1) * (1 - QP_SERIAL_NATURAL);
+}
+function qpTick(room) {
+  const qp = qpEnsureState(room);
+  const now = Date.now();
+  const lastXpTick = room._qpLastXpTick || now;
+  const dtMs = Math.max(0, Math.min(3000, now - lastXpTick));
+  room._qpLastXpTick = now;
+  const seenGauge = new Set(); // duo: チーム共有ゲージは1回だけ減衰（2人分で2重減衰しないように）
+  for (const p of allPlayers(room)) {
+    if (!p.alive) continue;
+    // XP蓄積と同じ判定で、duoではチーム共有ゲージを指す（人間/companionは同一ゲージ）
+    const st = qp.useGauge ? qpUseGauge(room, p) : qp.players[p.id];
+    if (!st) continue;
+    if (qp.useGauge) {
+      if (seenGauge.has(st)) continue; // duo: 同一共有ゲージを2回減衰させない
+      seenGauge.add(st);
+    }
+    // XP減衰: 実経過時間ベース（約18秒で12XPが尽きる）。0になったら即レベルダウンしてバーを満タンに戻す
+    // ただしレベル1と、そのレベルでまだXPを稼いでいない時は減衰させない
+    if (st.climbLevel > 1 && st.xpEarnedThisLevel) {
+      st.climbXp -= 0.667 * dtMs / 1000;
+      if (st.climbXp <= 0) {
+        st.climbLevel--;
+        st.climbXp = QP_XP_PER_LEVEL;
+      }
+    }
+    if (st.climbXp > QP_XP_PER_LEVEL) st.climbXp = QP_XP_PER_LEVEL;
+    if (st.climbXp < 0) st.climbXp = 0;
+    if (now - (room._qpClimbAccum || 0) >= 1000) st.m += 0.25 * st.climbLevel;
+  }
+  if (now - (room._qpClimbAccum || 0) >= 1000) room._qpClimbAccum = now;
+  qp.reTargetAccum = (qp.reTargetAccum || 0) + QP_TICK_MS;
+  if (qp.reTargetAccum >= QP_RETARGET_SEC * 1000) {
+    qp.reTargetAccum = 0;
+    qpAssignTargets(room);
+  }
+
+  // ── 保留ゴミの処理 ──────────────────────────────────────────
+  const all = allPlayers(room);
+  // 警告終了（3秒経過）→ 保留分をそのまま投入
+  for (const [tid, warn] of Object.entries(room._qpWarn || {})) {
+    if (now < warn.until) continue;
+    const blks = (room._qpPending && room._qpPending[tid]) || [];
+    const tp = all.find(x => x.id === tid);
+    if (blks.length > 0 && tp && tp.alive) {
+      for (const b of blks) if (b.lines > 0) qpFlushGarbage(room, tid, b.lines, b.holeCol, b.seriality);
+    }
+    if (room._qpPending) delete room._qpPending[tid];
+    if (room._qpWin) delete room._qpWin[tid];
+    delete room._qpWarn[tid];
+  }
+  // 1秒窓の累積判定: 10行以上は警告開始（3秒後に投入）、1〜9行は即時そのまま投入
+  for (const [tid, blks] of Object.entries(room._qpPending || {})) {
+    if (room._qpWarn && room._qpWarn[tid]) continue; // 警告中は上の処理に任せる
+    const tp = all.find(x => x.id === tid);
+    if (!tp || !tp.alive) { delete room._qpPending[tid]; if (room._qpWin) delete room._qpWin[tid]; continue; }
+    if (!blks.length) continue;
+    const pendingLines = blks.reduce((s, b) => s + b.lines, 0);
+    // 1秒窓のリセット判定
+    let win = room._qpWin && room._qpWin[tid];
+    if (!win || now - win.start >= QP_GARBAGE_BATCH_SEC * 1000) {
+      if (!room._qpWin) room._qpWin = {};
+      win = { start: now, count: 0 };
+      room._qpWin[tid] = win;
+    }
+    win.count += pendingLines;
+    if (win.count >= QP_GARBAGE_WARN_MIN) {
+      room._qpWarn[tid] = { until: now + QP_GARBAGE_WARN_MS, lines: win.count };
+      io.to(tid).emit('qp_garbage_warning', { lines: win.count });
+    } else if (pendingLines > 0) {
+      for (const b of blks) if (b.lines > 0) qpFlushGarbage(room, tid, b.lines, b.holeCol, b.seriality);
+      delete room._qpPending[tid];
+    }
+  }
+  // ── 死んだボットは5秒後に0mから復活 ────────────────────────────
+  // （duoのcompanionは復活カウント方式なのでここでは対象外）
+  const QP_BOT_REVIVE_MS = 5000;
+  for (const bot of room.bots) {
+    if (bot._qpCompanion) { bot._diedAt = null; continue; }
+    if (bot.alive) { bot._diedAt = null; continue; }
+    if (!bot._diedAt) bot._diedAt = Date.now();
+    if (now - bot._diedAt < QP_BOT_REVIVE_MS) continue;
+    if (bot.stop) bot.stop();
+    qpResetBot(bot);
+    const bst = qp.players[bot.id];
+    if (bst) { bst.m = 0; bst.climbLevel = 1; bst.climbXp = 0; bst.mFromLines = 0; bst.targetId = null; bst.xpEarnedThisLevel = false; }
+    if (bot.resetReplay) bot.resetReplay();
+    bot._diedAt = null;
+    bot.startAutonomous(400);
+    io.to(room._rid).emit('qp_bot_revive', { id: bot.id, name: bot.name });
+  }
+
+  // ── duo: 死亡検知 → 生きている相方に復活カウント(10回)をセット ──
+  if (qpIsDuo(room)) {
+    if (!room._qpRevive) room._qpRevive = {};
+    const comp = qpGetCompanion(room);
+    const humans = room.players;
+    const members = comp ? [...humans, comp] : humans;
+    for (const m of members) {
+      if (m.alive) continue;
+      if (room._qpRevive[m.id]) continue;
+      const partner = m.isBot ? humans.find(h => h.alive) : (comp && comp.alive ? comp : null);
+      if (partner) {
+        room._qpRevive[m.id] = { from: partner.id, count: 10 };
+        io.to(room._rid).emit('qp_revive_wait', {
+          deadId: m.id, deadName: m.name, byId: partner.id, byName: partner.name,
+          remaining: 10, isBot: !!m.isBot
+        });
+      }
+    }
+  }
+  qpBroadcast(room);
+}
+
+function qpStartTicker(room) {
+  qpStopTicker(room);
+  qpEnsureState(room);
+  room._qpGarbageAccum = Date.now();
+  room._qpPending = {};
+  room._qpWarn = {};
+  room._qpWin = {};
+  qpAssignTargets(room);
+  qpBroadcast(room);
+  room._qpTimer = setInterval(() => {
+    const r = rooms[room._rid];
+    if (!r || !qpIsQuickRoom(r)) { qpStopTicker(room); return; }
+    qpTick(r);
+  }, QP_TICK_MS);
+}
+function qpStopTicker(room) {
+  if (room._qpTimer) { clearInterval(room._qpTimer); room._qpTimer = null; }
+}
+
+// ── ボットプール ─────────────────────────────────────────────────
+// 9体のAPM合わせボット（リプレイ記録 or 通常AI）+ 1体のColdClear 2.5pps
+const QP_APM_TARGETS = [40,45,50,55,60,65,70,75,80];
+const QP_MAX_BOTS = QP_APM_TARGETS.length + 1;
+
+function qpSelectReplay(plays, targetApm, used) {
+  const ok = plays.filter(p => !used.has(p));
+  if (!ok.length) return null;
+  return ok.reduce((best, cur) => Math.abs(cur.apm - targetApm) < Math.abs(best.apm - targetApm) ? cur : best);
+}
+
+function qpBuildBotPool(room) {
+  const playerName = (room.players[0] && room.players[0].name) || 'PLAYER';
+  const plays = qpLoadPlays(playerName);
+  const used = new Set();
+  const pool = [];
+  QP_APM_TARGETS.forEach((apm) => {
+    const label = String(apm).padStart(3,'0');
+    const replay = qpSelectReplay(plays, apm, used);
+    if (replay) {
+      used.add(replay);
+      pool.push({ kind: 'replay', name: `👾R-${label}`, replay, botPps: Math.max(0.6, Math.min(2.5, apm / 40)), level: 3 });
+    } else {
+      pool.push({ kind: 'ai', name: `🤖NOVA-${label}`, botPps: Math.max(0.6, Math.min(2.5, apm / 40)), level: 5 });
+    }
+  });
+  // duoでは 🧊CC-2.5 はプールから外しcompanion枠として追加する
+  if (!qpIsDuo(room)) pool.push({ kind: 'coldclear', name: '🧊CC-2.5', botPps: 2.5, level: 5 });
+  return pool;
+}
+
+function qpInstantiateBots(room) {
+  room.bots.forEach(b => { if (b.stop) { try { b.stop(); } catch(e){} } });
+  room.bots = [];
+  const pool = qpBuildBotPool(room);
+  for (const spec of pool) {
+    const bag = new Bag(spec.kind === 'replay' ? (spec.replay.seed || room.bagSeed) : room.bagSeed);
+    let bot;
+    if (spec.kind === 'replay') {
+      bot = new ReplayBot(makeBotId(), spec.name, room._rid, bag, spec.replay, spec.botPps, spec.level);
+    } else {
+      bot = new BotPlayer(makeBotId(), spec.name, spec.level, room._rid, bag, null, spec.kind, spec.botPps);
+    }
+    bot._qpSpec = spec;
+    room.bots.push(bot);
+  }
+  // duo: 人間の相方companion botを1体追加（🧊CC-2.5、PPSはルーム設定）
+  if (qpIsDuo(room) && !room.bots.find(b => b._qpCompanion)) {
+    const bag = new Bag(room.bagSeed);
+    const pps = Math.max(0.5, Math.min(6, parseFloat((room.roomSettings && room.roomSettings.companionPps) || 2.5)));
+    const comp = new BotPlayer(makeBotId(), '🧊CC-2.5', 5, room._rid, bag, null, 'coldclear', pps);
+    comp._qpCompanion = true;
+    room.bots.push(comp);
+  }
+  // 再生成直後のボットを稼働させる（クイックプレイのスタンバイ/試合中に設定変更された場合）
+  if (room.quickPlayMode && (room.started || room._qpStandby)) {
+    room.bots.forEach(b => b.startAutonomous(200));
+  }
+}
+
+// ボットの盤面・統計を初期化（新しくウォームアップ/試合を開始）
+function qpResetBot(bot) {
+  bot.board = Array.from({length:ROWS+HIDDEN},()=>Array(bot.cols||COLS).fill(0));
+  bot.score = 0; bot.lines = 0; bot.lvl = 1;
+  bot.combo = -1; bot.b2b = false; bot.alive = true; bot.ren = 0; bot.locking = false;
+  bot.holdPiece = null; bot.holdUsed = false; bot.garbageQueue = []; bot._lastGarbageHoleCol = -1;
+  bot.pieceCount = 0; bot.totalAttackSent = 0; bot.totalGarbageSent = 0;
+  bot.totalGarbageCleared = 0; bot.totalGarbageReceived = 0;
+  bot.startTime = Date.now();
+  if (typeof bot.resetReplay === 'function') bot.resetReplay();
+  bot.spawnPiece();
+}
+
+// 全員のクライム状態をリセット（試合ごとに新しい登山）
+// ただしボットは自分のm/レベルを維持する（PLAYを押しても1からにならない）
+function qpResetClimb(room) {
+  const qp = qpEnsureState(room);
+  for (const p of allPlayers(room)) {
+    if (p.isBot) continue;
+    const st = qp.players[p.id];
+    if (st) { st.m = 0; st.climbLevel = 1; st.climbXp = 0; st.mFromLines = 0; st.xpEarnedThisLevel = false; }
+  }
+  room._qpPending = {};
+  room._qpWarn = {};
+  room._qpWin = {};
+  room._qpRevive = {};
+  room._qpGarbageAccum = Date.now();
+  qpAssignTargets(room);
+}
+
 const rooms = {};
 const lastRoom = {};
 const onlinePlayers = {}; // socket.id -> name
@@ -177,6 +813,13 @@ function adjustForTargetMod(room, targetId, lines) {
   if (!room || !room.playerMods) return lines;
   if (room.playerMods[targetId] === 'badhole') return Math.max(1, Math.ceil(lines / 2));
   if (room.playerMods[targetId] === 'warlock') return Math.max(1, Math.ceil(lines / 2));
+  // 生存8分(480s)を超えたら、受け取るゴミを30秒ごとに×1.1（生存が長いほど重くなる）
+  const start = room._qpGarbageAccum || Date.now();
+  const survMs = Date.now() - start;
+  if (survMs > 8 * 60 * 1000 && lines > 0) {
+    const tiers = Math.floor((survMs - 8 * 60 * 1000) / 30000);
+    if (tiers > 0) lines = Math.max(1, Math.round(lines * Math.pow(1.1, tiers)));
+  }
   return lines;
 }
 
@@ -2805,6 +3448,8 @@ class BotPlayer {
     else if (lines === 3) attack = 3; // 強化: 3->3
     else if (lines === 2) attack = 1; 
     else if (lines === 1) attack = 0;
+    // クイックプレイ限定: botも通常1ライン消しでは最低1ライン送る
+    if (qpIsQuickRoom(room) && lines === 1 && attack === 0) attack = 1;
     this._b2bBreakHoles3 = 0;
     const puyotet = room && room.roomSettings && room.roomSettings.puyotetMode;
     if (season1) {
@@ -2923,16 +3568,7 @@ class BotPlayer {
 
     let attackBeforeNerf = attack;
     // ── Time-based firepower multiplier ────────────────────────────
-    if (this.isBot) {
-      const elapsedSec = (Date.now() - this.startTime) / 1000;
-      const delaySec = (room && room.roomSettings && room.roomSettings.multiplierDelayMin != null ? room.roomSettings.multiplierDelayMin : 1.6) * 60;
-      const interval = room && room.roomSettings && room.roomSettings.multiplierIntervalSec != null ? room.roomSettings.multiplierIntervalSec : 1;
-      const rate = room && room.roomSettings && room.roomSettings.multiplierRate != null ? room.roomSettings.multiplierRate : 0.03;
-      if (elapsedSec > delaySec) {
-        const steps = Math.floor((elapsedSec - delaySec) / interval);
-        attack = Math.floor(attack * (1 + steps * rate));
-      }
-    }
+    // 時間経過で火力が上がる仕様は全モードで無効化
     // 整数化
     attack = Math.floor(attack);
 
@@ -2980,12 +3616,14 @@ class BotPlayer {
         }
         for (let i=0;i<g.lines;i++){
           if (linesToAdd >= CAP) {
-            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0, holes3: g.holes3});
+            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0, holes3: g.holes3, serial: g.serial, seriality: g.seriality});
             break;
           }
-          // 30%で上の穴と同じ列に（直列）、それ以外はランダム
+          // 直列穴指定(duo hard)は全行同じ列。それ以外は seriality（mに応じた直列度）%で上の穴と同じ列、あとはランダム
           let hc;
-          if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+          if(g.serial && g.holeCol!==undefined){
+            hc=g.holeCol;
+          }else if(this._lastGarbageHoleCol>=0&&Math.random()<(g.seriality!==undefined&&g.seriality!==null?g.seriality:0.3)){
             hc=this._lastGarbageHoleCol;
           }else{
             hc=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*this.cols);
@@ -3011,7 +3649,19 @@ class BotPlayer {
     }
 
     if (room && attack > 0) {
-      const batchCombo = room.roomSettings && room.roomSettings.batchComboMode;
+      // クイックプレイ: 攻撃は1人のターゲットへ / 自身のmとXP上昇
+      if (qpIsQuickRoom(room)) {
+        this.totalAttackSent += attack;
+        // 相殺されて送れなかった分（botCancelledByGarbage）もXP・mに貢献させる
+        const botGain = attack + (botCancelledByGarbage || 0);
+        qpGainLines(room, this.id, botGain);
+        // duo: 相方がダウン中なら、ライン消去1回につき復活カウントを1進める
+        qpAdvanceRevive(room, this.id, (lines > 0 || (clearedRows && clearedRows.length)) ? 1 : 0);
+        const target = qpTargetOf(room, this.id);
+        if (target) qpSendLines(room, this.id, target, attack, clearedRows || [], x, y);
+        qpBroadcast(room);
+      } else {
+        const batchCombo = room.roomSettings && room.roomSettings.batchComboMode;
       // バッチコンボ: コンボ中に攻撃を蓄積
       if (batchCombo && this.ren >= 1) {
         if (!this.batchComboBuffer) this.batchComboBuffer = 0;
@@ -3049,6 +3699,7 @@ class BotPlayer {
         }
         const botTargets = room.bots.filter(bt => bt.id !== this.id && bt.alive);
         for (const bt of botTargets) bt.queueGarbage(adjustForTargetMod(room, bt.id, sentAttack), this.id, holes3);
+      }
       }
     } else if (room && attack === 0 && _prevRen >= 1 && this.batchComboBuffer && this.batchComboBuffer > 0) {
       // コンボ終了 (ren was >=1, now 0) but attack=0 → 蓄積分だけ送信
@@ -3101,7 +3752,7 @@ class BotPlayer {
     this.locking = false;
   }
 
-  queueGarbage(lines, fromId, holes3) {
+  queueGarbage(lines, fromId, holes3, holeCol, serial, seriality) {
     const room = rooms[this.roomId];
     // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
     const isBadhole = !!(room && room.playerMods && room.playerMods[this.id] === 'badhole');
@@ -3113,9 +3764,9 @@ class BotPlayer {
       lines -= canCancel;
       if (lines <= 0) return;
     }
-    const hc = Math.floor(Math.random()*this.cols);
-    const delay = (room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000;
-    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0 });
+    const hc = (holeCol === undefined || holeCol === null) ? Math.floor(Math.random()*this.cols) : holeCol;
+    const delay = serial ? 0 : ((room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000);
+    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0, serial: !!serial, seriality: (seriality===undefined||seriality===null)?0.3:seriality });
   }
 
   startAutonomous(extraDelay = 0) {
@@ -3124,7 +3775,8 @@ class BotPlayer {
     const tick = () => {
       if (!this.alive) return;
       const room = rooms[this.roomId];
-      if (!room || !room.started || room.shogiMode) return;
+      if (!room || room.shogiMode) return;
+      if (!room.started && !(room.quickPlayMode && room._qpStandby)) return;
       // Use setTimeout(0) to yield to other pending timers (other bots)
       this.thinkTimer = setTimeout(() => {
         const t0 = Date.now();
@@ -3147,10 +3799,91 @@ class BotPlayer {
   }
 }
 
+// ── クイックプレイ用リプレイボット ───────────────────────────────
+// 録画した配置を時系列で再生し、フレームが尽きたら通常AIへフォールバック。
+// 猶予ライン (20 - 一番上のゴミ位置) を超えるゴミが届いたらゲームオーバー。
+class ReplayBot extends BotPlayer {
+  constructor(id, name, roomId, bag, record, botPps = 1.0, level = 3) {
+    super(id, name, level, roomId, bag, null, 'normal', botPps);
+    this.botType = 'replay';
+    this._replay = record || null;
+    this._frames = (record && Array.isArray(record.frames)) ? record.frames.slice() : [];
+    this._frameIdx = 0;
+    this._lastFrameT = null;
+  }
+  resetReplay() { this._frameIdx = 0; this._lastFrameT = null; }
+  think(cb) {
+    if (!this.alive || !this.currentPiece) { if (cb) cb(); return; }
+    if (this._replay && this._frameIdx < this._frames.length) {
+      const f = this._frames[this._frameIdx];
+      const pp = f && f.placedPiece;
+      if (pp && pp.type === this.currentPiece.type) {
+        this._frameIdx++;
+        this._lastFrameT = (typeof f.timestamp === 'number') ? f.timestamp : this._lastFrameT;
+        const rot = (((pp.rotation % 4) + 4) % 4);
+        this.executePlacement({ rot, x: pp.x, y: pp.y, exactY: false, useHold: false, wasKicked: false }, cb);
+        return;
+      }
+      // 記録と不一致（ホールド等）→ フレームを進めて通常AIへ委譲
+      this._frameIdx++;
+    }
+    super.think(cb);
+  }
+  startAutonomous(extraDelay = 0) {
+    if (this.thinkTimer) return;
+    const tick = () => {
+      if (!this.alive) return;
+      const room = rooms[this.roomId];
+      if (!room || room.shogiMode) return;
+      if (!room.started && !(room.quickPlayMode && room._qpStandby)) return;
+      this.thinkTimer = setTimeout(() => {
+        const t0 = Date.now();
+        this.think(() => {
+          if (!this.alive) return;
+          let wait = 520;
+          if (this._frameIdx < this._frames.length) {
+            const f = this._frames[this._frameIdx];
+            if (typeof f.timestamp === 'number' && this._lastFrameT !== null) {
+              wait = Math.max(45, Math.min(2000, f.timestamp - this._lastFrameT));
+            }
+          }
+          const used = Date.now() - t0;
+          this.thinkTimer = setTimeout(tick, Math.max(30, wait - used));
+        });
+      }, 0);
+    };
+    this.thinkTimer = setTimeout(tick, extraDelay + 250);
+  }
+  // 猶予ライン: (20 - top visible garbage row) を超えるゴミが届いたら死亡
+  queueGarbage(lines, fromId, holes3, holeCol, serial, seriality) {
+    if (!this.alive) return;
+    if (lines >= this._graceLines()) {
+      this.alive = false;
+      const room = rooms[this.roomId];
+      if (room) {
+        io.to(this.roomId).emit('player_dead', { id: this.id, name: this.name });
+        checkGameEnd(this.roomId);
+      }
+      return;
+    }
+    super.queueGarbage(lines, fromId, holes3, holeCol, serial, seriality);
+  }
+  _graceLines() {
+    let topRow = -1;
+    for (let r = HIDDEN; r < ROWS + HIDDEN; r++) {
+      const row = this.board[r];
+      if (row && row.some(c => c === 'G' || c === 'R')) { topRow = r; break; }
+    }
+    const visible = topRow < 0 ? -1 : topRow - HIDDEN;
+    return Math.max(1, ROWS - Math.max(0, visible));
+  }
+}
+
 
 // ── Room helpers ──────────────────────────────────────────────────
 function createRoom(roomId) {
   rooms[roomId] = {
+    _rid: roomId, quickPlayMode: false,
     players: [], bots: [], started: false, host: null, chat: [],
     bagSeed: Math.floor(Math.random()*1000000),
     mutationMode: false, mutationSeed: 0, shogiMode: false,
@@ -3174,7 +3907,10 @@ function createRoom(roomId) {
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
       multiplierDelayMin: 1.6,   // 火力倍率開始までの時間(分)
       multiplierIntervalSec: 1,  // 火力倍率増加間隔(秒)
-      multiplierRate: 0.03       // 火力倍率の増加量(1間隔あたり)
+      multiplierRate: 0.03,      // 火力倍率の増加量(1間隔あたり)
+      duoOn: false,              // duoモード（人間+companion botのチーム登頂）
+      duoHard: false,            // duo難易度 hard（直列穴・即時投入）
+      companionPps: 2.5          // companion bot のPPS
     }
   };
 }
@@ -3189,6 +3925,7 @@ function broadcastRoomUpdate(room, roomId) {
   io.to(roomId).emit('room_update', {
     players: allP, host: room.host, started: room.started,
     mutationMode: room.mutationMode, mutationSeed: room.mutationSeed,
+    quickPlayMode: !!room.quickPlayMode,
     roomSettings: room.roomSettings,
     hasCustomCode: !!(room.customBot||customBotCode.has(roomId)),
     playerModes: room.playerModes||{},
@@ -3202,12 +3939,38 @@ function checkGameEnd(roomId) {
   const humanAlive = room.players.filter(p => p.alive);
 
   // プレイヤー（人間＋bot）が1人以下になったら終了
-  const shouldEnd = room.isSolo
-    ? humanAlive.length === 0
-    : alive.length <= 1;
+  // duo: 人間とcompanionが両方死んだときだけ終了（片方が生きていれば続行）
+  let shouldEnd;
+  if (room.isSolo) {
+    if (qpIsDuo(room)) {
+      const comp = qpGetCompanion(room);
+      shouldEnd = humanAlive.length === 0 && (!comp || !comp.alive);
+    } else {
+      shouldEnd = humanAlive.length === 0;
+    }
+  } else {
+    shouldEnd = alive.length <= 1;
+  }
 
   if (shouldEnd) {
     room.started = false;
+    // クイックプレイ: 人間が全滅で終了 → 試合前（スタンバイ）へ戻る
+    if (qpIsQuickRoom(room)) {
+      qpStopRecording(roomId);
+      const scores = allPlayers(room).map(p => ({ id: p.id, name: p.name, score: p.score||0, lines: p.lines||0, attackSent: p.totalAttackSent||0 }));
+      io.to(roomId).emit('game_end', {
+        winner: null, winnerName: 'Quick Play', scores,
+        quickPlay: true, isSolo: true, hostId: room.host
+      });
+      room.players.forEach(p => { p.alive=true; p.board=null; p.score=0; p.lines=0; });
+      qpResetClimb(room);
+      room._qpRevive = {};
+      // ボットはリセットしない（試合前画面でも続きを観戦できるように）
+      room._qpStandby = true;
+      qpBroadcast(room);
+      io.to(roomId).emit('qp_reset', { players: qpGetRankList(room), started: false });
+      return;
+    }
     room.bots.forEach(b => b.stop());
     const winner = room.isSolo ? null : (alive[0] || null);
     const scores = allPlayers(room).map(p => ({ id: p.id, name: p.name, score: p.score||0, lines: p.lines||0, attackSent: p.totalAttackSent||0, garbageReceived: p.totalGarbageReceived||0 }));
@@ -3277,9 +4040,84 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate(room,roomId);
   });
 
+  socket.on('quick_play', ({name}) => {
+    if (!name) return;
+    // 既存のクイックプレイルームへ参加（未開始のものがあればそれを使う）
+    let room = Object.values(rooms).find(r => qpIsQuickRoom(r) && r.players.length > 0);
+    if (room && room.started) {
+      // 試合中: 観戦者として参加
+      if (!room.spectators) room.spectators = [];
+      if (!room.spectators.find(s => s.id === socket.id)) room.spectators.push({id: socket.id, name});
+      socket.join(room._rid); socket.roomId = room._rid; socket.playerName = name; lastRoom[name] = room._rid;
+      if (!onlinePlayers[socket.id]) { onlinePlayers[socket.id] = name; broadcastOnlinePlayers(); }
+      socket.emit('spectate_joined', {
+        roomId: room._rid, quickPlayMode: true, host: room.host,
+        players: allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive}))
+      });
+      socket.emit('qp_state',{ roomId: room._rid, host: room.host, started: true, players: qpGetRankList(room), roomSettings: room.roomSettings });
+      return;
+    }
+    if (!room) {
+      const rid = Math.random().toString(36).substr(2,6).toUpperCase();
+      createRoom(rid);
+      room = getRoom(rid);
+      room.quickPlayMode = true;
+      room.host = socket.id;
+      room.roomSettings.quickPlayMode = true;
+      room.roomSettings.soloMode = true;
+      room.roomSettings.recordTraining = false;
+    }
+    if (room.players.find(p=>p.name===name)) { socket.emit('error',{msg:'Name already in room'}); return; }
+    room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
+    socket.join(room._rid); socket.roomId=room._rid; socket.playerName=name; lastRoom[name]=room._rid;
+    if (!onlinePlayers[socket.id]) { onlinePlayers[socket.id] = name; broadcastOnlinePlayers(); }
+    qpEnsureState(room);
+    if (!room.bots.length) qpInstantiateBots(room);
+    room._qpStandby = true;
+    room._qpClimbAccum = Date.now();
+    qpStartTicker(room);
+    room.bots.forEach(b => b.startAutonomous(200));
+    socket.emit('room_created',{roomId:room._rid,quickPlayMode:true,players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null}))});
+    socket.emit('qp_state',{roomId:room._rid,host:room.host,started:!!room.started,players:qpGetRankList(room),roomSettings:room.roomSettings});
+    broadcastRoomUpdate(room,room._rid);
+  });
+
+  socket.on('qp_get_state', () => {
+    const room = getRoom(socket.roomId);
+    if (!room || !qpIsQuickRoom(room)) return;
+    socket.emit('qp_state',{roomId:room._rid,host:room.host,started:!!room.started,players:qpGetRankList(room),roomSettings:room.roomSettings});
+  });
+
   socket.on('join_room', ({roomId,name}) => {
     const room=getRoom(roomId);
     if (!room) { socket.emit('error',{msg:'Room not found'}); return; }
+    // クイックプレイルームへの再入場/参加
+    if (qpIsQuickRoom(room)) {
+      if (room.started) {
+        if (!room.spectators) room.spectators=[];
+        room.spectators.push({id:socket.id,name});
+        socket.join(roomId); socket.roomId=roomId; socket.playerName=name; lastRoom[name]=roomId;
+        socket.emit('spectate_joined',{
+          roomId, quickPlayMode: true, host: room.host,
+          players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
+        });
+        socket.emit('qp_state',{roomId,host:room.host,started:true,players:qpGetRankList(room),roomSettings:room.roomSettings});
+        return;
+      }
+      if (room.players.find(p=>p.name===name)) { socket.emit('error',{msg:'Name already in room'}); return; }
+      room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
+      socket.join(roomId); socket.roomId=roomId; socket.playerName=name; lastRoom[name]=roomId;
+      if (!onlinePlayers[socket.id]) { onlinePlayers[socket.id] = name; broadcastOnlinePlayers(); }
+      qpEnsureState(room);
+      if (!room.bots.length) qpInstantiateBots(room);
+      room._qpStandby = true;
+      qpStartTicker(room);
+      room.bots.forEach(b => b.startAutonomous(200));
+      socket.emit('room_joined',{roomId,quickPlayMode:true,players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null}))});
+      socket.emit('qp_state',{roomId,host:room.host,started:!!room.started,players:qpGetRankList(room),roomSettings:room.roomSettings});
+      broadcastRoomUpdate(room,roomId);
+      return;
+    }
     if (room.started) {
       // 試合中は観戦者として入室
       if (!room.spectators) room.spectators=[];
@@ -3418,6 +4256,17 @@ io.on('connection', (socket) => {
     if (ns.slowMode!==undefined) rs.slowMode=!!ns.slowMode;
     if (ns.season1Mode!==undefined) rs.season1Mode=!!ns.season1Mode;
     if (ns.batchComboMode!==undefined) rs.batchComboMode=!!ns.batchComboMode;
+    // duo系キーはクイックプレイ専用: 通常ルームでは一切反映しない（無視）
+    if (qpIsQuickRoom(room)) {
+      if (ns.duoOn!==undefined) rs.duoOn=!!ns.duoOn;
+      if (ns.duoHard!==undefined) rs.duoHard=!!ns.duoHard;
+      if (ns.companionPps!==undefined) rs.companionPps=Math.max(0.5,Math.min(6,parseFloat(ns.companionPps)||2.5));
+      // クイックプレイのスタンバイ中に duo/companionPps が変わったらボット構成を作り直す
+      if (!room.started) {
+        const changedDuo = ns.duoOn !== undefined || ns.companionPps !== undefined;
+        if (changedDuo && room.bots && room.bots.length) qpInstantiateBots(room);
+      }
+    }
     if (ns.boardRows!==undefined) rs.boardRows=Math.max(20,Math.min(100,parseInt(ns.boardRows)||20));
     if (ns.garbageMultiplier!==undefined) rs.garbageMultiplier=Math.max(1,Math.min(10,parseInt(ns.garbageMultiplier)||2));
     if (ns.multiplierDelayMin!==undefined) rs.multiplierDelayMin=Math.max(0,Math.min(10,parseFloat(ns.multiplierDelayMin)||0));
@@ -3430,19 +4279,24 @@ io.on('connection', (socket) => {
     const room=getRoom(socket.roomId);
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
+    const qpRoom = qpIsQuickRoom(room);
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.slowMode || rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode || rs.season1Mode) ? 1 : 2;
+    const minPlayers = qpRoom ? 1 : (rs.slowMode || rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.cheeseMode || rs.blitzMode || rs.fourWideMode || rs.bombMode || rs.season1Mode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
-      socket.emit('error',{msg: (rs.slowMode||rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode||rs.season1Mode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
+      socket.emit('error',{msg: 'Need at least 1 player'}); return;
     }
     room.started=true;
     room.startTime=Date.now();
+    room._qpClimbAccum = Date.now();
+    if (qpRoom) { room._qpStandby = false; }
+    // duoはクイックプレイ専用: 通常ルームでは開始時に必ず無効化（duoオフ相当）
+    if (!qpRoom) { rs.duoOn = false; rs.duoHard = false; rs.companionPps = 2.5; }
     room.bagSeed=Math.floor(Math.random()*1000000);
     if (room.mutationMode&&!room.mutationSeed) room.mutationSeed=Math.floor(Math.random()*1000000);
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});
 
     const humanCount=room.players.length;
-    const isSolo = !!(rs.soloMode || rs.cheeseMode) || (humanCount === 1 && room.bots.length === 0 && !rs.season1Mode && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode);
+    const isSolo = qpRoom || !!(rs.soloMode || rs.cheeseMode) || (humanCount === 1 && room.bots.length === 0 && !rs.season1Mode && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode);
     const doShogi=room.roomSettings.shogiMode&&humanCount===1&&room.bots.length>=1;
     room.shogiMode=doShogi;
     room.isSolo=isSolo;
@@ -3487,15 +4341,22 @@ io.on('connection', (socket) => {
     }
     const cbcRoom = room.customBot || customBotCode.get(socket.roomId);
     const botCode = cbcRoom ? cbcRoom.code : null;
-    const realBots=room.bots.map(entry=>{
-      const bag=new Bag(room.bagSeed); // 人間と同じシードで同じミノ順を共有
-      const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag,botCode,entry.botType||'normal',entry.botPps||room.roomSettings.botPps||1.5);
-      return bot;
-    });
-    room.bots=realBots;
+    let realBots;
+    if (qpRoom) {
+      // クイックプレイ: スタンバイ中に起動済みのボットインスタンスをそのまま再利用
+      realBots = room.bots;
+      realBots.forEach(b => { qpResetBot(b); });
+    } else {
+      realBots = room.bots.map(entry=>{
+        const bag=new Bag(room.bagSeed); // 人間と同じシードで同じミノ順を共有
+        const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag,botCode,entry.botType||'normal',entry.botPps||room.roomSettings.botPps||1.5);
+        return bot;
+      });
+      room.bots = realBots;
+    }
 
     io.to(socket.roomId).emit('game_start',{
-      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null})),
+      players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,isCompanion:!!(p.isBot&&p._qpCompanion)})),
       bagSeed:room.bagSeed,mutationMode:room.mutationMode,mutationSeed:room.mutationSeed,
       roomSettings:room.roomSettings,shogiMode:doShogi,isSolo,
       allspinMode:!!(room.roomSettings&&room.roomSettings.allspinMode),
@@ -3508,14 +4369,21 @@ io.on('connection', (socket) => {
       slowMode:!!(room.roomSettings&&room.roomSettings.slowMode),
       season1Mode:!!(room.roomSettings&&room.roomSettings.season1Mode),
       batchComboMode:!!(room.roomSettings&&room.roomSettings.batchComboMode),
+      quickPlayMode:qpRoom,
       boardRows:(rs.slowMode&&rs.fourWideMode)?26:(room.roomSettings?room.roomSettings.boardRows:20),
       playerModes:room.playerModes||{},
       playerMods:room.playerMods||{}
     });
 
+    if (qpRoom) {
+      qpStartRecording(socket.roomId);
+      qpResetClimb(room);
+      qpBroadcast(room);
+    }
+
     // 学習データ記録: AIモードが有効 かつ ホストがrecordTrainingをオンにしている場合
     // ソロ・1v1・対ボット問わず人間プレイヤーの手を記録する
-    if (rs.recordTraining && room.players.length >= 1) {
+    if (rs.recordTraining && room.players.length >= 1 && !qpRoom) {
       startRecording(socket.roomId, room.players);
     }
 
@@ -3524,7 +4392,7 @@ io.on('connection', (socket) => {
     }
     if (isSolo) {
       // ソロモード: ゲーム終了条件はそのプレイヤーが死んだとき
-      addChatSys(socket.roomId,'🎮 Solo mode — good luck!');
+      addChatSys(socket.roomId, qpRoom ? '🎮 QUICK PLAY — climb start!' : '🎮 Solo mode — good luck!');
     } else if (!doShogi) {
       realBots.forEach(b => b.startAutonomous(3700));
     } else {
@@ -3588,6 +4456,11 @@ io.on('connection', (socket) => {
   socket.on('piece_placed', ({boardBefore, placedPiece, nextPieces, holdPiece, linesCleared, boardAfter}) => {
     const room = getRoom(socket.roomId);
     if (!room || !room.started) return;
+    // クイックプレイ: リプレイ用に配置フレームを記録
+    if (qpIsQuickRoom(room)) {
+      qpRecordPlacement(socket.roomId, socket.id, { placedPiece, holdPiece, linesCleared: linesCleared || 0 });
+      return;
+    }
     const session = recordingSessions[socket.roomId];
     if (!session) {
       // セッションがない場合はここで開始（遅延参加対策）
@@ -3702,6 +4575,23 @@ io.on('connection', (socket) => {
       room.bots = [];
       room.isSolo = false;
       room.cheeseMode = false;
+      return;
+    }
+
+    // ── クイックプレイ: 攻撃は1人のターゲットへ / 自分のmとXPも上昇 ──
+    if (qpIsQuickRoom(room)) {
+      const total = attack||0;
+      const bonus = Math.max(0, cancelledByGarbage||0);
+      if (total > 0 || bonus > 0) {
+        qpGainLines(room, socket.id, total + bonus);
+        // duo: 相方がダウン中なら、ライン消去1回につき復活カウントを1進める
+        if (clearRows && clearRows.length > 0) qpAdvanceRevive(room, socket.id, 1);
+        const target = qpTargetOf(room, socket.id);
+        if (target && total > 0) {
+          qpSendLines(room, socket.id, target, total, clearRows, lockX, lockY);
+        }
+      }
+      qpBroadcast(room);
       return;
     }
 
@@ -3851,6 +4741,49 @@ io.on('connection', (socket) => {
     const room=getRoom(rid);
     if (!room){socket.emit('rejoin_result',{success:false});socket.emit('error',{msg:'Room no longer exists'});return;}
 
+    // クイックプレイルームへの再接続
+    if (qpIsQuickRoom(room)) {
+      if (room.started) {
+        if (!room.spectators) room.spectators=[];
+        room.spectators=room.spectators.filter(s=>s.name!==name);
+        room.spectators.push({id:socket.id,name});
+        socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
+        socket.emit('spectate_joined',{
+          roomId:rid, quickPlayMode:true, host: room.host,
+          players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null,board:p.board,score:p.score,lines:p.lines,level:p.level,alive:p.alive})),
+        });
+        socket.emit('qp_state',{roomId:rid,host:room.host,started:true,players:qpGetRankList(room),roomSettings:room.roomSettings});
+        return;
+      }
+      const existing=room.players.find(p=>p.name===name);
+      if(existing){
+        const wasHost=existing.id===room.host;
+        existing.id=socket.id;
+        existing.board=null;existing.score=0;existing.lines=0;existing.level=1;existing.alive=true;existing.combo=0;existing.b2b=false;
+        if(wasHost)room.host=socket.id;
+      } else {
+        room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
+        const isNewHost=!room.host||!room.players.find(p=>p.id===room.host);
+        if(isNewHost)room.host=socket.id;
+      }
+      socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
+      qpEnsureState(room);
+      if (!room.bots.length) qpInstantiateBots(room);
+      room._qpStandby = true;
+      qpStartTicker(room);
+      room.bots.forEach(b => b.startAutonomous(200));
+      socket.emit('rejoin_result',{
+        success:true,roomId:rid,quickPlayMode:true,
+        players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null,botType:p.botType||null})),
+        host:room.host,
+        mutationMode:room.mutationMode,mutationSeed:room.mutationSeed,
+        roomSettings:room.roomSettings
+      });
+      socket.emit('qp_state',{roomId:rid,host:room.host,started:false,players:qpGetRankList(room),roomSettings:room.roomSettings});
+      broadcastRoomUpdate(room,rid);
+      return;
+    }
+
     if (room.started) {
       // 試合中は観戦者として入室
       if (!room.spectators) room.spectators=[];
@@ -3949,6 +4882,30 @@ io.on('connection', (socket) => {
     checkGameEnd(socket.roomId);
   });
 
+  // クイックプレイでのボット死亡時: 5ライン送った判定で撃破扱い、 killer に climb +5
+  socket.on('player_dead',({id,name})=>{
+    const room=getRoom(socket.roomId); if(!room)return;
+    // ボット死亡かチェック
+    const bot=room.bots.find(b=>b.id===id);
+    if(!bot)return;
+    // ターゲット(攻撃者)がいたらクライム +5 およびメッセージ
+    const targetId=bot.targetId;
+    if(targetId){
+      const killer=room.players.find(p=>p.id===targetId);
+      if(killer){
+        // クライム +5 (実際には送信しないが貢献扱い)
+        if(qpIsQuickRoom(room)){
+          qpAddXpAndLevel(room, killer.id, 5);
+          const r=qpEnsureState(room);
+          const kst = r.useGauge ? qpUseGauge(room, killer) : r.players[killer.id];
+          if (kst) kst.m += 5;
+        }
+        // メッセージ流す
+        io.to(socket.roomId).emit('systemMessage',{msg:`${name}を倒した（5ライン送った判定）`,type:'kill'});
+      }
+    }
+  });
+
   socket.on('chat_message', ({message,name:clientName}) => {
     const name=socket.playerName||clientName||'Anonymous';
     const msg={id:socket.id,name,message,time:Date.now()};
@@ -3964,6 +4921,13 @@ io.on('connection', (socket) => {
     room.players=room.players.filter(p=>p.id!==socket.id);
     socket.leave(socket.roomId);
     if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];customBotCode.delete(socket.roomId);socket.roomId=null;return;}
+    // クイックプレイ: 人がいなくなったらボット・ティッカーも止めて部屋を破棄
+    if (room.players.length===0&&qpIsQuickRoom(room)){
+      qpStopTicker(room);
+      qpStopRecording(socket.roomId);
+      room.bots.forEach(b=>{if(b.stop)b.stop();});
+      delete rooms[socket.roomId];customBotCode.delete(socket.roomId);socket.roomId=null;return;
+    }
     if (room.host===socket.id&&room.players.length>0) room.host=room.players[0].id;
     io.to(socket.roomId).emit('player_left',{id:socket.id});
     broadcastRoomUpdate(room,socket.roomId);
@@ -3979,6 +4943,13 @@ io.on('connection', (socket) => {
     room.players=room.players.filter(p=>p.id!==socket.id);
     if (room.spectators) room.spectators=room.spectators.filter(s=>s.id!==socket.id);
     if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];customBotCode.delete(socket.roomId);return;}
+    // クイックプレイ: 人がいなくなったらボット・ティッカーも止めて部屋を破棄
+    if (room.players.length===0&&qpIsQuickRoom(room)){
+      qpStopTicker(room);
+      qpStopRecording(socket.roomId);
+      room.bots.forEach(b=>{if(b.stop)b.stop();});
+      delete rooms[socket.roomId];customBotCode.delete(socket.roomId);return;
+    }
     if (room.host===socket.id&&room.players.length>0) room.host=room.players[0].id;
     io.to(socket.roomId).emit('player_left',{id:socket.id});
     broadcastRoomUpdate(room,socket.roomId);

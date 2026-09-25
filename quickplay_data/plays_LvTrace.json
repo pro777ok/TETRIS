@@ -1,0 +1,13 @@
+[
+  {
+    "recordedAt": 1789701682866,
+    "seed": 448348,
+    "name": "LvTrace",
+    "durationMs": 4610,
+    "apm": 0,
+    "pps": 0,
+    "lines": 0,
+    "finalM": 83,
+    "frames": []
+  }
+]

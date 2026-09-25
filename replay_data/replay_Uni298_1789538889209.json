@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "playerName": "Uni298",
+    "roomId": "QP-XTMR",
+    "startTime": 1789538889209,
+    "endTime": 1789538923703,
+    "pieceCount": 0,
+    "totalAttackSent": 0,
+    "totalGarbageReceived": 0,
+    "maxHeight": 0,
+    "finalAPM": 0,
+    "recordedAt": "2026-09-16T06:08:43.703Z"
+  },
+  "events": []
+}

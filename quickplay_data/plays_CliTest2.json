@@ -1,0 +1,13 @@
+[
+  {
+    "recordedAt": 1789701652538,
+    "seed": 791660,
+    "name": "CliTest2",
+    "durationMs": 13539,
+    "apm": 0,
+    "pps": 0,
+    "lines": 0,
+    "finalM": 42.8,
+    "frames": []
+  }
+]

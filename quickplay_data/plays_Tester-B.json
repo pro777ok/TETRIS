@@ -1,0 +1,13 @@
+[
+  {
+    "recordedAt": 1789607083376,
+    "seed": 745934,
+    "name": "Tester-B",
+    "durationMs": 1568,
+    "apm": 0,
+    "pps": 0,
+    "lines": 0,
+    "finalM": 0.3,
+    "frames": []
+  }
+]

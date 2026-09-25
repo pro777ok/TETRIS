@@ -345,7 +345,7 @@ const _origBackToLobby=backToLobby;
 
 // ── ゲームオーバー後に観戦モードへ移行 ──────────────────────────
 function _enterSpectateOnDeath(){
-  if(isOfflineSolo||isSoloGame)return; // ソロなら不要
+  if(isOfflineSolo||isSoloGame||quickPlayMode)return; // ソロ/クイックプレイなら不要
   // 2秒後（game over演出が終わった後）に観戦者へ
   setTimeout(()=>{
     if(gameState&&gameState.alive)return;
@@ -622,7 +622,18 @@ function leaveRoom(){
   if(myName){showGameLobby(null);}
   else{showScreen('lobby');}
 }
-function startGame(){socket.emit('start_game');}
+function startGame(){
+  // duoはクイックプレイ専用: 通常ルームでは開始不可（残留duo設定があれば自動無効化）
+  if(!quickPlayMode&&roomSettings&&(roomSettings.duoOn||roomSettings.duoHard)){
+    roomSettings.duoOn=false;roomSettings.duoHard=false;
+    socket.emit('set_room_settings',{duoOn:false,duoHard:false});
+    updateRoomSettingsUI(roomSettings);
+    _saveRoomSettings();
+    alert('DUOはクイックプレイ専用です。通常ルームでは無効化しました。');
+    return;
+  }
+  socket.emit('start_game');
+}
 
 function returnToRoom(){
   if(_autoReturnTimer){clearTimeout(_autoReturnTimer);_autoReturnTimer=null;}
@@ -829,6 +840,11 @@ function setPlayerMod(mod) {
   // Sync dropdown if called programmatically
   const sel = document.getElementById('mod-select');
   if(sel && sel.value !== mod) sel.value = mod;
+  // Quick Play用MOD選択の同期
+  const qsel = document.getElementById('qp-mod-select');
+  if(qsel && qsel.value !== mod) qsel.value = mod;
+  const qdesc = document.getElementById('qp-mod-desc');
+  if(qdesc) qdesc.textContent = MOD_DESCRIPTIONS[mod] || '';
 }
 
 function glBackToTitle(){
@@ -866,7 +882,7 @@ socket.on('bot_code_error',({type,botName,message})=>{
   el.title=message;
 });
 
-socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
+socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,mutationSeed:ms,roomSettings:rs,quickPlayMode:qpm})=>{
   if(!success){
     if(myName)showGameLobby(null);
     else document.getElementById('name-modal').classList.remove('hidden');
@@ -874,6 +890,15 @@ socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,muta
   }
   roomId=rid;roomPlayers=players;
   isHost=(socket.id===host);
+  if(qpm){
+    quickPlayMode=true;qpRoomId=rid;
+    qpMatchReset();
+    showScreen('quickplay');
+    qpEnsureStarfield();
+    document.getElementById('qp-room-id').textContent=rid;
+    socket.emit('qp_get_state');
+    return;
+  }
   if(mu!==undefined){mutationMode=mu;mutationSeed=ms||0;}
   if(rs){roomSettings={...roomSettings,...rs};}
   document.getElementById('room-id-display').textContent=rid;
@@ -891,10 +916,24 @@ socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,muta
   showScreen('waiting');
 });
 
-socket.on('room_created',({roomId:rid,players})=>{
+socket.on('room_created',({roomId:rid,players,quickPlayMode:qpm})=>{
   roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=true;
+  if(qpm){
+    quickPlayMode=true;qpRoomId=rid;
+    qpPlayers=Array.isArray(players)?players:[];
+    qpPlayerMap={};qpPlayers.forEach(p=>qpPlayerMap[p.id]=p);
+    qpMatchReset();
+    showScreen('quickplay');
+    qpEnsureStarfield();
+    document.getElementById('qp-play-btn').style.display='block';
+    document.getElementById('qp-room-id').textContent=rid;
+    socket.emit('qp_get_state');
+    return;
+  }
   // 保存済み設定があれば復元
   try{const saved=localStorage.getItem('tetris_roomSettings');if(saved){const p=JSON.parse(saved);Object.assign(roomSettings,p);}}catch(e){}
+  // duoはクイックプレイ専用: 通常ルームでは即無効化（サーバー側でも無視される二重ガード）
+  roomSettings.duoOn=false;roomSettings.duoHard=false;delete roomSettings.companionPps;
   document.getElementById('room-id-display').textContent=rid;
   showScreen('waiting');updatePlayerList(players);
   resetRoomInactivityTimer();
@@ -905,8 +944,19 @@ socket.on('room_created',({roomId:rid,players})=>{
   // Push initial settings to server
   socket.emit('set_room_settings', roomSettings);
 });
-socket.on('room_joined',({roomId:rid,players})=>{
+socket.on('room_joined',({roomId:rid,players,quickPlayMode:qpm})=>{
   roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=false;
+  if(qpm){
+    quickPlayMode=true;qpRoomId=rid;
+    qpPlayerMap={};qpPlayers.forEach(p=>qpPlayerMap[p.id]=p);
+    qpMatchReset();
+    showScreen('quickplay');
+    qpEnsureStarfield();
+    document.getElementById('qp-play-btn').style.display='none';
+    document.getElementById('qp-room-id').textContent=rid;
+    socket.emit('qp_get_state');
+    return;
+  }
   document.getElementById('room-id-display').textContent=rid;
   showScreen('waiting');updatePlayerList(players);
   document.getElementById('mutation-row-wrap').style.display='none';
@@ -967,11 +1017,606 @@ socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,r
 });
 socket.on('player_left',()=>addChatSystem('Player left'));
 
+// ══════════════════════════════════════════════════════════════════
+// ── QUICK PLAY (クイックプレイ・登山モード) ──────────────────────
+// ══════════════════════════════════════════════════════════════════
+let quickPlayMode=false;
+let qpRoomId=null;
+let qpPlayers=[];
+let qpPlayerMap={};
+let qpBoards={};              // id -> { board, score, lines, level, currentPiece, alive }
+let qpSelectedId=null;
+let qpHudHost=null;
+
+// m/XP表示（サーバー値へ1秒かけて補間）
+let qpMyDisplayM=0;
+let qpMyLastServerM=0;
+let qpMyLevel=1;
+let qpMyXp=0;
+let qpMyTargetedBy=0;
+let qpLastGainSeen=0;
+let qpLastClearGain=0;
+let qpStarSpeed=0.05;
+let _qpStarSpeedTgt=0.05;
+let qpStarDrop=0;
+let _qpSteamBoost=0;                      // ライン消去で湯気が一瞬湧く量
+let _qpLastLocalClearMs=0;
+let _qpSteamColLv=-1,_qpSteamColVal=0x06d6a0;
+// クイックプレイ: botごとの背景の横位置をセッション中固定（試合をまたいでもワープしない）
+const _qpBotXMap={};
+let _qpBotLaneN=0;
+function _qpBotLane(pid){
+  if(_qpBotXMap[pid]!==undefined)return _qpBotXMap[pid];
+  const k=_qpBotLaneN++;
+  const t=(k*0.6180339887498949)%1;   // 黄金比で均等に分散（固まらない）
+  _qpBotXMap[pid]=t;
+  return t;
+}
+let qpMatchEnded=false;
+let _qpMatchStartMs=0;
+let qpWarnUntil=0;
+let qpWarnLines=0;
+
+const _QP_COLORS=['#06d6a0','#7ef7c0','#ffbe0b','#ff9f1c','#ff5e00','#ff2e63','#ff006e','#e600ff','#8a2be2','#00f5ff','#ffffff'];
+function qpLevelColor2(l){ return _QP_COLORS[Math.max(1,Math.min(11,l|0))-1]; }
+function qpFmtM(v){ return (Math.round((v||0)*10)/10).toFixed(1); }
+// キューに積まれたゴミが「準備完了」になるまでの時間（Quick Play では5秒、他モードは従来どおり）
+function qpGarbageReady(ms){ return puyotetMode?0:(quickPlayMode?3000:ms); }
+
+// duo設定UIはクイックプレイ専用（ホストのみ表示）。通常ルームでは一切表示・反映しない
+function qpSyncDuoPanel(show){
+  const wrap=document.getElementById('qp-duo-wrap');
+  if(wrap)wrap.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  if(!quickPlayMode)return;
+  const duoOn=document.getElementById('duo-on-toggle');if(duoOn)duoOn.checked=!!(roomSettings&&roomSettings.duoOn);
+  const duoHard=document.getElementById('duo-hard-toggle');if(duoHard)duoHard.checked=!!(roomSettings&&roomSettings.duoHard);
+  const cpps=document.getElementById('companion-pps-input');
+  const cpv=document.getElementById('companion-pps-val');
+  const pps=(roomSettings&&roomSettings.companionPps!=null)?roomSettings.companionPps:2.5;
+  if(cpps)cpps.value=pps;
+  if(cpv)cpv.textContent=parseFloat(pps).toFixed(1)+' PPS';
+}
+
+// 数値カラーをCanvas用CSS文字列へ（例: 0x06d6a0 → '#06d6a0'）
+function qpHxf(n){
+  if(typeof n==='number')return '#'+((n|0)>>>0).toString(16).padStart(6,'0');
+  return n;
+}
+
+function qpCellColor(v){
+  if(!v)return null;
+  if(typeof v==='number'&&v>=1&&v<=7)return qpHxf(PIECE_COLORS[PIECE_TYPES[v-1]])||'#334455';
+  if(typeof v==='number'&&v>=8&&v<=10)return qpHxf(PIECE_COLORS[['L','J','I'][v-8]])||'#334455';
+  if(PIECE_COLORS[v])return qpHxf(PIECE_COLORS[v]);
+  if(v==='G')return '#6b7686';
+  if(v==='R')return '#3a4151';
+  return '#445566';
+}
+
+// ── 星の海（3Dパララックス背景） ────────────────────────────────
+let _qpStarApp=null;
+let _qpStars=[];
+function qpEnsureStarfield(){
+  const host=document.getElementById('qp-starfield');
+  if(!host)return;
+  if(_qpStarApp&&!_qpStarApp.destroyed){ return; }
+  host.innerHTML='';
+  const W=host.clientWidth||window.innerWidth,H=host.clientHeight||window.innerHeight;
+  try{
+    const app=new PIXI.Application({width:W,height:H,backgroundAlpha:0,transparent:true,resolution:settings.quality==='low'||settings.quality==='minimum'?0.5:1,autoDensity:true});
+    host.appendChild(app.view);
+    _qpStarApp=app;_qpStars=[];
+    const count=settings.quality==='minimum'?80:260;
+    const tints=[0xffffff,0x00f5ff,0xffbe0b,0xff8ab4];
+    for(let i=0;i<count;i++){
+      const g=new PIXI.Graphics();
+      const r=Math.random();
+      g.beginFill(tints[Math.floor(Math.random()*tints.length)],0.5+r*0.5);
+      g.drawCircle(0,0,r<0.12?3.4:1.6);
+      g.endFill();
+      g.x=Math.random()*W;g.y=Math.random()*H;
+      g._z=0.15+Math.random()*0.85;
+      g._tw=Math.random()*Math.PI*2;
+      app.stage.addChild(g);
+      _qpStars.push(g);
+    }
+    let last=performance.now();
+    app.ticker.add(()=>{
+      const now=performance.now();const dt=Math.min(now-last,64);last=now;
+      qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
+      const speed=(18+qpStarSpeed*460);
+      for(const s of _qpStars){
+        s.y+=speed*s._z*(dt/1000)*0.7 + qpStarDrop*(dt/1000);
+        if(s.y>H+6){s.y=-6;s.x=Math.random()*W;}
+        s._tw+=dt*0.0018;
+        s.alpha=Math.max(0.15,0.45+0.4*Math.sin(s._tw)+0.2*s._z);
+      }
+      // ライン消去で下がる星は2秒ほどかけて滑らかに収束
+      qpStarDrop*=Math.exp(-dt/4000);
+    });
+  }catch(e){ _qpStarApp=null; }
+}
+function qpDestroyStarfield(){
+  if(_qpStarApp){ try{_qpStarApp.destroy(true);}catch(e){} _qpStarApp=null; }
+  _qpStars=[];
+}
+
+// ── リーダーボード ──────────────────────────────────────────────
+function qpRenderLeaderboard(){
+  const el=document.getElementById('qp-leaderboard');if(!el)return;
+  const list=qpPlayers||[];
+  const countEl=document.getElementById('qp-count');
+  if(countEl)countEl.textContent=list.length?`${list.length} players climbing`:'';
+  if(!list.length){el.innerHTML='<div class="no-rooms" style="padding:1rem">Loading...</div>';return;}
+  el.innerHTML=list.map((p,i)=>{
+    const me=p.id===socket.id;
+    const badge=p.targetedBy>0
+      ?`<span class="qp-target-badge">▲ ×${p.targetedBy}</span>`
+      :`<span class="qp-target-badge zero">▲ 0</span>`;
+    return `<div class="qp-row ${me?'me':''} ${p.alive?'':'dead'}" data-id="${p.id}" onclick="qpSelect('${p.id}')">
+      <div class="qp-rank">${i+1}</div>
+      <div class="qp-m" style="color:${p.color||'#fff'}">${qpFmtM(p.m)}</div>
+      <div class="qp-climb" style="color:${p.color||'#fff'}">Lv.${p.level||1}</div>
+      <div class="qp-name">${esc(p.name)}</div>
+      ${badge}
+    </div>`;
+  }).join('');
+}
+
+// ── プレビュー（クリックしたプレイヤーの盤面を観戦） ────────────
+function qpSelect(id){
+  if(!qpPlayerMap[id])return;
+  qpSelectedId=id;
+  const nm=document.getElementById('qp-preview-name');
+  const st=qpPlayerMap[id];
+  if(nm)nm.textContent=(st.name||'---')+'   |   m '+qpFmtM(st.m)+'   Lv.'+(st.level||1);
+  qpDrawPreview(id);
+}
+function qpDrawPreview(id){
+  const cv=document.getElementById('qp-preview-canvas');if(!cv)return;
+  const ctx=cv.getContext('2d');
+  const W=cv.width,H=cv.height;
+  const d=qpBoards[id];
+  ctx.fillStyle='#05070f';ctx.fillRect(0,0,W,H);
+  if(!d||!d.board){
+    ctx.fillStyle='rgba(255,255,255,0.25)';
+    ctx.font='11px Share Tech Mono';ctx.textAlign='center';
+    ctx.fillText('waiting for board data...',W/2,H/2);
+    return;
+  }
+  const board=d.board;
+  const rows=board.length;
+  const visibleStart=Math.max(0,rows-20);
+  const boardW=200;
+  const cw=boardW/10;
+  const ch=H/20;
+  ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=1;
+  for(let x=0;x<=10;x++){ctx.beginPath();ctx.moveTo(x*cw,0);ctx.lineTo(x*cw,H);ctx.stroke();}
+  for(let y=0;y<=20;y++){ctx.beginPath();ctx.moveTo(0,y*ch);ctx.lineTo(boardW,y*ch);ctx.stroke();}
+  for(let r=visibleStart;r<rows;r++){
+    const row=board[r];if(!row)continue;
+    for(let c=0;c<Math.min(10,row.length);c++){
+      const v=row[c];if(!v)continue;
+      const col=qpCellColor(v);const x=c*cw,y=(r-visibleStart)*ch;
+      ctx.fillStyle=col;ctx.fillRect(x+0.5,y+0.5,cw-1,ch-1);
+      ctx.fillStyle='rgba(255,255,255,0.22)';ctx.fillRect(x+1,y+1,cw-2,ch*0.16);
+      ctx.fillRect(x+1,y+1,cw*0.16,ch-2);
+    }
+  }
+  if(d.currentPiece&&d.currentPiece.type){
+    const t=d.currentPiece.type;
+    const shape=(PIECE_SHAPES[t]?PIECE_SHAPES[t][((d.currentPiece.rotation||0)%4+4)%4]||PIECE_SHAPES[t][0]:null);
+    if(shape){
+      const col=qpHxf(PIECE_COLORS[t])||'#ffffff';
+      ctx.fillStyle=col;ctx.globalAlpha=0.85;
+      for(let rr=0;rr<shape.length;rr++)for(let cc=0;cc<shape[rr].length;cc++){
+        if(!shape[rr][cc])continue;
+        const gx=(d.currentPiece.x||0)+cc,gy=(d.currentPiece.y||0)+rr-visibleStart+0;
+        if(gy>=0&&gy<20&&gx>=0&&gx<10)ctx.fillRect(gx*cw+0.5,gy*ch+0.5,cw-1,ch-1);
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+  qpDrawPreviewQueue(ctx,W,H,d);
+}
+
+// プレビューの右側にホールド＋次ミノ（キュー）を描画
+function qpDrawPreviewQueue(ctx,W,H,d){
+  const stripX=207;
+  const boxW=W-stripX;
+  if(boxW<30)return;
+  const cell=Math.min(boxW/4.4,16);
+  let y=6;
+  // HOLD
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.font='7px Share Tech Mono';ctx.textAlign='left';
+  ctx.fillText('HOLD',stripX,y+6);
+  y+=12;
+  const hp=d.holdPiece;
+  if(hp){
+    const shape=PIECE_SHAPES[hp]?PIECE_SHAPES[hp][0]:null;
+    if(shape){qpDrawMini(ctx,stripX+2,y,shape,qpHxf(PIECE_COLORS[hp]||0xffffff),cell);}
+    y+=4*cell+4;
+  }else{y+=4*cell+4;}
+  // NEXT QUEUE
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText('NEXT',stripX,y+6);
+  y+=12;
+  const q=(d.nextPieces&&Array.isArray(d.nextPieces))?d.nextPieces.slice(0,5):[];
+  if(!q.length){
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.font='8px Share Tech Mono';
+    ctx.fillText('...',stripX+2,y+8);
+    return;
+  }
+  for(const t of q){
+    if(!PIECE_SHAPES[t])continue;
+    const shape=PIECE_SHAPES[t][0];
+    qpDrawMini(ctx,stripX+2,y,shape,qpHxf(PIECE_COLORS[t])||'#fff',cell);
+    y+=4*cell+3;
+  }
+  if(d.garbageQueue&&d.garbageQueue.length){
+    ctx.fillStyle='rgba(255,255,255,0.3)';
+    ctx.font='7px Share Tech Mono';
+    ctx.fillText('☠ G:'+d.garbageQueue.length+'+',stripX,y+6);
+  }
+}
+function qpDrawMini(ctx,x,y,shape,color,cell){
+  const rows=shape.length,cols=shape[0].length;
+  const w=cols*cell,h=rows*cell;
+  ctx.fillStyle=color;
+  for(let rr=0;rr<rows;rr++)for(let cc=0;cc<cols;cc++){
+    if(!shape[rr][cc])continue;
+    ctx.fillRect(x+cc*cell+0.5,y+rr*cell+0.5,cell-1,cell-1);
+  }
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.fillRect(x,y+1,cell*0.14,h-2);
+  ctx.fillRect(x+1,y,cell*0.14,cell-1);
+}
+function qpSelectCurrentPlayer(){
+  if(!socket)return;
+  const me=qpPlayerMap[socket.id];
+  const myLv=me?me.level:1;
+  const myM=me?me.m:0;
+  // 同じ階層（同レベル）のボットを優先して観戦、いなければmが近い相手
+  let cand=qpPlayers.find(p=>p.id!==socket.id&&p.isBot&&p.level===myLv);
+  if(!cand){
+    const others=qpPlayers.filter(p=>p.id!==socket.id);
+    others.sort((a,b)=>Math.abs((a.m||0)-myM)-Math.abs((b.m||0)-myM));
+    cand=others[0];
+  }
+  if(cand){
+    qpSelectedId=cand.id;
+    const nm=document.getElementById('qp-preview-name');
+    if(nm)nm.textContent=(cand.name||'---')+'   |   m '+qpFmtM(cand.m)+'   Lv.'+(cand.level||1);
+    qpDrawPreview(cand.id);
+  }
+}
+
+// ── HUD（試合中のクライム表示） ──────────────────────────────────
+function qpMatchReset(){
+  qpMyDisplayM=0;qpMyLastServerM=0;qpMyLevel=1;qpMyXp=0;qpMyTargetedBy=0;qpLastGainSeen=0;qpLastClearGain=0;
+  qpStarSpeed=0.05;
+  _qpStarSpeedTgt=0.05;
+  _qpLastLocalClearMs=0;
+  qpWarnUntil=0;qpWarnLines=0;
+  _qpRankSig='';
+  const hud=document.getElementById('qp-hud');
+  if(hud)hud.style.display='none';
+  const rk=document.getElementById('qp-rank');
+  if(rk)rk.style.display='none';
+}
+function qpPushGain(n){
+  const cont=document.getElementById('qp-hud-gain');if(!cont)return;
+  const el=document.createElement('div');
+  el.className='qp-gain-pop';
+  el.textContent='+'+qpFmtM(n);
+  cont.appendChild(el);
+  setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1150);
+  while(cont.childElementCount>4)cont.firstChild.remove();
+}
+// ライン消去した瞬間に星の流れを加速（消去→m上昇の遅延をなくすためクライアント側で即時発火）
+function qpLocalClearBoost(n){
+  _qpLastLocalClearMs=performance.now();
+  _qpStarSpeedTgt=Math.max(_qpStarSpeedTgt,Math.min(1,0.3+n*0.10));
+  qpStarDrop+=Math.min(240,Math.max(30,n*14));
+  // 盤面下部の湯気も一瞬湧いて速く流す
+  _qpSteamBoost=Math.min(2.2,_qpSteamBoost+0.5+Math.min(0.2,n*0.06));
+}
+function qpMatchHudSync(){
+  if(!quickPlayMode||qpMatchEnded)return;
+  const hud=document.getElementById('qp-hud');if(!hud)return;
+  if(renderer&&renderer.mainBX!==undefined&&renderer._uiScale){
+    const sc=renderer._uiScale;
+    const bw=BOARD_W*sc,bh=BOARD_H*sc;
+    const lv=((renderer.mainBX||0)+bw/2)+'px',tv=((renderer.mainBY||0)+bh+10)+'px';
+    if(hud.__l!==lv){hud.__l=lv;hud.style.left=lv;}
+    if(hud.__t!==tv){hud.__t=tv;hud.style.top=tv;}
+  }
+  if(hud.style.display!=='flex')hud.style.display='flex';
+  const before=qpMyDisplayM;
+  const target=qpMyLastServerM;
+  qpMyDisplayM+=(target-qpMyDisplayM)*Math.min(1,1.0/60);
+  const deltaM=qpMyDisplayM-before;
+  // 上昇率が高いほど背景の星を速く
+  _qpStarSpeedTgt=Math.max(_qpStarSpeedTgt*0.9,Math.min(1,0.04+deltaM*9));
+
+  const mEl=document.getElementById('qp-hud-m');
+  const lc=typeof qpLevelColor2==='function'?qpLevelColor2(qpMyLevel):'#7ef7c0';
+  if(mEl){
+    const mStr=qpFmtM(qpMyDisplayM);
+    if(mEl.__t!==mStr){mEl.__t=mStr;mEl.textContent=mStr;}
+    if(mEl.__c!==lc){mEl.__c=lc;mEl.style.color=lc;}
+  }
+  const fill=document.getElementById('qp-hud-xp-fill');
+  if(fill){
+    const wv=Math.min(100,(qpMyXp/12)*100)+'%';
+    if(fill.__w!==wv){fill.__w=wv;fill.style.width=wv;}
+    if(fill.__b!==lc){fill.__b=lc;fill.style.background=lc;}
+  }
+  const chip=document.getElementById('qp-hud-level-chip');
+  if(chip){
+    const cv='Lv.'+(qpMyLevel||1);
+    if(chip.__t!==cv){chip.__t=cv;chip.textContent=cv;}
+    if(chip.__c!==lc){chip.__c=lc;chip.style.color=lc;}
+  }
+  const tb=document.getElementById('qp-hud-targets');
+  if(tb){
+    const tv2='▲ ×'+(qpMyTargetedBy||0)+' 人に狙われている';
+    if(tb.__t!==tv2){tb.__t=tv2;tb.textContent=tv2;}
+    const az=qpMyTargetedBy>0;
+    if(!!tb.__z!==az){tb.__z=az;tb.classList.toggle('zero',!az);}
+  }
+  qpRenderMatchRank();
+}
+
+// ── クイックプレイ画面のエントリ・退出 ──────────────────────────
+function openQuickPlay(){
+  if(!myName)return;
+  showScreen('quickplay');
+  const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
+  const modSel=document.getElementById('qp-mod-select');
+  if(modSel)modSel.value=playerMods[socket.id]||'none';
+  const modDesc=document.getElementById('qp-mod-desc');
+  if(modDesc)modDesc.textContent=MOD_DESCRIPTIONS[playerMods[socket.id]||'none']||'';
+  qpEnsureStarfield();
+  document.getElementById('qp-play-btn').style.display='none';
+  const el=document.getElementById('qp-leaderboard');if(el)el.innerHTML='<div class="no-rooms" style="padding:1rem">Connecting...</div>';
+  socket.emit('quick_play',{name:myName});
+}
+function qpLeave(){
+  socket.emit('leave_room');
+  roomId=null;roomPlayers=[];roomPlayers.length=0;
+  quickPlayMode=false;qpRoomId=null;qpPlayers=[];qpPlayerMap={};qpBoards={};qpSelectedId=null;
+  for(const k in _qpBotXMap)delete _qpBotXMap[k];
+  _qpBotLaneN=0;
+  qpMatchEnded=false;
+  if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
+  gameState=null;renderer=null;
+  qpDestroyStarfield();
+  const hud=document.getElementById('qp-hud');if(hud)hud.style.display='none';
+  const rk=document.getElementById('qp-rank');if(rk)rk.style.display='none';
+  const o=document.getElementById('result-overlay');if(o)o.classList.remove('open');
+  const pb=document.getElementById('qp-preview-name');if(pb)pb.textContent='---';
+  if(myName)showGameLobby(null);
+}
+function qpStart(){
+  if(roomId)socket.emit('start_game');
+}
+// 死亡後: 試合前画面へ戻る（リプレイ保存の選択後に呼ばれる）
+function qpReturnToPrematch(){
+  const o=document.getElementById('result-overlay');if(o)o.classList.remove('open');
+  if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
+  gameState=null;renderer=null;
+  qpMatchEnded=false;
+  qpBoards={};qpSelectedId=null;qpMatchReset();
+  const me=qpPlayerMap[socket.id];
+  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;}
+  showScreen('quickplay');
+  const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
+  qpEnsureStarfield();
+  socket.emit('qp_get_state');
+}
+// 死亡時のリプレイ保存選択オーバーレイ
+function qpShowDeathChoice(replayData, elapsedMs){
+  window._lastReplayData = replayData;
+  const o=document.getElementById('result-overlay'); if(!o)return;
+  const rc=o.querySelector('.result-card');
+  const hasRep=!!(replayData&&Array.isArray(replayData.events)&&replayData.events.length>0);
+  const mins=Math.floor((elapsedMs||0)/60000),secs=Math.floor(((elapsedMs||0)%60000)/1000);
+  const timeStr=`${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+  rc.innerHTML=`
+    <div class="result-title" style="color:#ff2e63">🏔 CLIMB OVER</div>
+    <div class="result-winner" style="color:#ffd700;font-size:1.6rem;margin:0.5rem 0">m ${qpFmtM(qpMyLastServerM)}  /  Lv.${qpMyLevel}</div>
+    <div style="color:#aaa;font-size:0.8rem;margin-bottom:1rem">${timeStr} — リプレイを保存しますか？</div>
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap">
+      ${hasRep?`<button class="btn btn-secondary" onclick="ReplayUI.watchReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">▶ リプレイを見る</button>`:''}
+      ${hasRep?`<button class="btn btn-primary" onclick="ReplayUI.saveReplay();qpReturnToPrematch()" style="font-size:0.75rem;padding:0.5rem 1rem">💾 保存して戻る</button>`:''}
+      <button class="btn btn-secondary" onclick="qpReturnToPrematch()" style="font-size:0.75rem;padding:0.5rem 1rem">${hasRep?'保存せず戻る':'試合前に戻る'}</button>
+    </div>`;
+  o.classList.add('open');
+}
+
+// ── duo: 復活待ちUI ─────────────────────────────────────────────
+function _qpReviveEl(id){
+  let el=document.getElementById(id);
+  if(!el){el=document.createElement('div');el.id=id;document.body.appendChild(el);}
+  return el;
+}
+// 自分がダウン → 相方が10回ラインを消すまで全画面で待機
+function qpShowReviveWait(remaining){
+  remaining=(remaining===undefined||remaining===null)?10:remaining;
+  const el=_qpReviveEl('qp-revive-overlay');
+  el.style.cssText='position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:90;pointer-events:none;font-family:Orbitron,sans-serif;background:rgba(3,7,18,0.35);';
+  el.innerHTML=`<div style="color:#ff2e63;font-size:3rem;font-weight:900;text-shadow:0 0 40px #ff2e63">☠ DOWN</div>
+    <div style="color:#fff;font-size:0.95rem;margin-top:0.6rem;letter-spacing:0.08em">相方がクリアすると復活！</div>
+    <div style="color:#ffbe0b;font-size:1.4rem;margin-top:0.4rem">あと <span id="qp-revive-remaining">${remaining}</span> 回</div>`;
+  el.style.display='flex';
+}
+function _qpHideReviveWait(){
+  const el=document.getElementById('qp-revive-overlay');if(el)el.style.display='none';
+}
+// 相方がダウン → 自分が10回ラインを消すまでバナー表示
+function qpShowPartnerDown(remaining){
+  remaining=(remaining===undefined||remaining===null)?10:remaining;
+  const el=_qpReviveEl('qp-partner-down');
+  el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:90;pointer-events:none;font-family:Orbitron,sans-serif;background:rgba(255,46,99,0.15);border:1px solid rgba(255,46,99,0.6);color:#ff2e63;padding:0.4rem 1.2rem;border-radius:20px;font-size:0.78rem;letter-spacing:0.08em;';
+  el.textContent=`🧊 相方ダウン中 — あと ${remaining} 回ラインを消すと復活`;
+  el.style.display='block';
+}
+function _qpHidePartnerDown(){
+  const el=document.getElementById('qp-partner-down');if(el)el.style.display='none';
+}
+function _qpHideReviveUI(){_qpHideReviveWait();_qpHidePartnerDown();}
+
+// ── 試合中のランキング表示 ─────────────────────────────────────
+let _qpRankSig='';
+function qpRenderMatchRank(){
+  const panel=document.getElementById('qp-rank');if(!panel)return;
+  if(!quickPlayMode||qpMatchEnded){panel.style.display='none';return;}
+  const list=qpPlayers||[];
+  if(!list.length)return;
+  const sig=list.map(p=>p.id+':'+Math.round(p.m*2)+':'+(p.level||1)+':'+(p.alive?1:0)).join('|');
+  if(sig===_qpRankSig)return;
+  _qpRankSig=sig;
+  const el=document.getElementById('qp-rank-list');if(!el)return;
+  const top=[...list].sort((a,b)=>(b.m-a.m)||(b.score-a.score)).slice(0,6);
+  el.innerHTML=top.map((p,i)=>{
+    const me=p.id===socket.id;
+    return `<div class="qp-rank-row ${me?'me':''} ${p.alive?'':'dead'}">
+      <span class="qp-rk">${i+1}</span>
+      <span class="qp-name">${esc(p.isBot?p.name:(p.name||'YOU'))}</span>
+      <span class="qp-rlvl" style="color:${p.color||'#fff'}">Lv.${p.level||1}</span>
+      <span class="qp-rm" style="color:${p.color||'#fff'}">${qpFmtM(p.m)}</span>
+    </div>`;
+  }).join('');
+  panel.style.display='flex';
+}
+
+// ── ソケットイベント ────────────────────────────────────────────
+socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
+  qpRoomId=rid;roomId=rid;_lastUsedRoomId=rid;
+  qpPlayers=players||[];qpPlayerMap={};
+  qpPlayers.forEach(p=>qpPlayerMap[p.id]=p);
+  isHost=(socket.id===host);
+  // ソロのクイックプレイ: 他に人間がいなければ自分がホスト扱い（PLAYボタンを出す）
+  const otherHumans=(players||[]).filter(p=>!p.isBot&&p.id!==socket.id);
+  if(!started&&otherHumans.length===0)isHost=true;
+  else if(started&&!isHost){}
+  document.getElementById('qp-room-id').textContent=rid||'------';
+  const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
+  const modSel=document.getElementById('qp-mod-select');
+  if(modSel)modSel.value=playerMods[socket.id]||'none';
+  const pt=document.getElementById('qp-play-btn');
+  if(pt)pt.style.display=isHost&&!started?'block':'none';
+  const ps=document.getElementById('qp-status-msg');
+  if(ps)ps.textContent=started?'MATCH IN PROGRESS...':'試合前 — ボットのプレイを観戦できます';
+  // サーバーからのルーム設定を反映（duo のオン/オフの正はサーバー側）
+  if(rs)roomSettings={...roomSettings,...rs};
+  qpSyncDuoPanel(!started);
+  qpRenderLeaderboard();
+  qpEnsureStarfield();
+  const me=qpPlayerMap[socket.id];
+  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;}
+  if(!qpSelectedId)qpSelectCurrentPlayer();
+});
+
+socket.on('qp_update',({players,started})=>{
+  if(!Array.isArray(players))return;
+  qpPlayers=players;qpPlayerMap={};
+  qpPlayers.forEach(p=>qpPlayerMap[p.id]=p);
+  const me=qpPlayerMap[socket.id];
+  if(me){
+    qpMyLastServerM=me.m;
+    qpMyLevel=me.level||1;
+    qpMyXp=me.xp||0;
+    qpMyTargetedBy=me.targetedBy||0;
+    // 白い+Nは「ライン消去でmが上がった時だけ」（受動的な上昇では出さない）
+    const cg=me.clearGain||0;
+    if(cg-qpLastClearGain>0.4){
+      qpPushGain(cg-qpLastClearGain);
+      // ローカルで即時発火済みなら二重加算しない（遅延なしライン消去対応）
+      if(performance.now()-_qpLastLocalClearMs>900){
+        _qpStarSpeedTgt=Math.max(_qpStarSpeedTgt,Math.min(1,0.3+(cg-qpLastClearGain)*0.12));
+        // ライン消去で m が上がった分、星の海もその分下に流す
+        qpStarDrop+=Math.min(240,(cg-qpLastClearGain)*14);
+        _qpSteamBoost=Math.min(2.2,_qpSteamBoost+0.4);
+      }
+    }
+    qpLastClearGain=cg;
+  }
+  if(started===false){
+    const pt=document.getElementById('qp-play-btn');
+    if(pt&&isHost)pt.style.display='block';
+    const ps=document.getElementById('qp-status-msg');
+    if(ps)ps.textContent='試合前 — ボットのプレイを観戦できます';
+    qpSyncDuoPanel(true);
+  }
+  qpRenderLeaderboard();
+  if(qpSelectedId&&qpPlayerMap[qpSelectedId]){
+    const nm=document.getElementById('qp-preview-name');
+    const sp=qpPlayerMap[qpSelectedId];
+    if(nm)nm.textContent=(sp.name||'---')+'   |   m '+qpFmtM(sp.m)+'   Lv.'+(sp.level||1);
+  }
+});
+
+// 10行以上のゴミ投入前の警告（12角星・赤枠・黄色「!」・回転）
+socket.on('qp_garbage_warning',({lines})=>{
+  qpWarnUntil=performance.now()+3000;
+  qpWarnLines=lines||0;
+});
+
+// 試合終了 → 全員生き返り（プレビューをクリアして試合前に戻る）
+socket.on('qp_reset',()=>{
+  qpBoards={};
+  qpSelectedId=null;
+  qpWarnUntil=0;qpWarnLines=0;
+  _qpHideReviveUI();
+  qpMatchReset();
+  const nm=document.getElementById('qp-preview-name');if(nm)nm.textContent='---';
+});
+
+// ── duo: 復活システム ────────────────────────────────────────────
+// 相方がダウン → 自分が10回ラインを消すまで待機/バナー
+socket.on('qp_revive_wait',({deadId,deadName,byId,remaining,isBot})=>{
+  if(deadId===socket.id){qpShowReviveWait(remaining||10);}
+  else if(byId===socket.id){qpShowPartnerDown(remaining||10);}
+  if(deadName)addChatSystem(`💀 ${deadName} がダウン — 相方が10回ラインを消すと復活`);
+});
+socket.on('qp_revive_progress',({deadId,byId,remaining})=>{
+  if(remaining===undefined||remaining===null)return;
+  if(deadId===socket.id){const el=document.getElementById('qp-revive-remaining');if(el)el.textContent=remaining;}
+  else if(byId===socket.id){qpShowPartnerDown(remaining);}
+});
+socket.on('qp_revive_done',({id,name,isBot})=>{
+  _qpHidePartnerDown();
+  if(id===socket.id)_qpHideReviveWait();
+  if(name)addChatSystem(`💖 ${name} が復活！`);
+  // 復活したbotの盤面からELIMINATED表示を消して再表示する
+  if(renderer&&renderer.opponentRevive)renderer.opponentRevive(id);
+});
+// 通常ボットの自動復活（5秒後）
+socket.on('qp_bot_revive',({id,name})=>{
+  if(renderer&&renderer.opponentRevive)renderer.opponentRevive(id);
+  if(name)addChatSystem(`🤖 ${name} が復活！`);
+});
+// 自分が復活 → 空の盤面でローカルゲームを作り直す
+socket.on('qp_revive',({id,bagSeed})=>{
+  if(id!==socket.id)return;
+  _qpHideReviveUI();
+  if(quickPlayMode){
+    qpMatchEnded=false;
+    showCountdown(bagSeed,()=>initGame(roomPlayers,bagSeed));
+  }
+});
+
+
 // 観戦モード: 試合中に入室した場合
-socket.on('spectate_joined',({roomId:rid,players,host})=>{
+socket.on('spectate_joined',({roomId:rid,players,host,quickPlayMode:qpm})=>{
   roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;
   isHost=(socket.id===host);
   isSpectator=true;
+  if(qpm)quickPlayMode=true;
   addChatSystem('👁 Spectating match in progress...');
   showScreen('game');
   showDpad(false);
@@ -1025,6 +1670,8 @@ function updateRoomSettingsUI(rs){
   const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
   const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear')?rs.botType:'normal';
   const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
+  // duo設定はクイックプレイ専用: 通常ルームでは同期しない
+  if(quickPlayMode)qpSyncDuoPanel(true);
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
@@ -1087,12 +1734,17 @@ function botTypeLabel(bt,lvl){
   return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':'Lv.'+(lvl||'?');
 }
 function _saveRoomSettings(){
-  try{localStorage.setItem('tetris_roomSettings',JSON.stringify(roomSettings));}catch(e){}
+  // duo系キーはクイックプレイ専用: 通常モードの保存には含めない
+  const toSave={...roomSettings};
+  if(!quickPlayMode){delete toSave.duoOn;delete toSave.duoHard;delete toSave.companionPps;}
+  try{localStorage.setItem('tetris_roomSettings',JSON.stringify(toSave));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode'];
-  const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode','duoOn','duoHard'];
+  const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate','companionPps'];
   const strKeys=['botType'];
+  // duo系キーはクイックプレイ専用: 通常ルームでは無視して反映しない
+  if(!quickPlayMode&&['duoOn','duoHard','companionPps'].includes(key))return;
   let parsed;
   if(boolKeys.includes(key)) parsed=!!val;
   else if(strKeys.includes(key)) parsed=String(val);
@@ -1195,7 +1847,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,cheeseMode:chm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,batchComboMode:bcm,boardRows:br,playerModes:pm,playerMods:pmod})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,cheeseMode:chm,blitzMode:blm,fourWideMode:fwm,puyotetMode:ptm,batchComboMode:bcm,quickPlayMode:qpm,boardRows:br,playerModes:pm,playerMods:pmod})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -1220,14 +1872,16 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(pm) playerModes=pm;
   if(pmod) playerMods=pmod;
   if(rs)roomSettings={...roomSettings,...rs};
+  quickPlayMode=!!(qpm||(rs&&rs.quickPlayMode));
+  if(quickPlayMode){qpMatchReset();qpMatchEnded=false;_qpMatchStartMs=performance.now();qpDestroyStarfield();}
   ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
   _pieceCounter=0;
-  // 通常マルチプレイ: リプレイ記録開始
+  // リプレイ記録開始（クイックプレイもローカル保存できるように記録する）
   if(!fortyLineMode&&!cheeseMode&&!blitzMode){
     ReplayRecorder.start({
       players, bagSeed, myId, playerName: myName,
       roomPlayers: [...roomPlayers],
-      mode: roomSettings.puyotetMode?'puyotet':'multi',
+      mode: quickPlayMode ? 'quickplay' : (roomSettings.puyotetMode?'puyotet':'multi'),
     });
   }
   showScreen('game');
@@ -1250,6 +1904,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   }
   if(sm)addChatSystem('♟ SHOGI MODE: BOT responds to each of your moves!');
   if(solo)addChatSystem('🎮 SOLO MODE — survive as long as possible!');
+  if(quickPlayMode)addChatSystem('🏔 QUICK PLAY — 送ったライン数で山を登れ！');
   if(asm)addChatSystem('🌀 ALLSPIN MODE — スピンをマスターせよ！');
   if(flm)addChatSystem('📦 40 LINE MODE — 40ラインをできるだけ速くクリア！');
   if(chm)addChatSystem('🧀 CHEESE MODE — せり上がりゴミに耐えて40ラインクリア！');
@@ -1471,6 +2126,7 @@ class TetrisGame{
     this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=0;
     this.garbageQueue=[];
     this._deferredGarbage=[];
+    this._qpRiseQueue=null;
     this._lastGarbageHoleCol=-1;
     this.gravityMs=0;
     this._softDropAccum=0;
@@ -1941,6 +2597,7 @@ class TetrisGame{
     const cols=getGameCols();
     this.board=Array(ROWS+HIDDEN).fill(0).map(()=>Array(cols).fill(0));
     this.garbageQueue=[];
+    this._qpRiseQueue=null;
     this._undoStack=[];
     this.holdPiece=null;this.holdCustomShape=null;this.holdUsed=false;
     // ── Solo MOD: 次のミノもリセット（新しい7バッグで作り直し、現在のミノもbagから引いて再スポーン） ──
@@ -2032,6 +2689,8 @@ class TetrisGame{
         else if(isNonTSpin&&allspinActive) attack=count*2;
         else if(isNonTSpin) attack=count;
         else attack={1:0,2:1,3:2,4:3}[count]||0;
+        // クイックプレイ限定: 通常1ライン消しでも1ライン送れる（botもプレイヤーも）
+        if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&count===1&&attack===0){ attack=1; }
       }
 
       // B2B bonus
@@ -2074,6 +2733,7 @@ class TetrisGame{
       }
 
       // ── Time-based firepower multiplier ────────────────────────
+      /*
       const elapsedSec = (performance.now() - this.startTime) / 1000;
       const delaySec = (roomSettings.multiplierDelayMin || 1.6) * 60;
       const interval = roomSettings.multiplierIntervalSec || 1;
@@ -2082,6 +2742,7 @@ class TetrisGame{
         const steps = Math.floor((elapsedSec - delaySec) / interval);
         attack = Math.floor(attack * (1 + steps * rate));
       }
+      */
 
       // ── Bad Hole MOD: blight ──
       // ゴミを含む消去で起動。次のライン消し(スピン問わず)で火力2倍になり、その時点で解除。
@@ -2444,7 +3105,7 @@ class TetrisGame{
 
     this.lastSpin=null;this.lastSpinType=null;
     // ── Training data: emit piece_placed ────────────────────────
-    if(roomSettings.recordTraining&&this._boardBefore){
+    if((roomSettings.recordTraining||quickPlayMode)&&this._boardBefore){
       try{
         socket.emit('piece_placed',{
           boardBefore: this._boardBefore,
@@ -2459,6 +3120,10 @@ class TetrisGame{
     const wasInDanger=this._lockedInDanger;
     this._lockedInDanger=false;
     const _linesCleared=this._lastLinesCleared||0;
+    // クイックプレイ: ライン消去と同時に星を流す（サーバー確認待ちの遅延をなくす）
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&_linesCleared>0&&!this._pendingGameOver){
+      qpLocalClearBoost(_linesCleared);
+    }
     // CLUTCH: 上部ギリギリでラインを消して初めてクラッチ
     // ── Defeat notification (just a message, no game over) ──
     if(!this.defeated && (this.totalGarbageSent + this.totalAttackSent) >= 20){
@@ -2491,12 +3156,12 @@ class TetrisGame{
     
     for (const g of armed) {
       if (linesToAdd >= cap) {
-        backToQueue.push({...g, readyAt: now + 500});
+        backToQueue.push({...g, readyAt: now + qpGarbageReady(500)});
       } else {
         const canAdd = Math.min(g.lines, cap - linesToAdd);
         if (canAdd > 0) remainingToBoard.push({...g, lines: canAdd});
         if (canAdd < g.lines) {
-          backToQueue.push({...g, lines: g.lines - canAdd, readyAt: now + 500});
+          backToQueue.push({...g, lines: g.lines - canAdd, readyAt: now + qpGarbageReady(500)});
         }
         linesToAdd += canAdd;
       }
@@ -2518,7 +3183,7 @@ class TetrisGame{
       for(const g of groups){
         if(g.col===col){g.count+=chunk.lines;merged=true;break;}
       }
-      if(!merged)groups.push({col,count:chunk.lines});
+      if(!merged)groups.push({col,count:chunk.lines,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
     }
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
@@ -2527,7 +3192,7 @@ class TetrisGame{
         const cols=getGameCols();
         // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
         let holeCol;
-        if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+        if(this._lastGarbageHoleCol>=0&&Math.random()<g.seriality){
           holeCol=this._lastGarbageHoleCol;
         }else{
           holeCol=g.col;
@@ -2559,6 +3224,32 @@ class TetrisGame{
     applyGroup();
   }
 
+  // duo hard: 相方からの直列穴ゴミをキュー・アニメーション無しで即座に盤面へ出現させる
+  applyGarbageDirect(lines,fromId,holeCol){
+    lines=lines|0;
+    if(lines<=0)return;
+    const cols=getGameCols();
+    const ch=(holeCol!==undefined&&holeCol!==null)?holeCol:Math.floor(Math.random()*cols);
+    const solid=(playerMods[socket.id]||'none')==='solid';
+    const rows=[];
+    for(let i=0;i<lines;i++){
+      const row=Array(cols).fill('G');
+      row[ch]=0;
+      if(solid){for(let c=0;c<cols;c++)row[c]=5;}
+      rows.push(row);
+    }
+    for(const row of rows){
+      this._pushRow(row);
+      this.board.shift();
+      this.totalGarbageReceived++;
+      if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
+    }
+    this._lastGarbageHoleCol=ch;
+    renderer&&renderer.onGarbageRowAdded&&renderer.onGarbageRowAdded(rows.length);
+    renderer&&renderer.onGarbageApplied&&renderer.onGarbageApplied(lines);
+    SFX.garbageReceive();
+  }
+
   _emitBoardUpdate(){
     const data = {
       board:this.board.map(row=>row.map(c=>c||0)),
@@ -2574,6 +3265,13 @@ class TetrisGame{
       shakePower: renderer ? (renderer.shakePower||0) : 0,
       boardOffsetY: renderer ? (renderer.boardOffsetY||0) : 0,
     };
+    // クイックプレイ: リプレイ再生で m / climb speed を出せるように記録
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
+      const _qme=(typeof qpPlayerMap!=='undefined'&&qpPlayerMap)?qpPlayerMap[socket.id]:null;
+      data.qpM=_qme?(_qme.m||0):0;
+      data.qpLevel=_qme?(_qme.level||1):1;
+      data.qpClimbSpeed=(typeof qpStarSpeed==='number')?qpStarSpeed:0;
+    }
     socket.emit('board_update', data);
     ReplayRecorder.record('board_update', data);
   }
@@ -2592,8 +3290,9 @@ class TetrisGame{
     let linesToAdd=0;
     const backToQueue=[];
     const lsRows=[]; // Last Stand: 0.2秒ごとに1段ずつ適用する行
+    const qpRows=[]; // Quick Play: 0.2秒ごとに1段ずつせり上げる行
     for(const g of armed){
-      if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+500});continue;}
+      if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+qpGarbageReady(300)});continue;}
       const canAdd=Math.min(g.lines,cap-linesToAdd);
       if(canAdd>0){
         const cols=getGameCols();
@@ -2612,7 +3311,7 @@ class TetrisGame{
             holeCol=g.holeBase!==undefined?g.holeBase:Math.floor(Math.random()*cols);
           }
           // ── 通常 / holes3 ──
-          else if(this._lastGarbageHoleCol>=0&&Math.random()<0.3){
+          else if(this._lastGarbageHoleCol>=0&&Math.random()<(g.seriality!==undefined&&g.seriality!==null?g.seriality:0.3)){
             holeCol=this._lastGarbageHoleCol;
           }else{
             holeCol=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*cols);
@@ -2651,9 +3350,11 @@ class TetrisGame{
           if((playerMods[socket.id]||'none')==='solid'){
             for(let c=0;c<cols;c++) row[c]=5;
           }
-          // ── Last Stand: 0.2秒ごとに1段ずつ出現 ──
+          // ── Last Stand / Quick Play: 0.2秒ごとに1段ずつ出現 ──
           if(g.laststandConsecutive){
             lsRows.push(row);
+          }else if(quickPlayMode){
+            qpRows.push(row);
           }else{
             this._pushRow(row);this.board.shift();
             this.totalGarbageReceived++;
@@ -2663,7 +3364,7 @@ class TetrisGame{
           this._lastGarbageHoleCol=holeCol;
         }
       }
-      if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+500});
+      if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+qpGarbageReady(300)});
     }
     for(const g of backToQueue)this.garbageQueue.unshift(g);
     // ── Expert MOD: 蓄積ゴミを通常ゴミと一緒に即座に盤面に出現（直列穴） ──
@@ -2703,9 +3404,32 @@ class TetrisGame{
         };
         applyLsRow();
       }
+    }else if(qpRows.length>0){
+      // Quick Play: 用意したゴミはまとめて出現せず、0.2秒ごとに1段ずつせり上げる
+      if(this._qpRiseQueue)this._qpRiseQueue.push(...qpRows);
+      else this._beginRiseQueue(qpRows);
     }else{
       renderer&&renderer.onGarbageRowAdded(linesToAdd);
     }
+  }
+
+  // 0.2秒ごとに1段ずつゴミをせり上げる（Quick Play用。適用中は _qpRiseQueue に保持）
+  _beginRiseQueue(rows){
+    if(!rows||rows.length===0)return;
+    if(this._qpRiseQueue){this._qpRiseQueue.push(...rows);return;}
+    this._qpRiseQueue=rows;
+    const applyOne=()=>{
+      const q=this._qpRiseQueue;
+      if(!q||q.length===0){this._qpRiseQueue=null;return;}
+      const row=q.shift();
+      this._pushRow(row);this.board.shift();
+      this.totalGarbageReceived++;
+      if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
+      if(renderer&&renderer.onGarbageRowAdded)renderer.onGarbageRowAdded(1);
+      if(q.length>0)setTimeout(applyOne,200);
+      else this._qpRiseQueue=null;
+    };
+    applyOne();
   }
 
   // 現在ミノ位置のみ軽量送信（毎フレーム近い頻度で呼ばれる）
@@ -2957,7 +3681,7 @@ class TetrisGame{
     },500);
   }
 
-  queueGarbage(lines,fromId,holes3,targetMod){
+  queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality){
     const myMod = playerMods[socket.id] || 'none';
     const mod = targetMod || myMod;
     // バッチコンボ: 蓄積バッファからゴミを相殺
@@ -2967,11 +3691,18 @@ class TetrisGame{
       lines-=canCancel;
       if(lines<=0)return;
     }
+    // ── duo hard: 全行同じholeColの直列穴・待ちなし即時（MODによる再ロールより優先） ──
+    if(duoHard){
+      const ch=(holeCol!==undefined&&holeCol!==null)?holeCol:Math.floor(Math.random()*getGameCols());
+      const readyAt=performance.now();
+      while(lines>0){const chunk=Math.min(lines,10);this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol:ch,holes3:0,duoHard:true});lines-=chunk;}
+      return;
+    }
     // ── MOD: Tower (受ける側) ── 受けるゴミ量を階層で乗算
     if(mod==='tower'){
       const lv=this._towerLevel||0;
       lines=Math.max(0,Math.round(lines*(lv+5)/10));
-      const readyAt=performance.now()+(puyotetMode?0:1000);
+      const readyAt=performance.now()+qpGarbageReady(1000);
       const holeCol=Math.floor(Math.random()*getGameCols());
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});
       return;
@@ -3024,7 +3755,7 @@ class TetrisGame{
         this._helmetHoleBase=Math.floor(Math.random()*(getGameCols()-1));
       }
       const base=this._helmetHoleBase;
-      const readyAt=performance.now()+(puyotetMode?0:1000);
+      const readyAt=performance.now()+qpGarbageReady(1000);
       for(let i=0;i<lines;i++){
         this.garbageQueue.push({lines:1,fromId,readyAt,holeBase:base,holes3:0,helmet:true});
       }
@@ -3035,7 +3766,7 @@ class TetrisGame{
     }
     // ── MOD: Rock (受ける側) ── 穴なしゴミ(R)化は _applyReadyGarbage で行う。ここでは通常エントリを積む
     if(mod==='rock'){
-      const readyAt=performance.now()+(puyotetMode?0:1000);
+      const readyAt=performance.now()+qpGarbageReady(1000);
       if(!puyotetMode&&lines>10){
         while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
       }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
@@ -3049,10 +3780,10 @@ class TetrisGame{
       return;
     }
     // ── 通常処理 ──
-    const readyAt=performance.now()+(puyotetMode?0:1000);
+    const readyAt=performance.now()+qpGarbageReady(1000);
     if(!puyotetMode&&lines>10){
-      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
-    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
+      while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0,seriality:(seriality===undefined||seriality===null)?0.3:seriality});lines-=chunk;}
+    }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0,seriality:(seriality===undefined||seriality===null)?0.3:seriality});}
   }
 
   calcScore(count,isTSpin,isMini,isB2B,combo){
@@ -4497,7 +5228,7 @@ const ReplayUI = {
     const mins = String(Math.floor(elMs/60000)).padStart(2,'0');
     const secs = String(Math.floor((elMs%60000)/1000)).padStart(2,'0');
     const ms = String(Math.floor((elMs%1000)/10)).padStart(2,'0');
-    const modeLabel = meta.mode === 'blitz' ? 'blitz' : meta.mode === 'fortyline' ? '40line' : meta.mode === 'cheese' ? 'cheese' : 'multi';
+    const modeLabel = meta.mode === 'blitz' ? 'blitz' : meta.mode === 'fortyline' ? '40line' : meta.mode === 'cheese' ? 'cheese' : meta.mode === 'quickplay' ? 'quickplay' : 'multi';
     a.href = url; a.download = `tetrix_${modeLabel}_${mins}${secs}${ms}.tetreplay`;
     a.click(); URL.revokeObjectURL(url);
   },
@@ -4531,6 +5262,9 @@ function openReplayViewer(replayData, mode) {
     _b2bCount: 0,
     _lastWasB2B: false,
     _ren: 0,
+    qpM: 0,
+    qpLevel: 1,
+    qpClimbSpeed: 0,
   };
 
   const meta = replayData.meta || {};
@@ -4588,11 +5322,29 @@ function openReplayViewer(replayData, mode) {
     }
   }
   let _replayLastTime = performance.now();
+  // クイックプレイのリプレイ: m と climb speed を表示
+  const isQuickplayReplay = (meta && meta.mode === 'quickplay') || mode === 'quickplay';
+  let qpReplayHud = null, _lastQpHudLv = 0;
+  if (isQuickplayReplay) {
+    qpReplayHud = new PIXI.Text('', new PIXI.TextStyle({
+      fontFamily: 'Share Tech Mono, monospace', fontSize: 22,
+      fill: '#7ef7c0', stroke: '#000000', strokeThickness: 5, letterSpacing: 2, fontWeight: '700'
+    }));
+    qpReplayHud.x = 18; qpReplayHud.y = 14;
+    gameApp.stage.addChild(qpReplayHud);
+  }
   _addGameTicker(() => {
     const now = performance.now();
     const dt = Math.min(now - _replayLastTime, 50);
     _replayLastTime = now;
     if (renderer) renderer.update(dt * ANIM_SPEED);
+    if (qpReplayHud) {
+      qpReplayHud.text = `m ${qpFmtM(replayState.qpM)}   Lv.${replayState.qpLevel || 1}   CLIMB SPEED ${Math.round((replayState.qpClimbSpeed || 0) * 100)}%`;
+      if (replayState.qpLevel !== _lastQpHudLv) {
+        _lastQpHudLv = replayState.qpLevel;
+        try { qpReplayHud.style.fill = (typeof qpLevelColor2 === 'function') ? qpLevelColor2(replayState.qpLevel || 1) : '#7ef7c0'; } catch(e) {}
+      }
+    }
   });
 
   // リプレイUI（コントロールパネル）を作成
@@ -4615,6 +5367,12 @@ function openReplayViewer(replayData, mode) {
           gameState.score = data.score || 0;
           gameState.lines = data.lines || 0;
           gameState.level = data.level || 1;
+          // クイックプレイ記録: m / climb speed
+          if (data.qpM !== undefined) {
+            replayState.qpM = data.qpM;
+            replayState.qpLevel = data.qpLevel || 1;
+            replayState.qpClimbSpeed = data.qpClimbSpeed || 0;
+          }
           if (data.garbageQueue) {
             // リプレイ同期: readyAtは元ゲームの絶対時刻なのでリプレイ時刻軸に引き直す
             // （初回のboard_updateを基準に一度だけオフセット計算 → 途中のずれを防ぐ）
@@ -5350,6 +6108,10 @@ class GameRenderer{
     this.W=app.screen.width;this.H=app.screen.height;
     this.myPlayer=players.find(p=>p.id===myId);
     this.opponentPlayers=players.filter(p=>p.id!==myId);
+    // duo: 相方companionは右側に1v1レイアウトで表示し、他のプレイヤーは後ろに散らして表示する
+    this._isDuo=!!(typeof quickPlayMode!=='undefined'&&quickPlayMode&&typeof roomSettings!=='undefined'&&roomSettings&&roomSettings.duoOn);
+    this._duoCompanion=this._isDuo?(this.opponentPlayers.find(p=>p.isCompanion||p._qpCompanion)||null):null;
+    this._duoCompId=this._duoCompanion?this._duoCompanion.id:null;
     this.boardOffsetY=0;this.boardOffsetX=0;
     this.tiltAngle=0;this.tiltTarget=0;this.shakePower=0;
     // 壁バウンス: 押し込み中は繰り返さない
@@ -5379,7 +6141,8 @@ class GameRenderer{
     const ui=settings.uiLayout||{};
     const offY=ui.boardOffsetY||0;
     const userScale=(ui.boardScale||100)/100;
-    this._is1v1=this.opponentPlayers&&this.opponentPlayers.length===1;
+    // duo: 相方がいればプレイヤー＋相方の2面レイアウト（1v1相当）
+    this._is1v1=!!this._duoCompanion||(this.opponentPlayers&&this.opponentPlayers.length===1);
     // Auto-scale: shrink if board would overflow screen
     const margin=60;
     const vertFit=(this.H-margin)/BOARD_H;
@@ -5419,30 +6182,205 @@ class GameRenderer{
       }
       this.bgLayer.addChild(vg);
     }
+    // QUICK PLAY: プレイ中の背景にも星を流す
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
+      this._qpBgStarsG=new PIXI.Graphics();this.bgLayer.addChild(this._qpBgStarsG);
+      this._qpBgStars=[];
+      const n=settings.quality==='minimum'?60:settings.quality==='low'?120:220;
+      for(let i=0;i<n;i++){
+        this._qpBgStars.push({
+          x:Math.random()*this.W,y:Math.random()*this.H,
+          z:0.15+Math.random()*0.85,s:Math.random()<0.12?3.4:1.6,
+          tw:Math.random()*Math.PI*2,col:[0x00f5ff,0xffbe0b,0xff8ab4,0xffffff][i%4]
+        });
+      }
+      // 盤面下から下方向へ流れる「登っている」湯気パーティクル（粒テクスチャを1スプライト=1粒群で扱う）
+      this._qpSteamTex=this._qpMakeSteamTexture();
+      this._qpRiseParticles=[];
+      this._qpSteamPool=[];
+      this._qpRiseAcc=0;
+    }
+  }
+
+  // 湯気用テクスチャ: 粒を散らした小さめの1枚絵（縮小しても粒が見えるサイズに）
+  _qpMakeSteamTexture(){
+    const S=32;
+    const cv=document.createElement('canvas');cv.width=S;cv.height=S;
+    const ctx=cv.getContext('2d');
+    ctx.clearRect(0,0,S,S);
+    const count=settings.quality==='minimum'?30:48;
+    for(let i=0;i<count;i++){
+      const ang=Math.random()*Math.PI*2;
+      const r=Math.pow(Math.random(),0.6)*S*0.44;
+      const x=S/2+Math.cos(ang)*r, y=S/2+Math.sin(ang)*r;
+      const rad=0.9+Math.random()*1.6;   // S=32基準なので拡大縮小後も粒が見える
+      ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);
+      ctx.fillStyle=`rgba(255,255,255,${(0.35+Math.random()*0.65).toFixed(2)})`;
+      ctx.fill();
+    }
+    try{ return PIXI.Texture.from(cv); }catch(e){ return PIXI.Texture.WHITE; }
+  }
+
+  // プレイ中の背景の星（クライム速度に応じて流れる）
+  _qpBgStarsUpdate(dt){
+    const g=this._qpBgStarsG;
+    g.clear();
+    const stars=this._qpBgStars||[];
+    const sc=this._uiScale||1;
+    qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
+    const speed=(10+qpStarSpeed*300)*(dt/1000);
+    const cx=this.mainBX+BOARD_W*sc/2;
+    const below=this.mainBY+BOARD_H*sc;
+    for(const s of stars){
+      s.y+=speed*s.z + qpStarDrop*(dt/1000);
+      if(s.y>this.H+4){s.y=-4;s.x=Math.random()*this.W;}
+      s.tw+=dt*0.0018;
+      const a=Math.max(0.08,0.3+0.3*Math.sin(s.tw)+0.2*s.z);
+      g.beginFill(s.col,a);g.drawCircle(s.x,s.y,Math.max(1.3,s.s));g.endFill();
+    }
+    // ライン消去で下がる星は2秒ほどかけて滑らかに収束
+    if(stars.length)qpStarDrop*=Math.exp(-dt/4000);
+    // 盤面直下は星を避け気味に（視認性）
+    if(stars.length){
+      g.beginFill(0x0a0f1e,0.6);
+      g.drawRect(cx-BOARD_W*sc/2-20,below-2,BOARD_W*sc+40,4);
+      g.endFill();
+    }
+  }
+
+  // 盤面下から下方向へ流れる「湯気」で登っている感を出す（粒テクスチャ1枚=1パーティクルで低負荷・色はclimb levelで変わる）
+  _qpRiseUpdate(dt){
+    if(!this._qpSteamTex)return;
+    const sc=this._uiScale||1;
+    const cx=this.mainBX+BOARD_W*sc/2;
+    const below=this.mainBY+BOARD_H*sc;
+    this._qpRiseAcc=(this._qpRiseAcc||0)+dt;
+    const halfW=BOARD_W*sc/2;
+    // climb speed（qpStarSpeed 0..1）が高いほど: 発生が早く・流れが速く・少し広く
+    const cs=Math.max(0,Math.min(1,qpStarSpeed||0));
+    // ライン消去で一瞬スピードが上がった湯気（1秒ほどで減衰）
+    if(_qpSteamBoost>0.001)_qpSteamBoost*=Math.exp(-dt/900);
+    else _qpSteamBoost=0;
+    const sb=_qpSteamBoost||0;
+    const spawnMs=(26-cs*14)/(1+sb*0.35);
+    // 現在のclimb levelの色（毎フレーム更新してレベル変化と連動）
+    const _qlv=(typeof qpMyLevel!=='undefined')?qpMyLevel:1;
+    if(_qlv!==_qpSteamColLv){_qpSteamColLv=_qlv;_qpSteamColVal=parseInt(((typeof qpLevelColor2==='function'&&qpLevelColor2(_qlv))||'#06d6a0').slice(1),16)||0x06d6a0;}
+    const col=_qpSteamColVal;
+    if(this._qpRiseAcc>spawnMs){
+      this._qpRiseAcc=0;
+      const n=settings.quality==='minimum'?1:2;
+      for(let k=0;k<n;k++){
+        let sp=this._qpSteamPool&&this._qpSteamPool.pop();
+        if(!sp){sp=new PIXI.Sprite(this._qpSteamTex);sp.anchor.set(0.5);}
+        this.bgLayer.addChild(sp);
+        this._qpRiseParticles.push({
+          sp,
+          x:cx+(Math.random()*2-1)*halfW*0.95*(0.85+cs*0.3),
+          y:below+1+Math.random()*6,
+          vx:(Math.random()*2-1)*0.03*(0.8+cs*0.6),
+          vy:(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7),   // 下方向へ流れる（climb speedで加速・湯気ブースト時さらに加速）
+          life:1,
+          rot:Math.random()*Math.PI*2,
+          rotV:(Math.random()*2-1)*0.00025,
+          base:16+Math.random()*12+cs*9,     // 粒群の基準サイズ（速いほど少し大きい）
+          grow:1.4+Math.random()*1.0+cs*0.5  // 時間とともに広がる量
+        });
+      }
+    }
+    const parts=this._qpRiseParticles;
+    for(let i=parts.length-1;i>=0;i--){
+      const p=parts[i];
+      p.y+=p.vy*dt;                    // 下へ
+      p.x+=p.vx*dt;
+      p.life-=dt*0.00055;
+      if(p.life<=0||p.y>this.H+26){this._qpRecycleSteam(p);parts.splice(i,1);continue;}
+      const lf=Math.min(1,p.life);
+      p.rot+=p.rotV*dt;
+      p.sp.x=p.x;p.sp.y=p.y;
+      p.sp.tint=col;
+      p.sp.alpha=Math.min(1,p.life)*0.6;
+      p.sp.rotation=p.rot;
+      const s=p.base*(1+(1-lf)*p.grow);   // 広がって薄れる
+      p.sp.scale.set(s/32);
+    }
+    if(parts.length>140){
+      const ex=parts.splice(0,parts.length-140);
+      for(const p of ex)this._qpRecycleSteam(p);
+    }
+  }
+  _qpRecycleSteam(p){
+    try{ if(p.sp&&p.sp.parent)p.sp.parent.removeChild(p.sp); }catch(e){}
+    if(this._qpSteamPool)this._qpSteamPool.push(p.sp);
+  }
+
+  // 10行以上ゴミの警告：Last Stand MODの拡張マークと同じ見た目（8角形アウトライン・脈動・回転・赤「!」）
+  _qpDrawWarning(dt){
+    const active=(typeof qpWarnUntil!=='undefined')&&performance.now()<qpWarnUntil;
+    if(!this._qpWarnCont){
+      if(!active)return;
+      const sc=this._uiScale||1;
+      const c=new PIXI.Container();
+      const oct=new PIXI.Graphics();
+      const R=28*sc;
+      const pul=1+0.12*Math.sin(performance.now()*0.012);
+      const rot=performance.now()*0.002;
+      oct.lineStyle(Math.max(3,4*sc),0xffd400,0.95);
+      oct.beginFill(0x16000a,0);
+      for(let v=0;v<8;v++){
+        const a=rot+v*(Math.PI/4);
+        const px=Math.cos(a)*pul*R, py=Math.sin(a)*pul*R;
+        if(v===0)oct.moveTo(px,py);else oct.lineTo(px,py);
+      }
+      oct.closePath();
+      // 中心の「拡張マーク2つ」（※テキストは回転させず枠だけ回す）
+      const txt='!!';
+      const t=new PIXI.Text(txt,new PIXI.TextStyle({fontFamily:'Orbitron, sans-serif',fontSize:Math.round(40*sc),fontWeight:'900',fill:0xff2222,stroke:0x660000,strokeThickness:4}));
+      t.anchor.set(0.5);
+      c.addChild(oct);
+      c.addChild(t);
+      // 盤面の真ん中より少し上
+      c.x=this.mainBX+BOARD_W*sc/2;
+      c.y=this.mainBY+BOARD_H*sc*0.38;
+      oct.rotation=rot;
+      this.effectsLayer.addChild(c);
+      this._qpWarnCont=c; c._pul=pul; c._rot=rot; c._oct=oct;
+    }
+    const c=this._qpWarnCont;
+    c.visible=active;
+    if(active){
+      c._pul=1+0.12*Math.sin(performance.now()*0.012);
+      c._rot=performance.now()*0.002;
+      // 枠（八角形）だけ回転＋脈動、中央の「!!」は固定
+      if(c._oct){c._oct.rotation=c._rot;c._oct.scale.set(c._pul);}
+      c.alpha=0.85+0.15*Math.sin(performance.now()*0.008);
+    }
   }
 
   buildOpponentBoards(){
     const sc=this._uiScale||1;
-    let oCell,oBW,oBH,RX,LX,by;
-    let showAbove=2;
-    if(this.opponentPlayers.length===1){
-      oCell=CELL;oBW=BOARD_W;oBH=BOARD_H;
-      showAbove=0;
-      const gap=120*sc;
-      const totalW=BOARD_W*sc*2+gap;
-      const leftEdge=(this.W-totalW)/2;
-      RX=leftEdge+BOARD_W*sc+gap;
-      LX=RX;
-      by=this.mainBY;
-    }else{
-      oCell=12;oBW=getGameCols()*oCell;oBH=(ROWS+showAbove)*oCell;
-      RX=this.mainBX+BOARD_W*sc+90;
-      LX=this.mainBX-oBW-90;
-      by=this.H/2-oBH/2;
-    }
-    // 1v1: scale the opponent container so both boards match visually
-    const contScale=this.opponentPlayers.length===1?sc:1;
+    // 1v1 / duo相方: フルサイズで右スロットに出す「主役」の相手
+    const featuredId=this._duoCompanion?this._duoCompanion.id:(this.opponentPlayers.length===1?this.opponentPlayers[0].id:null);
+    const gap=120*sc;
+    const totalW=BOARD_W*sc*2+gap;
+    const leftEdge=(this.W-totalW)/2;
+    const featRX=leftEdge+BOARD_W*sc+gap;
+    const featBY=this.mainBY;
+    // 後ろに散らす小型盤面のジオメトリ
+    const smallCell=12,smallBW=getGameCols()*smallCell,smallBH=(ROWS+2)*smallCell;
+    const smallRX=this.mainBX+BOARD_W*sc+90;
+    const smallLX=this.mainBX-smallBW-90;
+    const smallBY=this.H/2-smallBH/2;
     this.opponentPlayers.forEach((p)=>{
+      const isFeatured=(p.id===featuredId);
+      const oCell=isFeatured?CELL:smallCell;
+      const oBW=isFeatured?BOARD_W:smallBW;
+      const oBH=isFeatured?BOARD_H:smallBH;
+      const showAbove=isFeatured?0:2;
+      const RX=isFeatured?featRX:smallRX;
+      const by=isFeatured?featBY:smallBY;
+      // 1v1/duo相方: scale the opponent container so both boards match visually
+      const contScale=isFeatured?sc:1;
       const cont=new PIXI.Container();cont.scale.set(contScale);cont.x=RX;cont.y=by;cont.visible=false;this.root.addChild(cont);
       const isBot=!!p.isBot;
       const borderCol=isBot?0xffbe0b:0x00f5ff;
@@ -5450,17 +6388,17 @@ class GameRenderer{
       bg.beginFill(0x000010,0.9);bg.drawRect(0,0,oBW,oBH);bg.endFill();
       bg.lineStyle(1,borderCol,isBot?0.45:0.2);bg.drawRect(0,0,oBW,oBH);
       cont.addChild(bg);      const nameCol=isBot?0xffbe0b:0x00f5ff;
-      const fSz=this.opponentPlayers.length===1?Math.round(12*sc):10;
+      const fSz=isFeatured?Math.round(12*sc):10;
       const nst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:fSz,fill:nameCol,letterSpacing:2});
       const nameLabel=isBot?`${p.name.toUpperCase()} ${botTypeLabel(p.botType,p.botLevel||'?')}`:p.name.toUpperCase();
       const ntxt=new PIXI.Text(nameLabel,nst);ntxt.x=0;ntxt.y=-fSz-6;cont.addChild(ntxt);
       const boardGfx=new PIXI.Graphics();cont.addChild(boardGfx);
       const nextGfx=[];
-      const nxtOff=this.opponentPlayers.length===1?oBW+8:oBW+4;
+      const nxtOff=isFeatured?oBW+8:oBW+4;
       for(let j=0;j<3;j++){const ng=new PIXI.Graphics();ng.x=nxtOff;ng.y=j*Math.round(oCell*1.1);cont.addChild(ng);nextGfx.push(ng);}
       const holdLbl=new PIXI.Text('HOLD',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(fSz*0.8),fill:0x888888,letterSpacing:2}));
-      holdLbl.x=this.opponentPlayers.length===1?-oCell-4:-30;holdLbl.y=0;cont.addChild(holdLbl);
-      const holdGfx=new PIXI.Graphics();holdGfx.x=this.opponentPlayers.length===1?-oCell-4:-30;holdGfx.y=oCell;cont.addChild(holdGfx);
+      holdLbl.x=isFeatured?-oCell-4:-30;holdLbl.y=0;cont.addChild(holdLbl);
+      const holdGfx=new PIXI.Graphics();holdGfx.x=isFeatured?-oCell-4:-30;holdGfx.y=oCell;cont.addChild(holdGfx);
       const sst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(fSz*0.9),fill:0x666666});
       const stxt=new PIXI.Text('0000000',sst);stxt.x=0;stxt.y=oBH+4;cont.addChild(stxt);
       const ppsSz=Math.round(fSz*0.8);
@@ -5470,12 +6408,12 @@ class GameRenderer{
       const renTxt=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:ppsSz,fill:0xffbe0b}));renTxt.x=0;renTxt.y=oBH+ppsSz*4;cont.addChild(renTxt);
       // 相手B2Bバッジ（自画面（root上・半径28）と同じ見た目・大きさ・位置）
       // 1v1 は contScale(=uiScale) が掛かるので 28/contScale で表示ピクセルを揃える
-      const obR=this.opponentPlayers.length===1
+      const obR=isFeatured
         ? Math.max(14,Math.round(28/contScale))
         : Math.max(11,Math.round(28*(oBH/BOARD_H)));
       const b2bBadge=new PIXI.Container();b2bBadge.visible=false;
       b2bBadge.x=-Math.round(obR*3.2);
-      b2bBadge.y=Math.round(this.opponentPlayers.length===1 ? 90/contScale : oBH*0.2);
+      b2bBadge.y=Math.round(isFeatured ? 90/contScale : oBH*0.2);
       cont.addChild(b2bBadge);
       const b2bBadgeBg=new PIXI.Graphics();b2bBadge.addChild(b2bBadgeBg);
       const b2bBadgeDots=new PIXI.Graphics();b2bBadgeDots.x=obR;b2bBadgeDots.y=obR;b2bBadge.addChild(b2bBadgeDots);
@@ -5528,17 +6466,93 @@ class GameRenderer{
         ..._b2bState,
       };
     });
-    // スロット位置を保存
-    this._opSlotRX=RX;this._opSlotLX=LX;this._opSlotY=by;this._opBW=oBW;
+    // スロット位置を保存（通常は小型盤面の左右スロット、duo相方は右のフルサイズ枠）
+    this._opSlotRX=smallRX;this._opSlotLX=smallLX;this._opSlotY=smallBY;this._opBW=smallBW;
+    this._featRX=featRX;this._featBY=featBY;
     this.updateVisibleOpponents();
   }
 
   // 自分のスコアに近い2人を左右に表示する
   updateVisibleOpponents(){
     const myScore=gameState?gameState.score:0;
-    const alive=this.opponentPlayers.filter(p=>{
+    let alive=this.opponentPlayers.filter(p=>{
       const d=this.opBoardData[p.id];return d&&!d.dead;
     });
+    // 全員非表示にしてから表示対象を選ぶ
+    this.opponentPlayers.forEach(p=>{
+      const d=this.opBoardData[p.id];if(!d)return;
+      d.cont.visible=false;
+    });
+    // duo: 相方companionは常に右のフルサイズ枠に固定表示
+    if(this._isDuo&&this._duoCompId){
+      const cd=this.opBoardData[this._duoCompId];
+      if(cd){
+        const sc=this._uiScale||1;
+        cd.cont.pivot.set(0,0);cd.cont.rotation=0;
+        cd.cont.alpha=1;
+        cd.cont.x=this._featRX;cd.cont.y=this._featBY;
+        cd.cont.scale.set(sc);
+        cd.origX=this._featRX;cd.origXcenter=this._featRX+cd.boardW/2;
+        cd.origY=this._featBY;cd.origYcenter=this._featBY+cd.boardH/2;
+        cd.cont.visible=true;
+      }
+    }
+    // クイックプレイ: 生きているボットを背景のランダムな位置に散らして表示（yはmから収める）
+    // duoでは相方companionを除いた他のプレイヤーを後ろに散らす
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&typeof qpPlayerMap!=='undefined'){
+      const sc=this._uiScale||1;
+      const mw=BOARD_W*sc;
+      const mainCX=this.mainBX+mw/2;
+      const bgAlive=this._isDuo?alive.filter(p=>p.id!==this._duoCompId):alive;
+      const visibleEnd=Math.min(bgAlive.length,8);
+      // t(0..1)を左右の空き領域いっぱいのxへ写す（余白なし・決定的なので毎回同じ位置→ワープしない）
+      const slotXFor=(t)=>{
+        const boardW=this._opBW||120;
+        const leftMax=Math.max(8,mainCX-boardW-8);
+        const rightMin=Math.min(this.W-8,mainCX+mw+8);
+        if(t<0.5){
+          const u=Math.min(1,Math.max(0,t/0.5));
+          return u*Math.max(4,leftMax-4);
+        }
+        const u=Math.min(1,Math.max(0,(t-0.5)/0.5));
+        const rr=Math.max(4,this.W-8-rightMin);
+        return Math.min(this.W-4,rightMin+u*rr);
+      };
+      // スピード(botPps)が遅いbotほど「遠い(Depth=1)」になるよう、速い→遅いの順に満遍なく割り当てる
+      const _dl=bgAlive.slice(0,visibleEnd).map(p=>({p,pps:(qpPlayerMap[p.id]&&qpPlayerMap[p.id].botPps)||0}))
+        .sort((a,b)=>b.pps-a.pps);
+      const _dn=_dl.length;
+      _dl.forEach((e,i)=>{
+        const d=this.opBoardData[e.p.id];
+        if(d)d._qpDepth=_dn>1?(i/(_dn-1)):0;   // 0=速い(手前) / 1=遅い(奥)
+      });
+      for(let i=0;i<visibleEnd;i++){
+        const p=bgAlive[i];
+        const d=this.opBoardData[p.id];if(!d)continue;
+        // 位置はbot IDごとに一度だけ確定し、以降は再抽選しない
+        if(d._qpBgX===undefined)d._qpBgX=slotXFor(_qpBotLane(p.id));
+        d.cont.rotation=0;
+        d.origX=d._qpBgX;d.origXcenter=d._qpBgX+this._opBW/2;
+        d.cont.alpha=0.72;
+        d.cont.visible=true;
+      }
+      return;
+    }
+    // 非クイックプレイの1v1: 唯一の相手を右のフルサイズ枠に表示
+    if(!this._isDuo&&this.opponentPlayers.length===1&&alive[0]){
+      const d=this.opBoardData[alive[0].id];
+      if(d){
+        const sc=this._uiScale||1;
+        d.cont.pivot.set(0,0);d.cont.rotation=0;
+        d.cont.alpha=1;
+        d.cont.x=this._featRX;d.cont.y=this._featBY;
+        d.cont.scale.set(sc);
+        d.origX=this._featRX;d.origXcenter=this._featRX+d.boardW/2;
+        d.origY=this._featBY;d.origYcenter=this._featBY+d.boardH/2;
+        d.cont.visible=true;
+      }
+      return;
+    }
     // スコア差でソート
     const sorted=[...alive].sort((a,b)=>{
       const da=Math.abs((this.opBoardData[a.id].score||0)-myScore);
@@ -5547,15 +6561,11 @@ class GameRenderer{
     });
     // 近い順に最大2人選択（右・左）
     const picks=sorted.slice(0,2);
-    // 全員非表示にしてから選んだ2人を表示
-    this.opponentPlayers.forEach(p=>{
-      const d=this.opBoardData[p.id];if(!d)return;
-      d.cont.visible=false;
-    });
     picks.forEach((p,i)=>{
       const d=this.opBoardData[p.id];if(!d)return;
       const bx=i===0?this._opSlotRX:this._opSlotLX;
       d.cont.pivot.set(0,0);d.cont.rotation=0;
+      d.cont.alpha=1;
       d.cont.x=bx;d.cont.y=this._opSlotY;
       d.origX=bx;d.origXcenter=bx+this._opBW/2;
       d.cont.visible=true;
@@ -6081,10 +7091,10 @@ class GameRenderer{
     const g=d.boardGfx;g.clear();const cell=d.cell;
     const {boardW:oBW,boardH:oBH,showAbove}=d;
     
-    // Stats update
-    if(d.ppsTxt) d.ppsTxt.text = `${(d.pps||0).toFixed(2)} PPS`;
-    if(d.apmTxt) d.apmTxt.text = `${Math.round(d.apm||0)} APM`;
-    if(d.vsTxt) d.vsTxt.text = `${Math.round(d.vs||0)} VS`;
+    // Stats update (値が変わった時だけ再設定)
+    if(d.ppsTxt){const _pv=(d.pps||0).toFixed(2)+' PPS';if(d.ppsTxt._c!==_pv){d.ppsTxt._c=_pv;d.ppsTxt.text=_pv;}}
+    if(d.apmTxt){const _pv=Math.round(d.apm||0)+' APM';if(d.apmTxt._c!==_pv){d.apmTxt._c=_pv;d.apmTxt.text=_pv;}}
+    if(d.vsTxt){const _pv=Math.round(d.vs||0)+' VS';if(d.vsTxt._c!==_pv){d.vsTxt._c=_pv;d.vsTxt.text=_pv;}}
 
     // Opponent Garbage Meter & Danger Warning (handled by drawOpponentGarbageMeter)
     const opTotalLines = d.garbageLines || 0;
@@ -7634,7 +8644,16 @@ class GameRenderer{
       // コンボ中の累積火力を追跡
       if(!this._opComboAtk)this._opComboAtk={};
       if(!this._opComboAtkTimer)this._opComboAtkTimer={};
-      this.opponentPlayers.forEach(op=>{
+      // クイックプレイでは実際に攻撃が飛ぶ相手1人だけに数字を出す（全員に出して散らかるのを防ぐ）
+      let _opAtkList=this.opponentPlayers;
+      if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
+        const _meSt=(typeof qpPlayerMap!=='undefined'&&qpPlayerMap)?qpPlayerMap[socket.id]:null;
+        const _tid=_meSt&&_meSt.targetId;
+        const _tgt=_opAtkList.find(o=>o.id===_tid&&this.opBoardData[o.id]&&!this.opBoardData[o.id].dead)
+          ||_opAtkList.find(o=>this.opBoardData[o.id]&&!this.opBoardData[o.id].dead);
+        _opAtkList=_tgt?[_tgt]:[];
+      }
+      _opAtkList.forEach(op=>{
         if(this.opBoardData[op.id]&&!this.opBoardData[op.id].dead){
           // 累積攻撃量を追跡（コンボ中は加算、リセットはタイマー）
           if(!this._opComboAtk[op.id])this._opComboAtk[op.id]=0;
@@ -8384,6 +9403,8 @@ class GameRenderer{
 
   // 自分のゲームオーバー: ミノ単位でバラバラに落下 + 枠も斜めに落下
   onGameOver(){
+    // duo: 死亡しても試合は続行。崩壊演出は出さず、相方の復活アシスト待ち表示にする
+    if(this._isDuo){ qpShowReviveWait(10); return; }
     SFX.gameover();
     // ── Phase 1: 横揺れ 300ms ──
     const wrap=this.boardWrap;
@@ -8540,7 +9561,8 @@ class GameRenderer{
     d.dead=true;
     if(d.smokeParticles){d.smokeParticles.forEach(p=>{try{p.gfx.destroy();}catch(e){}});d.smokeParticles=[];}
     if(d.smokeLayer){try{d.smokeLayer.destroy({children:true});}catch(e){}d.smokeLayer=null;}
-    const is1v1=this._is1v1||this.opponentPlayers.length===1;
+    // duo: 相方companionだけが1v1演出。他の後ろのプレイヤーは小型盤面のまま
+    const is1v1=this._duoCompId?(pid===this._duoCompId):(this._is1v1||this.opponentPlayers.length===1);
     if(!is1v1)this.updateVisibleOpponents();
     const oBW=d.boardW,oBH=d.boardH;
     const scX=d.cont.scale.x||1,scY=d.cont.scale.y||1;
@@ -8596,20 +9618,46 @@ class GameRenderer{
       }
     };
     // ELIMINATED overlay (1v1は大きめ)
+    if(d.elimText){try{d.elimText.destroy();}catch(e){}d.elimText=null;}
     const elimSz=is1v1?Math.round(22*this._uiScale):11;
     const elim=new PIXI.Text('ELIMINATED',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:elimSz,fill:0xff006e,fontWeight:'900',letterSpacing:2}));
     elim.anchor.set(0.5);
     elim.x=origX;elim.y=origY;
     elim.alpha=0;
     this.root.addChild(elim);
+    d.elimText=elim;
     let elimAlpha=0;
     const elimTick=()=>{
+      if(d.elimText!==elim)return; // 復活済みなら増殖させない
       elimAlpha=Math.min(1,elimAlpha+0.03);
       elim.alpha=elimAlpha;
       elim.y=origY-10*elimAlpha;
       if(elimAlpha<1)requestAnimationFrame(elimTick);
     };
     setTimeout(elimTick,300);
+  }
+
+  // 復活: 死亡演出とELIMINATED表示を消して盤面表示を復帰させる
+  opponentRevive(pid){
+    const d=this.opBoardData[pid];if(!d)return;
+    d.dead=false;
+    d.gameOverTick=null;
+    if(d.elimText){try{d.elimText.destroy();}catch(e){}d.elimText=null;}
+    d.cont.pivot.set(0,0);
+    d.cont.rotation=0;
+    d.cont.alpha=1;
+    d.cont.visible=true;
+    d.cont.scale.set(1);
+    d.cont.x=d.origX;d.cont.y=d.origY;
+    if(this._duoCompId&&pid===this._duoCompId&&this._featRX!==undefined){
+      const sc=this._uiScale||1;
+      d.cont.x=this._featRX;d.cont.y=this._featBY;
+      d.cont.scale.set(sc);
+      d.origX=this._featRX;d.origY=this._featBY;
+      d.origXcenter=this._featRX+d.boardW/2;d.origYcenter=this._featBY+d.boardH/2;
+    }
+    this.updateVisibleOpponents();
+    this.drawOpponentBoard(pid);
   }
 
   // こちらが攻撃を与えた際: 相手の盤面を揺らす（settings.shakeIntensity で強さ可変）
@@ -8857,7 +9905,7 @@ class GameRenderer{
         return true;
       });
     }
-    if(this.boardOffsetY>0){this.boardOffsetY*=0.95;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
+    if(this.boardOffsetY>0){this.boardOffsetY*=Math.exp(-dt/4000);if(this.boardOffsetY<0.3&&this.boardOffsetY>0)this.boardOffsetY=0;}
     // T-spin afterimage fade
     if(this._afterimageAlpha>0.01){
       if(this._afterimageLife!==undefined&&this._afterimageLife>0){
@@ -8888,7 +9936,7 @@ class GameRenderer{
     }
     this.wallBumpX*=0.55;
     if(Math.abs(this.wallBumpX)<0.2)this.wallBumpX=0;
-    this.boardOffsetY*=0.95;if(this.boardOffsetY<0.3)this.boardOffsetY=0;
+    this.boardOffsetY*=Math.exp(-dt/4000);if(this.boardOffsetY<0.3&&this.boardOffsetY>0)this.boardOffsetY=0;
     // 壁押し込み: 右キーを押しながら壁に触れているときに枠が沈む
     if(this.gs&&this.gs.current){
       const isRightHeld=keyState['ArrowRight'];
@@ -9397,13 +10445,66 @@ class GameRenderer{
     this.updateBoardAnim(dt);
     this.opponentPlayers.forEach(p=>{
       const od=this.opBoardData[p.id];
-      // ボットの操作中のミノ: 落下位置へ線形補間
+      // ボットの操作中のミノ: 落下位置へ指数補間（なめらかに追従）
       if(od&&od.currentPiece&&od._pieceLerpTargetY!==undefined&&od._pieceLerpStep){
-        od._pieceLerpY=Math.min(od._pieceLerpTargetY,od._pieceLerpY+od._pieceLerpStep*dt);
+        od._pieceLerpY=Math.min(od._pieceLerpTargetY,od._pieceLerpY+(od._pieceLerpTargetY-od._pieceLerpY)*(1-Math.exp(-dt/90)));
         if(od._pieceLerpY>=od._pieceLerpTargetY-0.01){od._pieceLerpY=od._pieceLerpTargetY;od._pieceLerpStep=0;}
         od.currentPiece.y=Math.round(od._pieceLerpY);
       }
-      this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);
+      // duo: 相方companionは右のフルサイズ枠に固定するので遠近マッピングを行わない
+      const _isDuoComp=!!(this._duoCompId&&p.id===this._duoCompId);
+      // クイックプレイ: 相手盤面の y を「自分のmを中心にした遠近マッピング」で同期（m差が大きいと画面外へ）
+      if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&od&&od.cont&&!_isDuoComp){
+        const sc=this._uiScale||1;
+        const center=(this.mainBY||0)+BOARD_H*sc/2;
+        // 相手ごとに横位置(t)で縦スケールを少し変え、同じmでも重ならず固まらないようにする
+        const laneT=(typeof _qpBotLane==='function')?_qpBotLane(p.id):0.5;
+        const perM=Math.max(0.01,this.H*0.045)*(0.82+0.36*laneT);
+        const st=qpPlayerMap&&qpPlayerMap[p.id];
+        const mm=st?st.m:0;
+        const meS=qpPlayerMap&&qpPlayerMap[socket.id];
+        const meM=(meS&&meS.m)||0;
+        // 奥行き: 遅いbotほど奥(1)。奥ほど上にずらす
+        const depth=(od._qpDepth!==undefined)?od._qpDepth:0;
+        // 自分を中心に、mの差を縦位置に写す（高いm=上、離れると帯の外=画面外へ）
+        const stagger=(laneT*2-1)*this.H*0.035;
+        const targetY=center-(mm-meM)*perM+stagger-depth*this.H*0.06;
+        // 滑らかに追従（フレームレート非依存の指数補間。カクつき防止）
+        if(od._qpYCur===undefined||Math.abs(od._qpYCur-targetY)>this.H){od._qpYCur=targetY;}
+        else{od._qpYCur+=(targetY-od._qpYCur)*(1-Math.exp(-dt/120));}
+        od.origY=od._qpYCur;
+        // 遠近法: m差 + スピード由来の奥行きで小さく表示（遅いbotほど遠く）
+        const dist=Math.abs(mm-meM);
+        const fs=Math.max(0.15,Math.min(1.12,1.12*Math.pow(0.9,Math.min(6,dist))*(1-0.5*depth)));
+        // サイズも滑らかに補間（m更新時のガクつきを吸収）
+        if(od._qpScaleCur===undefined){od._qpScaleCur=fs;}
+        else{od._qpScaleCur+=(fs-od._qpScaleCur)*(1-Math.exp(-dt/180));}
+        od.cont.scale.set(od._qpScaleCur);
+        od.cont.alpha=1-0.4*depth;
+      }
+      // 画面外に完全に出ている相手盤面は描画もしない（見た目は変わらない・負荷削減）
+      let _qpOnScreen=true;
+      if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&od&&od.cont&&!_isDuoComp){
+        const _bwd=od.boardW||this._opBW||120,_bhd=od.boardH||140,_fsz=od.cont.scale.x||1;
+        const _top=od.origY;
+        if(_top+_bhd*_fsz<0||_top>this.H||od.origX+_bwd*_fsz<0||od.origX>this.W){
+          _qpOnScreen=false;
+          if(od.cont.visible)od.cont.visible=false;
+        }else if(!od.cont.visible){
+          od.cont.visible=true;
+        }
+      }
+      if(_qpOnScreen){
+        this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);
+        // 遠近法で縮むときも中心を保つ（drawOpponentBoardのアンカー書き換えを打ち消し）
+        if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&od&&od.cont&&od._qpBgX!==undefined){
+          const bwd=od.boardW||this._opBW||120,bhd=od.boardH||140;
+          const fsz=od.cont.scale.x||1;
+          od.cont.pivot.set(bwd/2,bhd/2);
+          od.cont.x=od.origX+(bwd/2)*fsz+(od.bounceX||0);
+          od.cont.y=od.origY+(bhd/2)*fsz+(od.shakeY||0)+(od.sinkOffset||0)+(od.bounceY||0);
+        }
+      }
     });
     this.drawGarbageMeter();
     this._drawDangerWarning();
@@ -9419,7 +10520,8 @@ class GameRenderer{
       if(gs&&gs.startTime){
         const sec=Math.floor((performance.now()-gs.startTime)/1000);
         const m=Math.floor(sec/60);const s=sec%60;
-        this.elapsedText.text=m+':'+(s<10?'0':'')+s;
+        const tstr=m+':'+(s<10?'0':'')+s;
+        if(this._elapsedStr!==tstr){this._elapsedStr=tstr;this.elapsedText.text=tstr;}
       }
     }
     // ULTRA: animated scanline
@@ -9431,6 +10533,14 @@ class GameRenderer{
       this._bgScanline.drawRect(0,this._bgScanlineY,this.W,2);
       this._bgScanline.endFill();
     }
+    // QUICK PLAY: 背景の星・上昇パーティクル・ゴミ警告星
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
+      if(this._qpBgStarsG)this._qpBgStarsUpdate(dt);
+      if(this._qpSteamTex)this._qpRiseUpdate(dt);
+      this._qpDrawWarning(dt);
+    }
+    // QUICK PLAY: HUD（m上昇・XP・レベル・狙われ数）を1フレームごとに同期
+    if(typeof qpMatchHudSync==='function')qpMatchHudSync();
   }
 
   // ロックミノの重心を boardContローカル座標系（盤面0~BOARD_W, 0~BOARD_H。ピースはCELL単位）で返す
@@ -9506,11 +10616,18 @@ class GameRenderer{
     if(!this.boardCont||settings.particles==='off'||settings.quality==='minimum')return;
     const startP=this._boardCenterLocal(lockX,lockY,type,rot);
     const start=this.boardCont.toGlobal(new PIXI.Point(startP.x,startP.y));
-    const targets=this.opponentPlayers.filter(p=>{
+    let targets=this.opponentPlayers.filter(p=>{
       const d=this.opBoardData[p.id];
       return d&&!d.dead&&d.cont.visible;
     });
     if(targets.length===0)return;
+    // クイックプレイでは矢印は1本だけ（実際の攻撃対象を優先）
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&targets.length>1){
+      const _meSt=(typeof qpPlayerMap!=='undefined'&&qpPlayerMap)?qpPlayerMap[socket.id]:null;
+      const _tid=_meSt&&_meSt.targetId;
+      const _one=targets.find(p=>p.id===_tid)||targets[0];
+      targets=[_one];
+    }
     const _as=(settings.arrowSpeed||100)/100;
     const dur=(Math.min(950,500+attack*40)/2)*(1/_as);
     const size=Math.min(52,16+attack*4)*((settings.arrowSize||100)/100);
@@ -9860,10 +10977,10 @@ class SpectatorRenderer{
     const g=d.boardGfx;g.clear();
     const {cell,bh}=d;
     
-    // Stats update
-    if(d.ppsTxt) d.ppsTxt.text = `${(d.pps||0).toFixed(2)} PPS`;
-    if(d.apmTxt) d.apmTxt.text = `${Math.round(d.apm||0)} APM`;
-    if(d.vsTxt) d.vsTxt.text = `${Math.round(d.vs||0)} VS`;
+    // Stats update (値が変わった時だけ再設定)
+    if(d.ppsTxt){const _pv=(d.pps||0).toFixed(2)+' PPS';if(d.ppsTxt.__c!==_pv){d.ppsTxt.__c=_pv;d.ppsTxt.text=_pv;}}
+    if(d.apmTxt){const _pv=Math.round(d.apm||0)+' APM';if(d.apmTxt.__c!==_pv){d.apmTxt.__c=_pv;d.apmTxt.text=_pv;}}
+    if(d.vsTxt){const _pv=Math.round(d.vs||0)+' VS';if(d.vsTxt.__c!==_pv){d.vsTxt.__c=_pv;d.vsTxt.text=_pv;}}
 
     // Garbage Meter
     if(d.gMeterGfx){
@@ -10198,6 +11315,7 @@ function stopSoftDrop(){_softDropping=false;}
 // ---- Multiplayer ----
 socket.on('opponent_update',(data)=>{
   const{id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue}=data;
+  if(qpBoards!==undefined&&id){qpBoards[id]={board,score:score||0,lines:lines||0,level:level||1,currentPiece:currentPiece||null,nextPieces,holdPiece,alive:true};if(qpSelectedId===id)qpDrawPreview(id);}
   if(renderer&&renderer.onOpponentUpdate) renderer.onOpponentUpdate(id, data);
   if(!renderer||!renderer.opBoardData)return;
   ReplayRecorder.record('opponent_update',{id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
@@ -10236,6 +11354,7 @@ socket.on('opponent_update',(data)=>{
 // BOT board update (same structure as opponent_update)
 socket.on('bot_update',(data)=>{
   const{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,b2bCount,pps,apm,vs,garbageQueue,bombExplodedCells}=data;
+  if(qpBoards!==undefined&&id){qpBoards[id]={board,score:score||0,lines:lines||0,level:level||1,currentPiece:null,nextPieces,holdPiece,alive:true};if(qpSelectedId===id)qpDrawPreview(id);}
   if(renderer&&renderer.onOpponentUpdate) renderer.onOpponentUpdate(id, data);
   if(!renderer||!renderer.opBoardData)return;
   ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue,b2bCount});
@@ -10342,11 +11461,12 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
   d.currentPiece=currentPiece;
 });
 
-socket.on('receive_garbage',({lines,fromId,holes3,targetMod})=>{
+socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoHardDirect,seriality})=>{
   // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
   if(targetMod==='badhole'&&Math.random()<0.5)return;
   const h3 = holes3 || 0;
-  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState}`);
+  const dhrd = duoHardDirect || duoHard; // duo hard: サーバーは duoHardDirect=true で送る（旧duoHard互換）
+  console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState} duoHard=${!!dhrd} holeCol=${holeCol}`);
   ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:h3});
   if(puyoGameState&&puyoGameState.alive){
     const mult=roomSettings.garbageMultiplier||2;
@@ -10357,8 +11477,14 @@ socket.on('receive_garbage',({lines,fromId,holes3,targetMod})=>{
   if(!gameState){console.log('[RCV GARBAGE] -> no gameState, drop');return;}
   // 受信攻撃: 相手の盤面→自分の盤面へ矢印
   if(renderer&&renderer.onLinesReceived)renderer.onLinesReceived(lines,fromId);
-  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3}`);
-  gameState.queueGarbage(lines,fromId,h3,targetMod);
+  // duo hard: 相方からの直列穴ゴミはキューせず即座に盤面へ出現
+  if(duoHardDirect){
+    console.log(`[RCV GARBAGE] -> applyGarbageDirect(${lines}) holeCol=${holeCol}`);
+    gameState.applyGarbageDirect(lines,fromId,holeCol);
+    return;
+  }
+  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3} duoHard=${!!duoHard} holeCol=${holeCol}`);
+  gameState.queueGarbage(lines,fromId,h3,targetMod,holeCol,dhrd,seriality);
 });
 
 // バッチコンボ: 相手の蓄積量を受信
@@ -10472,12 +11598,23 @@ socket.on('attack_sent',({fromId,toId,attack,clearRows,cancelledByGarbage,lockX,
   }
 });
 
-socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId,cheeseClear,handCount})=>{
+socket.on('game_end',({winner,winnerName,scores,forceEnded,hostId,cheeseClear,handCount,quickPlay})=>{
   stopDAS();stopSoftDrop();
   if(gameState)gameState.alive=false;
   if(puyoGameState){ puyoGameState.alive=false; puyoGameState.dropping=false; }
   batchComboOpponentBuffers = {};
   if(gameState) gameState.batchComboBuffer = 0;
+  // クイックプレイ: 人間全滅で終了 → リプレイ保存の選択を出してから試合前へ
+  if(quickPlay){
+    isSpectator=false;
+    qpMatchEnded=true;
+    const hud=document.getElementById('qp-hud');if(hud)hud.style.display='none';
+    const elapsed=performance.now()-(_qpMatchStartMs||performance.now());
+    if(ReplayRecorder.isRecording())ReplayRecorder.stop(elapsed);
+    qpShowDeathChoice(ReplayRecorder.export(), elapsed);
+    addChatSystem('🏔 Quick play — リプレイを保存できます。');
+    return;
+  }
   // リプレイ記録停止（チーズモードは既にcheese_clearで停止済み）
   const hadReplay = ReplayRecorder.isRecording();
   if(hadReplay){

@@ -1,0 +1,13 @@
+[
+  {
+    "recordedAt": 1789607821085,
+    "seed": 103731,
+    "name": "CliTest",
+    "durationMs": 1270,
+    "apm": 0,
+    "pps": 0,
+    "lines": 0,
+    "finalM": 0.3,
+    "frames": []
+  }
+]
