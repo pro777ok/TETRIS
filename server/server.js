@@ -4699,7 +4699,7 @@ io.on('connection', (socket) => {
         const mult = room.roomSettings.garbageMultiplier || 2;
         const lines = Math.floor(sentTotal / mult);
         console.log(`[PUYO ATK] -> tetris target: mult=${mult} lines=${lines} emitLines=${lines>0}`);
-        if (lines > 0) io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, lines), fromId: socket.id});
+        if (lines > 0) io.to(p.id).emit('receive_garbage', {lines: adjustForTargetMod(room, p.id, lines), fromId: socket.id, fromPuyo: true});
       } else {
         console.log(`[PUYO ATK] -> puyo target: emitOjama=${sentTotal}`);
         io.to(p.id).emit('receive_puyo_ojama', {ojama: sentTotal, fromId: socket.id});

@@ -3277,6 +3277,18 @@ class TetrisGame{
   }
 
   // ロック時に準備済みゴミを一括適用
+  // Puyoからのゴミ用: 直前の穴(および左右1列)に重ならないランダム穴を返す
+  _puyoRandomHoleCol(cols){
+    const prev=this._lastGarbageHoleCol;
+    const bad=hc=>prev>=0&&(hc===prev||hc===(prev+1)%cols||hc===(prev+cols-1)%cols);
+    let hc=Math.floor(Math.random()*cols);
+    for(let k=0;k<8;k++){
+      if(!bad(hc))return hc;
+      hc=Math.floor(Math.random()*cols);
+    }
+    return (prev>=0)?(prev+2)%cols:hc;
+  }
+
   _applyReadyGarbage(){
     const now=performance.now();
     const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
@@ -3309,6 +3321,10 @@ class TetrisGame{
           // ── Helmet: 2つ隣り合わせの穴（holeBase と holeBase+1） ──
           else if(g.helmet){
             holeCol=g.holeBase!==undefined?g.holeBase:Math.floor(Math.random()*cols);
+          }
+          // ── Puyoからのゴミ: 穴は行ごとにランダム（直列・2列ずらしに揃えない） ──
+          else if(g.puyoRandomHole){
+            holeCol=this._puyoRandomHoleCol(cols);
           }
           // ── 通常 / holes3 ──
           else if(this._lastGarbageHoleCol>=0&&Math.random()<(g.seriality!==undefined&&g.seriality!==null?g.seriality:0.3)){
@@ -3681,7 +3697,7 @@ class TetrisGame{
     },500);
   }
 
-  queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality){
+  queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality,fromPuyo){
     const myMod = playerMods[socket.id] || 'none';
     const mod = targetMod || myMod;
     // バッチコンボ: 蓄積バッファからゴミを相殺
@@ -3781,6 +3797,11 @@ class TetrisGame{
     }
     // ── 通常処理 ──
     const readyAt=performance.now()+qpGarbageReady(1000);
+    // ── Puyoからのゴミ: 穴列は行ごとにランダム (直列/2列ずらしに揃えない) ──
+    if(fromPuyo){
+      this.garbageQueue.push({lines,fromId,readyAt,holes3:0,seriality:0,puyoRandomHole:true});
+      return;
+    }
     if(!puyotetMode&&lines>10){
       while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0,seriality:(seriality===undefined||seriality===null)?0.3:seriality});lines-=chunk;}
     }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0,seriality:(seriality===undefined||seriality===null)?0.3:seriality});}
@@ -11461,7 +11482,7 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
   d.currentPiece=currentPiece;
 });
 
-socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoHardDirect,seriality})=>{
+socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoHardDirect,seriality,fromPuyo})=>{
   // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
   if(targetMod==='badhole'&&Math.random()<0.5)return;
   const h3 = holes3 || 0;
@@ -11483,8 +11504,8 @@ socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoH
     gameState.applyGarbageDirect(lines,fromId,holeCol);
     return;
   }
-  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3} duoHard=${!!duoHard} holeCol=${holeCol}`);
-  gameState.queueGarbage(lines,fromId,h3,targetMod,holeCol,dhrd,seriality);
+  console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3} duoHard=${!!duoHard} holeCol=${holeCol} fromPuyo=${!!fromPuyo}`);
+  gameState.queueGarbage(lines,fromId,h3,targetMod,holeCol,dhrd,seriality,fromPuyo);
 });
 
 // バッチコンボ: 相手の蓄積量を受信
@@ -12379,6 +12400,8 @@ class PuyoGame {
     this._chainAttack = 0;   // accumulated during chain
     this.comboCount = 0;     // 連続消し（参考コード準拠）
     this._chainSpawned = false;
+    this._topOutPending = false; // 消え・落下アニメーション完了後に判定するゲームオーバー
+    this._topOutTimer = null;
     this.lastPlacementCleared = false; // 前回の設置で消えたか
     this.garbageRate = 1.0;  // おじゃまレート（参考コード準拠）
     this._spawnPair();
@@ -12613,8 +12636,11 @@ class PuyoGame {
       }
       this._chainAttack=0;
       this._emitBoard();
-      if(!this._chainSpawned) this._spawnPair();
+      const spawnedInChain=this._chainSpawned;
       this._chainSpawned=false;
+      // ゲームオーバー判定はぷよが消え、落ちきってから行う
+      if(this._checkTopOut()){ this._deferTopOut(); return; }
+      if(!spawnedInChain) this._spawnPair();
       return;
     }
 
@@ -12623,8 +12649,7 @@ class PuyoGame {
       this._updateCombo(true);
       // 連鎖開始時に次のぷよを即座にスポーン（操作可能に）
       this.dropping=false;
-      this._spawnPair();
-      this._chainSpawned=true; // flag: enqueueしたのでchain=0ではspawnしない
+      this._chainSpawned=this._spawnPair(); // flag: enqueueしたのでchain=0ではspawnしない
       this.chain=1; // chain counter preserved
       this.dropping=false;
     }
@@ -12737,21 +12762,50 @@ class PuyoGame {
     });
   }
 
+  _checkTopOut(){
+    return this.board[0][2]!==0||this.board[1][2]!==0;
+  }
+
+  _isSettlingAnims(){
+    return typeof _puyoAnimsBusy==='function' ? !!_puyoAnimsBusy() : false;
+  }
+
+  // 消え・落下アニメーションが終わるまで待ってからゲームオーバー判定する
+  _deferTopOut(){
+    if(this._topOutPending) return;
+    this._topOutPending=true;
+    const wait=40;
+    let waited=0;
+    const check=()=>{
+      this._topOutTimer=null;
+      if(!this.alive){ this._topOutPending=false; return; }
+      waited+=wait;
+      if(this._checkTopOut()&&(waited>=1200||!this._isSettlingAnims())){
+        this._topOutPending=false;
+        this._triggerGameOver();
+        return;
+      }
+      this._topOutTimer=setTimeout(check,wait);
+    };
+    this._topOutTimer=setTimeout(check,wait);
+  }
+
   _spawnPair(){
     const pair=this.nextQueue.shift();
     this.nextQueue.push(this._makePair());
     // ゲームオーバー判定: スポーン位置(rows 0-1, col2)が埋まっている場合
-    if(this.board[0][2]!==0||this.board[1][2]!==0){
-      this.alive=false;
-      if(typeof _puyoOnGameOver==='function') _puyoOnGameOver(this.board);
-      if(!isOfflineSolo){socket.emit('game_over',{totalAttackSent:this.totalAttackSent,totalGarbageReceived:0});_enterSpectateOnDeath();}
-      return;
+    if(this._checkTopOut()){
+      // 連鎖中はぷよが消え、落ちきるまで判定しない（連鎖終了時に判定する）
+      if(this._inChain) return false;
+      this._triggerGameOver();
+      return false;
     }
     this.current={pivotR:1,pivotC:2,rotation:0,colors:pair};
     this.gravityMs=0;this.dropping=false;
     // スポーンアニメーション用にコールバック発火
     if(typeof _puyoOnSpawn==='function') _puyoOnSpawn(this.current);
     this._emitBoard();
+    return true;
   }
 
   // ゲームオーバー処理
@@ -12779,6 +12833,7 @@ let _puyoOnFall = null;
 let _puyoOnLock = null;
 let _puyoOnSpawn = null;
 let _puyoOnGameOver = null;
+let _puyoAnimsBusy = null;
 let _puyoOnHardDrop = null;
 let _puyoOnLockTimer = null;
 
@@ -12863,6 +12918,7 @@ class PuyoRenderer {
     _puyoOnLock=(positions)=>this._onLock(positions);
     _puyoOnSpawn=(cur)=>this._onSpawn(cur);
     _puyoOnGameOver=(board)=>this._onGameOver(board);
+    _puyoAnimsBusy=()=>this._fallAnims.length>0;
     _puyoOnHardDrop=(pc,fr,tr,col,rot)=>this._onHardDrop(pc,fr,tr,col,rot);
     _puyoOnLockTimer=(active)=>{
       this._lockGlowActive=active;
@@ -13054,21 +13110,23 @@ class PuyoRenderer {
       // 背景
       const bg=new PIXI.Graphics();
       const actualCols = d._isTetrisBoard ? 10 : PUYO_COLS;
+      // Tetris board: 20 visible rows with smaller cells to fit the same height as 12 Puyo rows
+      const boardRows = d._isTetrisBoard ? 20 : 12;
       const opBW_actual = actualCols * opCell;
-      const opBH = 12 * opCell;
+      const opBH = boardRows * opCell;
 
       bg.beginFill(0x030912,0.95); bg.drawRect(0,0,opBW_actual,opBH); bg.endFill();
       bg.lineStyle(this._is1v1?2:1,0x00f5ff,this._is1v1?0.5:0.3);
       bg.drawRect(0,0,opBW_actual,opBH);
       if(this._is1v1){
         bg.lineStyle(0.5,0x00f5ff,0.1);
-        for(let r2=1;r2<12;r2++){bg.moveTo(0,r2*opCell);bg.lineTo(opBW_actual,r2*opCell);}
+        for(let r2=1;r2<boardRows;r2++){bg.moveTo(0,r2*opCell);bg.lineTo(opBW_actual,r2*opCell);}
         for(let c2=1;c2<actualCols;c2++){bg.moveTo(c2*opCell,0);bg.lineTo(c2*opCell,opBH);}
       }
       cont.addChild(bg);
 
       // セルスプライトプール
-      const cellRows=d._isTetrisBoard?20:12;
+      const cellRows=boardRows;
       const cellSp=[];
       for(let r=0;r<cellRows;r++){
         cellSp[r]=[];
@@ -14158,13 +14216,13 @@ class PuyoRenderer {
     bg.drawRect(0,0,opBW_actual,opBH);
     if(this._is1v1){
       bg.lineStyle(0.5,0x00f5ff,0.1);
-      for(let r2=1;r2<12;r2++){bg.moveTo(0,r2*opCell);bg.lineTo(opBW_actual,r2*opCell);}
+      for(let r2=1;r2<tetrisDisplayRows;r2++){bg.moveTo(0,r2*opCell);bg.lineTo(opBW_actual,r2*opCell);}
       for(let c2=1;c2<actualCols;c2++){bg.moveTo(c2*opCell,0);bg.lineTo(c2*opCell,opBH);}
     }
     cont.addChild(bg);
     // セルスプライト
     const cellSp=[];
-    for(let r=0;r<12;r++){
+    for(let r=0;r<tetrisDisplayRows;r++){
       cellSp[r]=[];
       for(let c=0;c<actualCols;c++){
         const sp=new PIXI.Sprite(PIXI.Texture.EMPTY);
