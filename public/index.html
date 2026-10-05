@@ -1216,6 +1216,39 @@
     font-variant-numeric: tabular-nums;
     text-shadow: 0 0 14px rgba(0,245,255,0.4);
   }
+  /* drop mode: 縦速度ゲージ（正=上昇優勢で背景は下向き/負=降下優勢で上向き。0m に落ちると最速なので赤。バーは次の加速までの進捗） */
+  #qp-hud-accel {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+  }
+  #qp-hud-accel-bar {
+    display: block;
+    width: 108px;
+    height: 6px;
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  #qp-hud-accel-fill {
+    display: block;
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(90deg,#00f5ff,#7ef7c0);
+    transition: width 0.12s linear;
+  }
+  #qp-hud-accel.dry #qp-hud-accel-fill { background: linear-gradient(90deg,#ff2e63,#ff006e); }
+  #qp-hud-accel.dry #qp-hud-accel-val { color: #ff2e63; }
+  #qp-hud-accel-val {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.68rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: rgba(255,255,255,0.75);
+    min-width: 2.2em;
+  }
   #qp-hud-row2 {
     display: flex;
     align-items: center;
@@ -1446,6 +1479,32 @@
       <span id="qp-mod-desc"></span>
     </div>
 
+    <!-- BOARD WIDTH (クイックプレイ専用・ホストのみ変更可) -->
+    <div id="qp-width-wrap" class="qp-duo-wrap">
+      <div class="qp-duo-title">📏 BOARD WIDTH <span class="qp-duo-sub">4WIDE を選ぶと盤面4列になり bot も4wideで戦う</span></div>
+      <div class="hs-row">
+        <label>📐 4WIDE <span class="qp-duo-sub">4列・縦に深い盤面</span></label>
+        <label class="toggle-switch" style="margin-left:auto">
+          <input type="checkbox" id="qp-fourwide-toggle" onchange="updateRoomSetting('fourWideMode',this.checked)">
+          <div class="toggle-track"></div>
+          <div class="toggle-knob"></div>
+        </label>
+      </div>
+    </div>
+
+    <!-- DROP MODE (クイックプレイ専用・ホストのみ変更可) -->
+    <div id="qp-drop-wrap" class="qp-duo-wrap">
+      <div class="qp-duo-title">🪂 DROP MODE <span class="qp-duo-sub">ラインを送るほどy加速度が回復する。枯れると登れずmが落ちる（人間のみ）</span></div>
+      <div class="hs-row">
+        <label>🪂 DROP MODE <span class="qp-duo-sub">0.1秒ごとに-0.01</span></label>
+        <label class="toggle-switch" style="margin-left:auto">
+          <input type="checkbox" id="qp-drop-toggle" onchange="updateRoomSetting('dropMode',this.checked)">
+          <div class="toggle-track"></div>
+          <div class="toggle-knob"></div>
+        </label>
+      </div>
+    </div>
+
     <!-- DUO SETTINGS (クイックプレイ専用・ホストのみ表示) -->
     <div id="qp-duo-wrap" class="qp-duo-wrap">
       <div class="qp-duo-title">👥 DUO MODE <span class="qp-duo-sub">クイックプレイ専用 — 相方botとチーム同時登頂</span></div>
@@ -1552,6 +1611,7 @@
               <option value="normal">通常AI</option>
               <option value="allspin">ALLSPIN</option>
               <option value="coldclear">COLD CLEAR</option>
+              <option value="puyo">PUYO PUYO</option>
             </select>
             <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">種類</span>
           </div>
@@ -1839,6 +1899,7 @@
         <div id="qp-hud-level-chip">Lv.1</div>
       </div>
       <div id="qp-hud-m">0.0</div>
+      <div id="qp-hud-accel" style="display:none"><span id="qp-hud-accel-bar"><i id="qp-hud-accel-fill"></i></span><span id="qp-hud-accel-val">-0.25</span></div>
       <div id="qp-hud-targets" class="zero">targeted ×0</div>
     </div>
 

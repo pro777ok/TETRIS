@@ -1007,7 +1007,10 @@ socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,r
   if(feb)feb.style.display=(isHost&&started)?'block':'none';
   document.getElementById('wait-status').textContent=started?'⚔ Match in progress...':(total<2?(isSoloAllowed?`${total} player — solo mode ON`:'Waiting for players... (add a BOT or friend)'):`${total} players ready`);
   if(mu!==undefined){mutationMode=mu;mutationSeed=ms||0;const cb=document.getElementById('mutation-toggle');if(cb)cb.checked=mu;}
-  if(rs){roomSettings={...roomSettings,...rs};updateRoomSettingsUI(rs);}
+  if(rs){roomSettings={...roomSettings,...rs};updateRoomSettingsUI(rs);
+    // drop mode の切替は即座に背景の流れへ反映する（qp_update を待たない）
+    if(rs.dropMode!==undefined)_qpDropSetMode(!!rs.dropMode);
+  }
   const hostControls=document.getElementById('host-settings-wrap');
   const viewOnlySettings=document.getElementById('settings-view-wrap');
   if(hostControls)hostControls.style.display=isHost?'block':'none';
@@ -1042,6 +1045,69 @@ let qpStarDrop=0;
 let _qpSteamBoost=0;                      // ライン消去で湯気が一瞬湧く量
 let _qpLastLocalClearMs=0;
 let _qpSteamColLv=-1,_qpSteamColVal=0x06d6a0;
+// ── quickplay drop mode ──────────────────────────────────────────
+// サーバー計算の「高度→降下速度」をクライアントで補間し、背景（星・湯気）の流れに使う。
+// サーバーは qp_update でしか値を送らないので、間の降下はローカルで行う。
+// ※定数は server/server.js の QP_DROP_FALL_* と同値に保つこと
+const _QPDROP_FALL_EVERY=100;      // 何mごとに段が変わるか
+const _QPDROP_FALL_A=0.5;          // n=0（0m）の降下速度
+const _QPDROP_FALL_B=0.05;         // 係数: f(n)=A+B*n*(n+1)（serverのQP_DROP_FALL_*と必ず揃える）
+const _QPDROP_FALL_REF=6.0;        // HUDゲージのスケール基準（=1000mの降下速度）
+let _qpDropMode=false;             // 部屋設定 dropMode の鏡像
+let _qpMyAlt=0;                    // 自分の高度 m（drop mode では毎日下がる）
+let _qpDropLastMs=null;            // ローカル降下の基準時刻（null=未設定。0は正常値なので未設定判定には使わない）
+let _qpFlowDir=-1;                 // 背景が最後に流れた方向（-1=上向き/降下中, +1=下向き/上昇中）。0近傍の反転時のちらつきを抑える
+// 高度から降下速度を求める（n=floor(m/100) の二次式）
+//   100m→0.6 / 200m→0.8 / 300m→1.1 / 400m→1.5 / 500m→2.0 / … / 1000m→6.0
+function _qpDropFall(alt){
+  const a=Math.max(0,alt||0);
+  const n=Math.floor(a/_QPDROP_FALL_EVERY);
+  return _QPDROP_FALL_A+_QPDROP_FALL_B*n*(n+1);
+}
+function _qpDropSetMode(on, alt){
+  const was=_qpDropMode;
+  _qpDropMode=!!on;
+  if(_qpDropMode&&!was){ _qpDropLastMs=performance.now(); }
+  if(typeof alt==='number'&&isFinite(alt)){ _qpMyAlt=Math.max(0,alt); _qpDropLastMs=performance.now(); }
+}
+// 高度はサーバーが権威なので常にサーバー値を上書きする（間の降下はローカルで補間する）
+function _qpDropSetAlt(alt){
+  if(typeof alt!=='number'||!isFinite(alt))return;
+  _qpMyAlt=Math.max(0,alt); _qpDropLastMs=performance.now();
+}
+// climb level による基本上昇速度（m/s）。高度更新・背景 flow・HUD で同じ値を使う
+function _qpDropBaseRise(){
+  return 0.25*((typeof qpMyLevel!=='undefined'&&qpMyLevel)||1);
+}
+// 現在フレームの高度。壁時計差で降下させるので 1フレーム何回呼んでも二重に減らない
+function _qpDropAltNow(){
+  if(!_qpDropMode)return 0;
+  const now=performance.now();
+  if(_qpDropLastMs===null)_qpDropLastMs=now;
+  const dt=Math.min(3000,now-_qpDropLastMs);   // タブ非表示からの大ジャンプで底を抜かない
+  _qpDropLastMs=now;
+  if(dt<=0)return _qpMyAlt;
+  const f=_qpDropFall(_qpMyAlt);
+  const br=_qpDropBaseRise();
+  _qpMyAlt=Math.max(0,_qpMyAlt+br*(dt/1000)-f*(dt/1000));
+  return _qpMyAlt;
+}
+// 背景の縦スクロール係数。ネットの上下方向を符号で表す。
+//   負 = 降下優勢（落下中なので背景は上へ流れる）
+//   正 = 上昇優勢（登っているので背景は下へ流れる）
+//   0  = 基本上昇と降下速度が拮抗して実質停止
+// 大きさは 0m の降下速度を 1 とした倍率で、優勢側の速度を使う。
+//   降下優勢: 0m -1.00 / 100m -1.20 / 1000m -12.0
+//   上昇優勢: +br/0.5（br=0.25×climb level なので level1 で +0.50）
+// ネット差（br-f）ではなく優勢側の速度を使うのは、拮抗している付近でスクロールが
+// 止まって見えなくなるのを避けるため。
+// 星と湯気の双方が速度と方向をこれから直接読む
+function _qpDropFlowStep(){
+  if(!_qpDropMode)return 0;
+  const fall=_qpDropFall(_qpDropAltNow());
+  const br=_qpDropBaseRise();
+  return br>=fall?(br/_QPDROP_FALL_A):(-fall/_QPDROP_FALL_A);
+}
 // クイックプレイ: botごとの背景の横位置をセッション中固定（試合をまたいでもワープしない）
 const _qpBotXMap={};
 let _qpBotLaneN=0;
@@ -1060,13 +1126,37 @@ let qpWarnLines=0;
 const _QP_COLORS=['#06d6a0','#7ef7c0','#ffbe0b','#ff9f1c','#ff5e00','#ff2e63','#ff006e','#e600ff','#8a2be2','#00f5ff','#ffffff'];
 function qpLevelColor2(l){ return _QP_COLORS[Math.max(1,Math.min(11,l|0))-1]; }
 function qpFmtM(v){ return (Math.round((v||0)*10)/10).toFixed(1); }
-// キューに積まれたゴミが「準備完了」になるまでの時間（Quick Play では5秒、他モードは従来どおり）
-function qpGarbageReady(ms){ return puyotetMode?0:(quickPlayMode?3000:ms); }
+// ぷよvsテトリスでぷよから来た火力の準備完了時間 = 攻撃力 / 3 秒
+// ※lines はサーバー側で garbageMultiplier と target MOD の倍率を適用した「後の」受信行数。
+//   例: ぷようが20発 → /2 → 10行 なら 10/3 秒 ≈ 3.33秒。
+const _QPGARBAGE_READY_DIVISOR=3;
+// ぷよから来たゴミの穴が「1列ごとにこの確率でずれる」比率
+const _QPGARBAGE_PUYO_HOLE_SHIFT=0.15;
+// キューに積まれたゴミが「準備完了」になるまでの時間
+//  ・ぷよvsテトリスでぷよから来た火力: 攻撃力/3秒（比率適用後の受信行数。多いほど長い）
+//  ・それ以外のぷよvsテトリス: 0（即時、他モードに合わせる）
+//  ・Quick Play: 3秒 / 通常ルーム: 引数の既定値
+function qpGarbageReady(ms, fromPuyo, lines){
+  if(puyotetMode){
+    if(fromPuyo) return Math.round(Math.max(0,lines||0)*1000/_QPGARBAGE_READY_DIVISOR);
+    return 0;
+  }
+  return quickPlayMode?3000:ms;
+}
 
 // duo設定UIはクイックプレイ専用（ホストのみ表示）。通常ルームでは一切表示・反映しない
 function qpSyncDuoPanel(show){
   const wrap=document.getElementById('qp-duo-wrap');
   if(wrap)wrap.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  // 4WIDE 選択はホストだけ変更できる（通常の待室と同じ扱い）
+  const wwrap=document.getElementById('qp-width-wrap');
+  if(wwrap)wwrap.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  const fw=document.getElementById('qp-fourwide-toggle');
+  if(fw){fw.checked=!!(roomSettings&&roomSettings.fourWideMode);fw.disabled=!(quickPlayMode&&isHost&&show);}
+  const dw=document.getElementById('qp-drop-wrap');
+  if(dw)dw.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  const dtg=document.getElementById('qp-drop-toggle');
+  if(dtg){dtg.checked=!!(roomSettings&&roomSettings.dropMode);dtg.disabled=!(quickPlayMode&&isHost&&show);}
   if(!quickPlayMode)return;
   const duoOn=document.getElementById('duo-on-toggle');if(duoOn)duoOn.checked=!!(roomSettings&&roomSettings.duoOn);
   const duoHard=document.getElementById('duo-hard-toggle');if(duoHard)duoHard.checked=!!(roomSettings&&roomSettings.duoHard);
@@ -1124,10 +1214,15 @@ function qpEnsureStarfield(){
     app.ticker.add(()=>{
       const now=performance.now();const dt=Math.min(now-last,64);last=now;
       qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
-      const speed=(18+qpStarSpeed*460);
+      // drop mode: 速度は |y加速度| に比例し、枯れて0以下で上へ反転する（ロビーの星の海）
+      const flow=_qpDropFlowStep();
+      const dropOn=_qpDropMode;
+      const speed=dropOn?(300*Math.abs(flow)):(18+qpStarSpeed*460);
+      const dir=dropOn?Math.sign(flow):1;
       for(const s of _qpStars){
-        s.y+=speed*s._z*(dt/1000)*0.7 + qpStarDrop*(dt/1000);
-        if(s.y>H+6){s.y=-6;s.x=Math.random()*W;}
+        s.y+=speed*s._z*(dt/1000)*0.7*dir + qpStarDrop*(dt/1000);
+        if(dir<0){ if(s.y<-6){s.y=H+6;s.x=Math.random()*W;} }
+        else if(dir>0&&s.y>H+6){s.y=-6;s.x=Math.random()*W;}
         s._tw+=dt*0.0018;
         s.alpha=Math.max(0.15,0.45+0.4*Math.sin(s._tw)+0.2*s._z);
       }
@@ -1301,6 +1396,8 @@ function qpMatchReset(){
   _qpLastLocalClearMs=0;
   qpWarnUntil=0;qpWarnLines=0;
   _qpRankSig='';
+  // drop mode: 次の試合は y加速度 からやり直す（背景の流れも中立に戻す）
+  _qpMyAlt=0;_qpDropLastMs=null;
   const hud=document.getElementById('qp-hud');
   if(hud)hud.style.display='none';
   const rk=document.getElementById('qp-rank');
@@ -1367,6 +1464,30 @@ function qpMatchHudSync(){
     const az=qpMyTargetedBy>0;
     if(!!tb.__z!==az){tb.__z=az;tb.classList.toggle('zero',!az);}
   }
+  // drop mode: 降下速度ゲージ（0m で -0.6m/s、100m 登るごとに -0.2 加速）
+  const ab=document.getElementById('qp-hud-accel');
+  if(ab){
+    if(!_qpDropMode){ if(ab.style.display!=='none')ab.style.display='none'; }
+    else{
+      if(ab.style.display!=='flex')ab.style.display='flex';
+      const alt=_qpDropAltNow();
+      const f=_qpDropFall(alt);
+      // ゲージは「次の加速（+0.2）まであと何mか」を示す。
+      // 現在の段が floor(alt/100) なので、次の段までの進捗 = alt%100 / 100
+      const frac=(alt%_QPDROP_FALL_EVERY)/_QPDROP_FALL_EVERY;
+      const af=document.getElementById('qp-hud-accel-fill');
+      if(af)af.style.width=(frac*100).toFixed(1)+'%';
+      // 数値は実際の縦速度（基本上昇 - 降下）。背景・湯気も同じ符号で動くので
+      // ここが「+」なのに背景が上へ流れているような齟齬が起きない。
+      const av=document.getElementById('qp-hud-accel-val');
+      if(av){
+        const v=_qpDropBaseRise()-f;
+        av.textContent=(v>=0?'+':'')+v.toFixed(2);
+      }
+      const at0=alt<=_QPDROP_FALL_EVERY*0.001;   // 0m に落ちると降下が最速になる（赤くする）
+      if(!!ab.__d!==at0){ab.__d=at0;ab.classList.toggle('dry',at0);}
+    }
+  }
   qpRenderMatchRank();
 }
 
@@ -1390,6 +1511,8 @@ function qpLeave(){
   quickPlayMode=false;qpRoomId=null;qpPlayers=[];qpPlayerMap={};qpBoards={};qpSelectedId=null;
   for(const k in _qpBotXMap)delete _qpBotXMap[k];
   _qpBotLaneN=0;
+  // drop mode: 退出時は解除してKept背景が元どおり下向きに流れるようにする
+  _qpDropMode=false;_qpMyAlt=0;_qpDropLastMs=null;
   qpMatchEnded=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   gameState=null;renderer=null;
@@ -1517,7 +1640,7 @@ socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   qpRenderLeaderboard();
   qpEnsureStarfield();
   const me=qpPlayerMap[socket.id];
-  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;}
+  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;_qpDropSetMode(!!me.dropMode,me.m);}
   if(!qpSelectedId)qpSelectCurrentPlayer();
 });
 
@@ -1527,6 +1650,10 @@ socket.on('qp_update',({players,started})=>{
   qpPlayers.forEach(p=>qpPlayerMap[p.id]=p);
   const me=qpPlayerMap[socket.id];
   if(me){
+    // drop mode: 高度(m)はサーバーが権威なので常にサーバー値を上書きする。
+    // 間の降下は _qpDropAltNow() が壁時計でローカル補間するので描画は滑らかになる。
+    if(me.dropMode!==undefined)_qpDropSetMode(!!me.dropMode);
+    if(me.m!==undefined)_qpDropSetAlt(me.m);
     qpMyLastServerM=me.m;
     qpMyLevel=me.level||1;
     qpMyXp=me.xp||0;
@@ -1668,7 +1795,7 @@ function updateRoomSettingsUI(rs){
   const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
   const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
-  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear')?rs.botType:'normal';
+  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear'||rs.botType==='puyo')?rs.botType:'normal';
   const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
   // duo設定はクイックプレイ専用: 通常ルームでは同期しない
   if(quickPlayMode)qpSyncDuoPanel(true);
@@ -1731,16 +1858,16 @@ function getBotLevelLabel(lvl){
   return ['','BEGINNER','EASY','STRONG','EXPERT','GOD'][lvl]||'STRONG';
 }
 function botTypeLabel(bt,lvl){
-  return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':'Lv.'+(lvl||'?');
+  return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':bt==='puyo'?'PUYO PUYO':'Lv.'+(lvl||'?');
 }
 function _saveRoomSettings(){
   // duo系キーはクイックプレイ専用: 通常モードの保存には含めない
   const toSave={...roomSettings};
-  if(!quickPlayMode){delete toSave.duoOn;delete toSave.duoHard;delete toSave.companionPps;}
+  if(!quickPlayMode){delete toSave.duoOn;delete toSave.duoHard;delete toSave.companionPps;delete toSave.dropMode;}
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(toSave));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode','duoOn','duoHard'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode','duoOn','duoHard','dropMode'];
   const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate','companionPps'];
   const strKeys=['botType'];
   // duo系キーはクイックプレイ専用: 通常ルームでは無視して反映しない
@@ -1897,7 +2024,9 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
     showCountdown(bagSeed,()=>initCheeseGame(players,bagSeed));
   } else if(blitzMode){
     showCountdown(bagSeed,()=>initBlitzGame(players,bagSeed));
-  } else if(myGameMode==='puyo'){
+  } else if((pm&&pm[myId]==='puyo')||(playerModes&&playerModes[myId]==='puyo')||myGameMode==='puyo'){
+    // サーバーが playerModes で判定した値を優先する。ローカルの myGameMode は
+    // backToLobby で tetris に戻るため 古くなることがある。
     showCountdown(bagSeed,()=>initPuyoGame(players,bagSeed));
   } else {
     showCountdown(bagSeed,()=>initGame(players,bagSeed));
@@ -2874,8 +3003,20 @@ class TetrisGame{
         attack=Math.max(0,Math.round(attack*towerFactor));
       }
 
-      // ── 6ライン以上送信: 置いたミノの位置から魚眼レンズの波紋が全体に広がる ──
-      if(attack>=6&&renderer&&renderer.onBigAttackRipple)renderer.onBigAttackRipple(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
+      // ── 2秒以内に送信したライン数の合計が6ライン以上: 置いたミノの位置から魚眼レンズの波紋が全体に広がる ──
+      if(attack>0&&renderer&&renderer.onBigAttackRipple){
+        const nowMs=performance.now();
+        if(!renderer._rippleWindowStart)renderer._rippleWindowStart=nowMs;
+        // 2秒以上ライン消しが無ければ、滞留分をリセット
+        if(nowMs-renderer._rippleWindowStart>=2000)renderer._rippleWindowCount=0;
+        // ライン消しごとに2秒タイマーをリセット（合計カウントは保持してまた溜まる）
+        renderer._rippleWindowStart=nowMs;
+        renderer._rippleWindowCount=(renderer._rippleWindowCount||0)+attack;
+        if(renderer._rippleWindowCount>=6){
+          renderer._rippleWindowCount=0;
+          renderer.onBigAttackRipple(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
+        }
+      }
       // ── 送信: 置いたミノの位置から相手のゴミゲージへ矢印エフェクト（数に応じて拡大・ランダム色・ベジェ軌道） ──
       if(attack>0&&renderer&&renderer.onLinesSent)renderer.onLinesSent(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
 
@@ -3156,12 +3297,12 @@ class TetrisGame{
     
     for (const g of armed) {
       if (linesToAdd >= cap) {
-        backToQueue.push({...g, readyAt: now + qpGarbageReady(500)});
+        backToQueue.push({...g, readyAt: now + qpGarbageReady(500, g.fromPuyo, g.lines)});
       } else {
         const canAdd = Math.min(g.lines, cap - linesToAdd);
         if (canAdd > 0) remainingToBoard.push({...g, lines: canAdd});
         if (canAdd < g.lines) {
-          backToQueue.push({...g, lines: g.lines - canAdd, readyAt: now + qpGarbageReady(500)});
+          backToQueue.push({...g, lines: g.lines - canAdd, readyAt: now + qpGarbageReady(500, g.fromPuyo, g.lines - canAdd)});
         }
         linesToAdd += canAdd;
       }
@@ -3171,6 +3312,20 @@ class TetrisGame{
       this._applyGarbageAnimated(remainingToBoard, linesToAdd);
     }
     for (const g of backToQueue) this.garbageQueue.unshift(g);
+  }
+
+  // ぷよから来たゴミの穴を1行ぶん決める。
+  // 基本は直列穴（1回の送信につき穴列を固定＝穴が読みやすい）だが、
+  // 行ごとに15%の確率で穴がずれる。ずれ率を低く保つことで読みやすさと
+  // 「穴を完全には読ませない」バランスを取る。
+  _puyoHoleCol(baseCol, cols){
+    if(baseCol===undefined||baseCol===null) return Math.floor(Math.random()*cols);
+    if(Math.random()>=_QPGARBAGE_PUYO_HOLE_SHIFT) return baseCol;
+    if(cols<=1) return baseCol;
+    // 同じ列を引いたら引き直す（=実際に「ずれた」ことを保証する）
+    let c=baseCol;
+    for(let i=0;i<8;i++){ c=Math.floor(Math.random()*cols); if(c!==baseCol) break; }
+    return c;
   }
 
   // おじゃまミノ: 同じ穴のものをセットで、0.1秒ごとにグループを追加 + 振動
@@ -3183,7 +3338,7 @@ class TetrisGame{
       for(const g of groups){
         if(g.col===col){g.count+=chunk.lines;merged=true;break;}
       }
-      if(!merged)groups.push({col,count:chunk.lines,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
+      if(!merged)groups.push({col,count:chunk.lines,fromPuyo:!!chunk.fromPuyo,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
     }
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
@@ -3192,7 +3347,10 @@ class TetrisGame{
         const cols=getGameCols();
         // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
         let holeCol;
-        if(this._lastGarbageHoleCol>=0&&Math.random()<g.seriality){
+        if(g.fromPuyo){
+          // ぷよからのゴミ: 基本は固定列、行ごとに15%でずれる
+          holeCol=this._puyoHoleCol(g.col, cols);
+        }else if(this._lastGarbageHoleCol>=0&&Math.random()<g.seriality){
           holeCol=this._lastGarbageHoleCol;
         }else{
           holeCol=g.col;
@@ -3278,17 +3436,6 @@ class TetrisGame{
 
   // ロック時に準備済みゴミを一括適用
   // Puyoからのゴミ用: 直前の穴(および左右1列)に重ならないランダム穴を返す
-  _puyoRandomHoleCol(cols){
-    const prev=this._lastGarbageHoleCol;
-    const bad=hc=>prev>=0&&(hc===prev||hc===(prev+1)%cols||hc===(prev+cols-1)%cols);
-    let hc=Math.floor(Math.random()*cols);
-    for(let k=0;k<8;k++){
-      if(!bad(hc))return hc;
-      hc=Math.floor(Math.random()*cols);
-    }
-    return (prev>=0)?(prev+2)%cols:hc;
-  }
-
   _applyReadyGarbage(){
     const now=performance.now();
     const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
@@ -3304,14 +3451,18 @@ class TetrisGame{
     const lsRows=[]; // Last Stand: 0.2秒ごとに1段ずつ適用する行
     const qpRows=[]; // Quick Play: 0.2秒ごとに1段ずつせり上げる行
     for(const g of armed){
-      if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+qpGarbageReady(300)});continue;}
+      if(linesToAdd>=cap){backToQueue.push({...g,readyAt:now+qpGarbageReady(300,g.fromPuyo,g.lines)});continue;}
       const canAdd=Math.min(g.lines,cap-linesToAdd);
       if(canAdd>0){
         const cols=getGameCols();
         for(let i=0;i<canAdd;i++){
           let holeCol;
+          // ── ぷよからのゴミ: 基本は固定穴、行ごとに15%でずれる ──
+          if(g.fromPuyo){
+            holeCol=this._puyoHoleCol(g.holeCol, cols);
+          }
           // ── Last Stand: 直列（全行同じ穴） ──
-          if(g.laststandConsecutive){
+          else if(g.laststandConsecutive){
             holeCol=g.holeCol!==undefined?g.holeCol:Math.floor(Math.random()*cols);
           }
           // ── Warlock: 散らばった穴（各行ランダム） ──
@@ -3321,10 +3472,6 @@ class TetrisGame{
           // ── Helmet: 2つ隣り合わせの穴（holeBase と holeBase+1） ──
           else if(g.helmet){
             holeCol=g.holeBase!==undefined?g.holeBase:Math.floor(Math.random()*cols);
-          }
-          // ── Puyoからのゴミ: 穴は行ごとにランダム（直列・2列ずらしに揃えない） ──
-          else if(g.puyoRandomHole){
-            holeCol=this._puyoRandomHoleCol(cols);
           }
           // ── 通常 / holes3 ──
           else if(this._lastGarbageHoleCol>=0&&Math.random()<(g.seriality!==undefined&&g.seriality!==null?g.seriality:0.3)){
@@ -3380,7 +3527,7 @@ class TetrisGame{
           this._lastGarbageHoleCol=holeCol;
         }
       }
-      if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+qpGarbageReady(300)});
+      if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+qpGarbageReady(300,g.fromPuyo,g.lines-canAdd)});
     }
     for(const g of backToQueue)this.garbageQueue.unshift(g);
     // ── Expert MOD: 蓄積ゴミを通常ゴミと一緒に即座に盤面に出現（直列穴） ──
@@ -3796,10 +3943,15 @@ class TetrisGame{
       return;
     }
     // ── 通常処理 ──
-    const readyAt=performance.now()+qpGarbageReady(1000);
-    // ── Puyoからのゴミ: 穴列は行ごとにランダム (直列/2列ずらしに揃えない) ──
+    // 準備完了時間。ぷよから来た火力（ぷよvsテトリス）は「受信ミノ/4秒」。
+    const readyAt=performance.now()+qpGarbageReady(1000,fromPuyo,lines);
+    // ── Puyoからのゴミ: 1回の送信につき穴列を固定する（直列穴） ──
+    // seriality:0 により通常分岐でも g.holeCol がそのまま使われる。
+    // fromPuyo を残すのは、1回のロック上限で持ち越し randomised されたgarden再度
+    // 「残りミノ/4秒」で待ちなおすため。
     if(fromPuyo){
-      this.garbageQueue.push({lines,fromId,readyAt,holes3:0,seriality:0,puyoRandomHole:true});
+      const puyoHoleCol=Math.floor(Math.random()*getGameCols());
+      this.garbageQueue.push({lines,fromId,readyAt,holeCol:puyoHoleCol,holes3:0,seriality:0,fromPuyo:true});
       return;
     }
     if(!puyotetMode&&lines>10){
@@ -6064,7 +6216,7 @@ const _RIPPLE_FRAG=`
 function _buildRippleFilter(quality){
   const f=new PIXI.Filter(undefined,_RIPPLE_FRAG,{
     uCenter:[0.5,0.5],uTime:_OP_RIPPLE_DURATION/1000+1,uDuration:_OP_RIPPLE_DURATION/1000,
-    uSpeed:52,uRadius:16,uAmp:0.05,uSpread:0.12,uMaxDist:0.72
+    uSpeed:39,uRadius:16,uAmp:0.05,uSpread:0.12,uMaxDist:0.72
   });
   f.padding=24;
   // 描画負荷対策: ultra以外は半分解像度でレンダリング
@@ -6107,7 +6259,7 @@ function _opRippleLaunch(d,cont,bw,bh,cellLocal,lockX,lockY){
   f.uniforms.uCenter=[uv[0],uv[1]];
   f.uniforms.uTime=0;
   f.uniforms.uAmp=0.05*((settings.rippleStrength??100)/100);
-  f.uniforms.uSpeed=52*((settings.rippleSpeed??100)/100);
+  f.uniforms.uSpeed=39*((settings.rippleSpeed??100)/100);
   d._opRippleActive=true;d._opRippleT=0;
 }
 
@@ -6249,12 +6401,19 @@ class GameRenderer{
     const stars=this._qpBgStars||[];
     const sc=this._uiScale||1;
     qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
-    const speed=(10+qpStarSpeed*300)*(dt/1000);
+    // drop mode: 速度は |y加速度| に比例し、枯れて0以下で上へ反転する
+    // （drop mode でないときは従来の m 上昇率ベースの速度のまま）
+    const flow=_qpDropFlowStep();
+    const dropOn=_qpDropMode;
+    const speed=dropOn?(180*Math.abs(flow)):(10+qpStarSpeed*300);
+    const move=speed*(dt/1000);
+    const dir=dropOn?Math.sign(flow):1;
     const cx=this.mainBX+BOARD_W*sc/2;
     const below=this.mainBY+BOARD_H*sc;
     for(const s of stars){
-      s.y+=speed*s.z + qpStarDrop*(dt/1000);
-      if(s.y>this.H+4){s.y=-4;s.x=Math.random()*this.W;}
+      s.y+=move*s.z*dir + qpStarDrop*(dt/1000);
+      if(dir<0){ if(s.y<-4){s.y=this.H+4;s.x=Math.random()*this.W;} }
+      else if(dir>0&&s.y>this.H+4){s.y=-4;s.x=Math.random()*this.W;}
       s.tw+=dt*0.0018;
       const a=Math.max(0.08,0.3+0.3*Math.sin(s.tw)+0.2*s.z);
       g.beginFill(s.col,a);g.drawCircle(s.x,s.y,Math.max(1.3,s.s));g.endFill();
@@ -6275,10 +6434,23 @@ class GameRenderer{
     const sc=this._uiScale||1;
     const cx=this.mainBX+BOARD_W*sc/2;
     const below=this.mainBY+BOARD_H*sc;
+    const above=this.mainBY;                 // drop mode の落下時に湯気を発生させる上端
     this._qpRiseAcc=(this._qpRiseAcc||0)+dt;
     const halfW=BOARD_W*sc/2;
-    // climb speed（qpStarSpeed 0..1）が高いほど: 発生が早く・流れが速く・少し広く
-    const cs=Math.max(0,Math.min(1,qpStarSpeed||0));
+    // drop mode: 落下中は盤面上から発生させて上へ流す（登っている感の反転）
+    // 速度は星と同じく |y加速度| に比例させる
+    // ※cs/flow は下の spawnMs から使うので、ここで必ず先に確定させる
+    //   （後ろに宣言すると TDZ で毎フレーム例外になる）
+    const flow=_qpDropFlowStep();
+    const dropOn=_qpDropMode;
+    // flow>0 = 上昇優勢（背景は下向き）。降下優勢のときだけ盤面上から発生させて上へ流す。
+    // 拮抗している付近で符号が毎フレームフリップすると湯気が上下交互に生えてちらつくので、
+    // 最後に動いた方向を保持して発生位置を安定させる。
+    if(flow!==0)_qpFlowDir=Math.sign(flow);
+    const descending=dropOn&&_qpFlowDir<0;
+    // drop mode: 湯気の速さを降下速度から直接作る（丸め・上限クランプは挟まない）
+    // 0m で cs=1.0、100m で 1.33、900m で 4.0（登るほど速く流れる）
+    const cs=dropOn?Math.abs(flow):(Math.max(0,Math.min(1,qpStarSpeed||0)));
     // ライン消去で一瞬スピードが上がった湯気（1秒ほどで減衰）
     if(_qpSteamBoost>0.001)_qpSteamBoost*=Math.exp(-dt/900);
     else _qpSteamBoost=0;
@@ -6295,13 +6467,14 @@ class GameRenderer{
         let sp=this._qpSteamPool&&this._qpSteamPool.pop();
         if(!sp){sp=new PIXI.Sprite(this._qpSteamTex);sp.anchor.set(0.5);}
         this.bgLayer.addChild(sp);
+        const spd=(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7);
         this._qpRiseParticles.push({
           sp,
           x:cx+(Math.random()*2-1)*halfW*0.95*(0.85+cs*0.3),
-          y:below+1+Math.random()*6,
+          y:descending?(above-1-Math.random()*6):(below+1+Math.random()*6),
           vx:(Math.random()*2-1)*0.03*(0.8+cs*0.6),
-          vy:(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7),   // 下方向へ流れる（climb speedで加速・湯気ブースト時さらに加速）
-          life:1,
+          vy:descending?(-spd):spd,   // 降下中は上へ、上昇中は下へ流れる
+          life:1,                 // 寿命開始値。0になると _qpRecycleSteam で回収される
           rot:Math.random()*Math.PI*2,
           rotV:(Math.random()*2-1)*0.00025,
           base:16+Math.random()*12+cs*9,     // 粒群の基準サイズ（速いほど少し大きい）
@@ -6312,10 +6485,10 @@ class GameRenderer{
     const parts=this._qpRiseParticles;
     for(let i=parts.length-1;i>=0;i--){
       const p=parts[i];
-      p.y+=p.vy*dt;                    // 下へ
+      p.y+=p.vy*dt;
       p.x+=p.vx*dt;
       p.life-=dt*0.00055;
-      if(p.life<=0||p.y>this.H+26){this._qpRecycleSteam(p);parts.splice(i,1);continue;}
+      if(p.life<=0||(descending?(p.y<-26):(p.y>this.H+26))){this._qpRecycleSteam(p);parts.splice(i,1);continue;}
       const lf=Math.min(1,p.life);
       p.rot+=p.rotV*dt;
       p.sp.x=p.x;p.sp.y=p.y;
@@ -7176,8 +7349,10 @@ class GameRenderer{
         g.beginFill(0x000000,0.6);
         g.drawRoundedRect(oBW/2-60,-2,120,18,4);
         g.endFill();
-        if(!d._puyoInfoCanvas)puyoInfo='_init'; // force create on first frame
-        if(puyoInfo!==d._prevPuyoInfo){
+        // canvas は PIXI.Texture.from() のソースとしてのみ使い、DOM には append しない。
+        // 旧実装は body に未登録の canvas を removeChild しており、例外で描画ループ全体が
+        // 停止していた（puyo 相手が chain>=2 になった瞬間 = 着手した瞬間 に発生）。
+        if(!d._puyoInfoSpr||puyoInfo!==d._prevPuyoInfo){
           const tCanvas=document.createElement('canvas');
           tCanvas.width=120; tCanvas.height=18;
           const tCtx=tCanvas.getContext('2d');
@@ -7186,9 +7361,9 @@ class GameRenderer{
           tCtx.strokeText(puyoInfo,60,9);
           tCtx.fillStyle='#ff0';
           tCtx.fillText(puyoInfo,60,9);
-          if(d._puyoInfoCanvas)document.body.removeChild(d._puyoInfoCanvas);
-          d._puyoInfoCanvas=tCanvas;
           const tex=PIXI.Texture.from(tCanvas);
+          if(d._puyoInfoTex){ try{d._puyoInfoTex.destroy(true);}catch(e){} }
+          d._puyoInfoTex=tex;
           if(!d._puyoInfoSpr){ d._puyoInfoSpr=new PIXI.Sprite(tex); d._puyoInfoSpr.anchor.set(0.5,0); d.cont.addChild(d._puyoInfoSpr); }
           else d._puyoInfoSpr.texture=tex;
           d._prevPuyoInfo=puyoInfo;
@@ -10614,7 +10789,7 @@ class GameRenderer{
     this._rippleFilter.uniforms.uCenter=[uv[0],uv[1]];
     this._rippleFilter.uniforms.uTime=0;
     this._rippleFilter.uniforms.uAmp=0.05*((settings.rippleStrength??100)/100);
-    this._rippleFilter.uniforms.uSpeed=52*((settings.rippleSpeed??100)/100);
+    this._rippleFilter.uniforms.uSpeed=39*((settings.rippleSpeed??100)/100);
     this._rippleActive=true;this._rippleT=0;
   }
 
@@ -12382,6 +12557,11 @@ class PuyoGame {
   constructor(seed){
     this.board = Array.from({length:PUYO_ROWS},()=>Array(PUYO_COLS).fill(0));
     this.rng = typeof seededRng==='function' ? seededRng(seed||0) : _puyoSeededRng(seed||0);
+    // おじゃまの配置など「ピース列に影響しない」乱数。
+    // this.rng はピース色専用にする。ゴミの配置で消費すると、
+    // 受け取ったゴミの量・タイミングが相手と違うだけで乱数列がずれてしまい、
+    // ぷよvsぷよで next の順番が一致しなくなる（同じ seed なのに cation）。
+    this.grng = Math.random;
     this.nextQueue = [this._makePair(), this._makePair(), this._makePair()];
     this.current = null;  // {pivotR, pivotC, rotation, colors:[pivot,sat]}
     this.alive = true;
@@ -12468,6 +12648,31 @@ class PuyoGame {
     }
   }
 
+  // 180度回転（Aキー）
+  // 2個組の180度は「2つのセルを互いに入れ替える」操作になる。
+  // 旧sat位置が新pivot になり、satはPUYO_SAT[rot+2] = -PUYO_SAT[rot] を向くので
+  // ちょうど「旧pivot」を指す。色も入れ替える（入れ替えないと180度にならない）。
+  rotate180(){
+    if(!this.alive||!this.current)return;
+    const rot=this.current.rotation;
+    const[dr,dc]=PUYO_SAT[rot];
+    const newRot=(rot+2)%4;
+    const newPR=this.current.pivotR+dr;
+    const newPC=this.current.pivotC+dc;
+    // その_positions_ が塞がれている場合は左右1マスずらしてでも成立させる
+    for(const[kc,kr]of[[0,0],[1,0],[-1,0],[0,1],[0,-1]]){
+      const pr=newPR+kr, pc=newPC+kc;
+      if(this._isValid(pr,pc,newRot)){
+        this.current.pivotR=pr;
+        this.current.pivotC=pc;
+        this.current.rotation=newRot;
+        this.current.colors=[this.current.colors[1],this.current.colors[0]];
+        if(typeof _puyoOnRotate==='function') _puyoOnRotate(1);
+        return;
+      }
+    }
+  }
+
   softDrop(){
     if(!this.alive||this.dropping||!this.current)return;
     this._moveDown();
@@ -12524,8 +12729,9 @@ class PuyoGame {
     if(!this.current)return;
     this._cancelLock();
 
-    // おじゃまぷよは次の着手時に降らせる（準備中のものだけ）
-    if(!this._inChain) this._applyOjama();
+    // おじゃまの降下は「その着手でぷよを消したか」で決めるため、ここでは適用しない。
+    // 判定は _resolveChain() の「連鎖が発生しなかった」分岐（=消していない着手）で行う。
+    // ここ（着手時点）で降らすと、消した着手でもゴミが落ちてしまう。
 
     // Ojamaは連鎖解決後に適用（連鎖中の割り込み防止）
     const{pivotR,pivotC,rotation,colors}=this.current;
@@ -12576,8 +12782,38 @@ class PuyoGame {
     this.lastPlacementCleared=cleared;
   }
 
+  // キューに積まれているおじゃまの合計
+  _queuedOjama(){
+    let s=0;
+    for(const v of this.ojamaQueue) s+=(v&&v.amount)||0;
+    return s;
+  }
+
+  // キューに積まれているおじゃまを amount ぶん相殺する（実際に消えた量を返す）
+  _cancelQueuedOjama(amount){
+    let remaining=Math.max(0,amount);
+    if(remaining<=0)return 0;
+    let cancelled=0;
+    const newQueue=[];
+    for(const v of this.ojamaQueue){
+      if(remaining<=0){newQueue.push(v);continue;}
+      const take=Math.min(v.amount,remaining);
+      if(v.amount-take>0)newQueue.push({amount:v.amount-take,time:v.time});
+      remaining-=take;
+      cancelled+=take;
+      if(typeof _puyoOnCancel==='function') _puyoOnCancel(take);
+    }
+    this.ojamaQueue=newQueue;
+    return cancelled;
+  }
+
   _applyOjama(){
     if(!this.ojamaQueue.length)return;
+    // 「消していない着手」のみから呼ばれるため、その場合は必ず降らす。
+    // 連鎖解決中に割り込ませないための保険（連鎖中は chain>0 なので呼ばれない）。
+    if(this._inChain)return;
+    // 消した着手ではおじゃまを降らさない。溜まっている分は消さずにキューに残し、
+    // 次に「消さない着手」をしたときにまとめて降す。
     const now=performance.now();
     // Only apply ojama that have been in queue for 3+ seconds
     const ready=[];
@@ -12591,7 +12827,7 @@ class PuyoGame {
     if(total<=0)return;
     // 全準備完了分を一度に配置（row0から下へ全行を埋める）
     for(let r=0; r<PUYO_ROWS && total>0; r++){
-      const cols=[0,1,2,3,4,5].sort(()=>this.rng()-0.5);
+      const cols=[0,1,2,3,4,5].sort(()=>this.grng()-0.5);   // ピース列に影響させない別乱数を使う
       for(const c of cols){
         if(total<=0) break;
         if(this.board[r][c]!==0) continue;
@@ -12601,6 +12837,30 @@ class PuyoGame {
     }
     // 盤面に入りきらなかった分は次回へ
     if(total>0) this.ojamaQueue.push({amount:total, time:performance.now()});
+    // 置いただけでは row0 に浮いたままなので、必ず重力を掛けて自列の上に落ち着かせる。
+    // これをしないと、13個以上のおじゃまを受けた瞬間に spawn 位置(row0/row1 の col2)が
+    // 埋まって _checkTopOut() が真になり、積み上がりが空でも即ゲームオーバーになる。
+    this._gravity();
+  }
+
+  // 連鎖1ステップ分の得点（ぷよぷよキャンプ準拠）
+  //   連鎖ボーナス: 1連鎖0 / 2〜5連鎖 2^(n+1) / 6連鎖以上 32×(n-3)
+  //   連結ボーナス(1色あたり): 4個0 / 5〜10個 m-3 / 11個以上 10
+  //   色数ボーナス: 1色0 / 2色3 / 3色6 / 4色12 / 5色24
+  // 例外: 1連鎖で4個消しのみ（ボーナス合計0）はボーナス合計を1として計算する（得点40）
+  // 注意: clearedPuyos は「消した通常ぷよの数」だけを渡す。おじゃまぷよは火力に換算しない。
+  _puyoChainScore(chain, pops, clearedPuyos){
+    let chainBonus=0;
+    if(chain>=2) chainBonus=(chain<=5)?Math.pow(2,chain+1):32*(chain-3);
+    let connectBonus=0;
+    for(const g of pops){
+      const m=g.cells.length;
+      connectBonus+=(m<=4)?0:(m<=10?m-3:10);
+    }
+    const colorBonus=[0,0,3,6,12,24][Math.min(pops.length,5)]||0;
+    let bonusTotal=chainBonus+connectBonus+colorBonus;
+    if(chain===1&&clearedPuyos===4&&bonusTotal===0) bonusTotal=1;
+    return 10*clearedPuyos*bonusTotal;
   }
 
 
@@ -12614,7 +12874,12 @@ class PuyoGame {
       this._inChain=false;
       this.dropping=false;
       // 連鎖が発生しなかった場合のみコンボリセット
-      if(this.chain===0) this._updateCombo(false);
+      if(this.chain===0){
+        // この着手は「1つも消していない」。
+        // → 溜まっているおじゃまはここで降る（消した着手では落とさない）。
+        this._updateCombo(false);
+        this._applyOjama();
+      }
       // コンボボーナスを加算 (連続設置で消した回数-1)
       if(this.comboCount>=2) this._chainAttack+=this.comboCount-1;
       if(this._chainAttack>0){
@@ -12647,6 +12912,10 @@ class PuyoGame {
     this.chain++;
     if(this.chain===1){
       this._updateCombo(true);
+      // すでにゴミがたまっている状態で消したら、2 + combo数 ぶんを追加で相殺する
+      // （連鎖1段＝着手1回につき1回だけ）。キューに残っている分のみが対象で、
+      // 余った分は攻撃にはしない。
+      if(this._queuedOjama()>0) this._cancelQueuedOjama(2+(this.comboCount||0));
       // 連鎖開始時に次のぷよを即座にスポーン（操作可能に）
       this.dropping=false;
       this._chainSpawned=this._spawnPair(); // flag: enqueueしたのでchain=0ではspawnしない
@@ -12654,44 +12923,44 @@ class PuyoGame {
       this.dropping=false;
     }
 
-    // おじゃまぷよ計算
-    //   baseGarbage = floor(消したノーマルぷよ数 / 2 * garbageRate)
-    //   chainBonus  = 連鎖ステップボーナス (2^(chain-1): 1段目0, 2段目2, 3段目4, 4段目8…)
+    // 消えるセルを確定させる（通常色4個以上のグループ ＋ そのセルに直接隣接するおじゃま）。
+    // ※火力計算より先に確定させる必要がある。連鎖で巻き込んで消えたおじゃまも
+    //   火力に換算するので、「今回で何個消えるか」を先に知る必要がある。
+    // おじゃまは「消えるぷよに直接隣接しているもの」だけを消す（1ホップ）。
+    // ここを BFS にすると、おじゃま同士で繋がった塊がまとめて消えてしまい、
+    // 1つ消しただけで爆出する。連鎖的な巻き込みは行わない。
+    const popping=new Set();
+    for(const g of pops) for(const[r,c]of g.cells) popping.add(r+','+c);
+    for(const g of pops) for(const[r,c]of g.cells){
+      for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
+        const nr=r+dr,nc=c+dc;
+        if(nr<0||nr>=PUYO_ROWS||nc<0||nc>=PUYO_COLS) continue;
+        if(this.board[nr][nc]===6) popping.add(nr+','+nc);
+      }
+    }
+    const poppingCells=[...popping].map(k=>k.split(',').map(Number));
+    // 巻き込んで消えたおじゃまの個数（表示・演出用。火力には換算しない）
+    let ojamaCleared=0;
+    for(const[r,c]of poppingCells) if(this.board[r][c]===6) ojamaCleared++;
+
+    // おじゃまぷよ計算（ぷよぷよキャンプ準拠）
+    //   得点    = 10 × 消したぷよ数 × (連鎖ボーナス + 連結ボーナス合計 + 色数ボーナス)
+    //   おじゃま = floor(得点 / 70)
+    // 例外: 1連鎖で4個消しのみ（ボーナス合計0）のときはボーナス合計を1とし、得点40。
+    // **消えたおじゃまぷよは「消したぷよ数」に含めない**（=火力に寄与しない）。
     const normalPuyos=pops.reduce((s,g)=>s+g.cells.length,0);
-    const baseGarbage=Math.floor((normalPuyos/2)*this.garbageRate);
-    const chainBonus=this.chain>=2?Math.pow(2,this.chain-1):0;
-    const stepAttack=baseGarbage+chainBonus;
+    const clearedPuyos=normalPuyos;
+    const stepScore=this._puyoChainScore(this.chain,pops,clearedPuyos);
+    const baseGarbage=Math.floor(stepScore*this.garbageRate/70);
+    const stepAttack=baseGarbage;
 
     if(stepAttack>0){
-      // 相殺処理: 受け取り予定のおじゃまをキャンセル
-      let remaining=stepAttack;
-      const newQueue=[];
-      for (const v of this.ojamaQueue) {
-        if(remaining<=0){newQueue.push(v);continue;}
-        const take=Math.min(v.amount,remaining);
-        if(v.amount-take>0)newQueue.push({amount:v.amount-take,time:v.time});
-        remaining-=take;
-        if(typeof _puyoOnCancel==='function') _puyoOnCancel(take);
-      }
-      this.ojamaQueue=newQueue;
-      this._chainAttack+=remaining;
-    }
-
-    // Find all cells to pop (including adjacent ojama)
-    const popping=new Set();
-    for(const g of pops){
-      for(const[r,c]of g.cells){
-        popping.add(`${r},${c}`);
-        for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
-          const nr=r+dr,nc=c+dc;
-          if(nr>=0&&nr<PUYO_ROWS&&nc>=0&&nc<PUYO_COLS&&this.board[nr][nc]===6)
-            popping.add(`${nr},${nc}`);
-        }
-      }
+      // 相殺処理: 受け取り予定のおじゃまをキャンセル（余りは攻撃として加算）
+      const cancelled=this._cancelQueuedOjama(stepAttack);
+      this._chainAttack+=Math.max(0,stepAttack-cancelled);
     }
 
     // Pop cells
-    const poppingCells=[...popping].map(k=>k.split(',').map(Number));
     for(const[r,c]of poppingCells) this.board[r][c]=0;
 
     // Emit pop event for renderer effects
@@ -12855,8 +13124,11 @@ class PuyoRenderer {
     this.opPuyoData={};
     for(const p of players){
       if(p.id!==myId) {
-        // playerModes または p._gameMode または Bot判定
-        const mode = (playerModes && playerModes[p.id]) || p._gameMode || (p.isBot ? 'tetris' : 'puyo');
+        // playerModes（サーバーが game_start で必ず埋める）→ _gameMode → botType の順で判定する。
+        // p.isBot だけで判定すると puyo bot を tetris と誤認し、
+        // ぷよ側が puyo bot の盤面を 20x10 の tetris 盤として構築してしまう。
+        const mode = (playerModes && playerModes[p.id]) || p._gameMode
+          || (p.botType === 'puyo' ? 'puyo' : 'tetris');
         console.log(`[PuyoRenderer] Player ${p.name} (${p.id}) mode: ${mode}`);
         this.opPuyoData[p.id]={
           board:null,current:null,nextQueue:[],ojamaQueue:0,name:p.name,chain:0,
@@ -13268,7 +13540,7 @@ class PuyoRenderer {
       for(let c=0;c<PUYO_COLS;c++){
         const color=game.board[r+1]?.[c]??0;
         const sp=this._cellSp[r][c];
-        if(color===0||(this._ojamaAnimCells&&this._ojamaAnimCells.has(`${r+1},${c}`))){
+        if(color===0||(this._fallAnimCells&&this._fallAnimCells.has(`${r+1},${c}`))){
           sp.visible=false;
         } else {
           sp.texture=this._getPuyoTex(color,cell);
@@ -13571,6 +13843,7 @@ class PuyoRenderer {
             const color=board?board[r+1]?.[c]??0:0;
             const sp=d._cellSp[r][c];
             if(color===0){ sp.visible=false; }
+            else if(d._fallAnimCells&&d._fallAnimCells.has(r+1+','+c)){ sp.visible=false; }
             else { sp.texture=this._getPuyoTex(color,cell); sp.visible=true; sp.scale.set(1); }
           }
         }
@@ -13619,24 +13892,10 @@ class PuyoRenderer {
     }
   }
 
-  onOpponentPuyoUpdate(id, data){
-    if(!this.opPuyoData[id]) this.opPuyoData[id]={board:null,current:null,nextQueue:[],ojamaQueue:0,name:id,_chainAnim:null};
-    const d=this.opPuyoData[id];
-    d._isTetrisBoard = false;
-    d.board=data.board;
-    d.current=data.current;
-    if(data.ojamaQueue!==undefined) d.ojamaQueue=data.ojamaQueue;
-    if(data.chain>1) this._onOpPop(id, [], data.chain);
-  }
+  // 注: onOpponentPuyoUpdate の実体は下쪽(13878付近)にのみ定義しています。
+  // 同名のメソッドを2つ定義すると後者が優先され前者は死にコードになるため、ここでは定義しません。
 
-  onOpponentUpdate(id, data){
-    if(!this.opPuyoData[id]) this.opPuyoData[id]={board:null,current:null,nextQueue:[],ojamaQueue:0,name:id,_chainAnim:null};
-    const d=this.opPuyoData[id];
-    d._isTetrisBoard = true;
-    d.board=data.board;
-    d.currentPiece=data.currentPiece;
-    if(data.garbageLines!==undefined) d.ojamaQueue=data.garbageLines;
-  }
+  // 注: onOpponentUpdate の実体も下쪽(14265付近)にのみ定義しています。
 
   // ─── エフェクト ───
   _onHardDrop(pivotC, fromR, toR, colors, rotation){
@@ -13668,21 +13927,33 @@ class PuyoRenderer {
     // スポーンアニメーションは無し（即座に表示）
   }
 
+  // 落下アニメが終わったセルを盤面スプライトの非表示状態から戻す。
+  // 同じセルに別の落下アニメが残っているなら、まだ戻さない（=二重描画・宙浮き防止）。
+  _releaseFallCell(a){
+    if(!a||a.animCell==null||!this._fallAnimCells)return;
+    const stillFalling=this._fallAnims.some(o=>o!==a&&o.animCell===a.animCell);
+    if(!stillFalling)this._fallAnimCells.delete(a.animCell);
+  }
+
   _onFall(moves){
     const{_myBX:bx,_myBY:by,_cell:cell}=this;
     const hasOjama=moves.some(m=>m.isOjama||m.color===6);
     if(hasOjama){
       this._sinkOffset=Math.max(this._sinkOffset||0,6*this._sc);
-      if(!this._ojamaAnimCells) this._ojamaAnimCells=new Set();
     }
+    if(!this._fallAnimCells) this._fallAnimCells=new Set();
     for(const{fromR,toR,c,color,isOjama}of moves){
       if(toR<1)continue;
       const toY=by+(toR-1)*cell+cell/2;
       const x=bx+c*cell+cell/2;
-      if(isOjama||color===6){
-        this._ojamaAnimCells.add(`${toR},${c}`);
-        const fromY=-cell;
-        if(fromY>=toY)continue;
+      // 先に「要不要」的 bail を受けてからキー登録する。
+      // 先に add すると anim を作れなかったセルが永久に非表示になる。
+      const oj=isOjama||color===6;
+      const fromY=oj?-cell:by-cell*2;
+      if(fromY>=toY)continue;
+      // 落ち先は盤面スプライトを隠し、落下スプライトだけを見せる（二重描画防止）
+      this._fallAnimCells.add(`${toR},${c}`);
+      if(oj){
         const tex=this._getPuyoTex(color,cell);
         const sp=new PIXI.Sprite(tex);
         sp.anchor.set(0.5); sp.x=x; sp.y=fromY;
@@ -13700,13 +13971,11 @@ class PuyoRenderer {
           animCell:`${toR},${c}`
         });
       } else {
-        const fromY=by-cell*2;
-        if(fromY>=toY)continue;
         const tex=this._getPuyoTex(color,cell);
         const sp=new PIXI.Sprite(tex);
         sp.anchor.set(0.5); sp.x=x; sp.y=fromY;
         this._particleLayer.addChild(sp);
-        this._fallAnims.push({sp,fromY,toY,progress:0,isOjama:false});
+        this._fallAnims.push({sp,fromY,toY,progress:0,isOjama:false,animCell:`${toR},${c}`});
       }
     }
   }
@@ -13751,10 +14020,17 @@ class PuyoRenderer {
     this._gameOverAnims.push({gfx:goTxt,isText:true,timer:0,maxTimer:80});
   }
 
-  // 相手盤面のfall animation
+  // 相手盤面のfall animation（bot / 人間どちらの盤面にも使う）
+  // 到着先のセルは描画側 (_drawOpBoards) で隠し、落下スプライトだけを見せる
+  onOpponentPuyoFall(pid, moves){
+    this._onOpFall(pid, moves);
+  }
+
   _onOpFall(pid, moves){
     const d=this.opPuyoData[pid]; if(!d||!d._cont)return;
+    if(!Array.isArray(moves))return;
     const cell=d._cell;
+    if(!d._fallAnimCells)d._fallAnimCells=new Set();
     for(const{fromR,toR,c,color}of moves){
       if(toR<1)continue;
       const fromY=(Math.max(fromR,1)-1)*cell+cell/2;
@@ -13765,7 +14041,9 @@ class PuyoRenderer {
       const sp=new PIXI.Sprite(tex);
       sp.anchor.set(0.5); sp.x=x; sp.y=fromY;
       d._cont.addChild(sp);
-      this._opFallAnims.push({sp,fromY,toY,progress:0,cont:d._cont});
+      const key=toR+','+c;
+      d._fallAnimCells.add(key);
+      this._opFallAnims.push({sp,fromY,toY,progress:0,cont:d._cont,pid,key});
     }
   }
 
@@ -13818,6 +14096,23 @@ class PuyoRenderer {
 
   _onPop(cells, chain, comboCount){
     const{_myBX:bx,_myBY:by,_cell:cell}=this;
+    // 消えるセルへ飛んできている落下アニメはここで打ち切る。
+    // 残しておくと「もう存在しないセルにぷよが着地して宙に浮く」症状になる。
+    {
+      const dead=new Set(cells.map(([r,c])=>`${r},${c}`));
+      if(dead.size){
+        this._fallAnims=this._fallAnims.filter(a=>{
+          if(a.animCell==null||!dead.has(a.animCell))return true;
+          try{a.shadow&&a.shadow.parent&&a.shadow.parent.removeChild(a.shadow);a.shadow&&a.shadow.destroy();}catch(e){}
+          try{a.sp&&a.sp.parent&&a.sp.parent.removeChild(a.sp);a.sp&&a.sp.destroy({texture:false});}catch(e){}
+          if(this._fallAnimCells){
+            // 同じセルに他のアニメが残っていれば保持，否则このキーはここで解放
+            if(!this._fallAnims.some(o=>o!==a&&o.animCell===a.animCell))this._fallAnimCells.delete(a.animCell);
+          }
+          return false;
+        });
+      }
+    }
     // ─ パーティクル: 膨らんで消えるぷよ ─
     for(const[r,c]of cells){
       if(r<1)continue;
@@ -13942,7 +14237,7 @@ class PuyoRenderer {
         if(t>=1){
           try{a.shadow&&_layer.removeChild(a.shadow)&&a.shadow.destroy();}catch(e){}
           try{_layer.removeChild(a.sp); a.sp.destroy({texture:false});}catch(e){}
-          if(a.animCell&&this._ojamaAnimCells)this._ojamaAnimCells.delete(a.animCell);
+          this._releaseFallCell(a);
           return false;
         }
       } else {
@@ -13958,6 +14253,7 @@ class PuyoRenderer {
         }
         if(t>=1){
           try{_layer.removeChild(a.sp); a.sp.destroy({texture:false});}catch(e){}
+          this._releaseFallCell(a);
           return false;
         }
       }
@@ -13977,6 +14273,14 @@ class PuyoRenderer {
       }
       if(t>=1){
         try{a.cont.removeChild(a.sp); a.sp.destroy({texture:false});}catch(e){}
+        if(a.pid!=null&&a.key!=null){
+          const dd=this.opPuyoData[a.pid];
+          if(dd&&dd._fallAnimCells){
+            // 同じセルが別の落下アニメでまだ飛っている場合は隠したままにする。
+            // 自分自身も配列に残っているので o!==a で除外しないと永久に非表示になる。
+            if(!this._opFallAnims.some(o=>o!==a&&o.pid===a.pid&&o.key===a.key)) dd._fallAnimCells.delete(a.key);
+          }
+        }
         return false;
       }
       return true;
@@ -14421,7 +14725,44 @@ class PuyoRenderer {
   }
 }
 
+// ─── Fatal error surface ───
+// PIXI の ticker リスナ内で例外が投げられると描画ループごと停止し、画面が完全停止になる。
+// console を見られない状況でも原因が分かるよう、捕捉した例外を画面overlayへ出す。
+(function installErrorSurface(){
+  if(window.__puyoErrTrap) return;
+  window.__puyoErrTrap=true;
+  const seen=new Map();
+  const show=(msg,src,line)=>{
+    try{
+      const key=msg+'@'+src+':'+line;
+      if(seen.has(key)){ (seen.get(key).n)++; return; }
+      const el=document.createElement('div');
+      el.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99999;background:rgba(120,0,0,.94);'+
+        'color:#fff;font:12px/1.35 monospace;padding:6px 8px;border-bottom:2px solid #ff5555;'+
+        'white-space:pre-wrap;word-break:break-all;max-height:42vh;overflow:auto';
+      el.textContent='RENDERER ERROR ×1  '+msg+'\n  at '+String(src).split('/').pop()+':'+line;
+      document.body.appendChild(el);
+      seen.set(key,{n:1,el});
+    }catch(e){}
+  };
+  window.addEventListener('error',ev=>{
+    const e=ev.error;
+    show((e&&(e.stack||e.message))||ev.message||'unknown error',ev.filename,ev.lineno);
+  });
+  window.addEventListener('unhandledrejection',ev=>{
+    const r=ev.reason;
+    show('Unhandled rejection: '+((r&&(r.stack||r.message))||r),'promise',0);
+  });
+})();
+
 // ─── Socket handlers for puyo ───
+socket.on('opponent_puyo_fall',(data)=>{
+  if(!data)return;
+  const{id,moves}=data;
+  // Puyo renderer（相手の盤面が落下するアニメーション）
+  if(renderer&&renderer.onOpponentPuyoFall) renderer.onOpponentPuyoFall(id, moves);
+});
+
 socket.on('opponent_puyo_update',(data)=>{
   const{id,...rest}=data;
   // Puyo renderer
@@ -14624,6 +14965,7 @@ function _puyoKey(e){
     case'Space':puyoGameState.hardDrop();break;
     case'ArrowUp':case'KeyX':_puyoStartDas('rot',()=>puyoGameState.rotate(1));break;
     case'KeyZ':puyoGameState.rotate(-1);break;
+    case'KeyA':puyoGameState.rotate180();break;
   }
 }
 
