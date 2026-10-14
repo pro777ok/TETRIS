@@ -428,7 +428,7 @@ function backToLobby(){
 // ---- Mutation Mode ----
 let mutationMode=false;
 let mutationSeed=0;
-let roomSettings={mutationRate:60,gravityBase:1000,gravityDec:80,gravityMin:50,lockDelay:1000,garbageMultiplier:2,multiplierDelayMin:1.6,multiplierIntervalSec:1,multiplierRate:0.03};
+let roomSettings={mutationRate:60,gravityBase:1000,gravityDec:80,gravityMin:50,lockDelay:1000,garbageMultiplier:2,multiplierDelayMin:1.6,multiplierIntervalSec:1,multiplierRate:0.03,targetMode:'random',expertMode:false};
 
 function toggleMutation(enabled){
   if(!isHost)return;
@@ -748,13 +748,29 @@ socket.on('rooms_list',(list)=>{
     el.innerHTML='<div class="no-rooms">No open rooms</div>';return;
   }
   el.innerHTML=list.map(r=>`
-    <div class="room-item" onclick="glJoinById('${r.id}')">
+    <div class="room-item" ${r.started?'':`onclick="glJoinById('${r.id}')"`}>
       <div>
-        <div class="room-item-id">${r.id}</div>
+        <div class="room-item-id">${r.id}${r.started?' <span style="color:#ff5c8a;font-size:0.7rem">● IN GAME</span>':''}</div>
         <div class="room-item-players">${r.players.join(', ')}</div>
       </div>
-      <div class="room-item-join">${r.count}/3 JOIN ▶</div>
+      <div style="display:flex;align-items:center;gap:0.5rem">
+        <div class="room-item-join">${r.started?'試合中':`${r.count}/3 JOIN ▶`}</div>
+        <button class="room-item-delete" onclick="event.stopPropagation();deleteRoom('${r.id}')" title="ルームを削除">🗑 削除</button>
+      </div>
     </div>`).join('');
+});
+
+// ルーム選択画面の削除ボタン: 確認なしで問答無用にルームを消す
+function deleteRoom(rid){
+  socket.emit('delete_room', { roomId: rid });
+  setTimeout(()=>{ try{ refreshRooms(); }catch(e){} }, 300);
+}
+
+// ルームが（誰かによって）削除された: 試合中でも問答無用でロビーへ戻す
+socket.on('room_deleted',()=>{
+  roomId=null; roomPlayers=[]; quickPlayMode=false; qpRoomId=null; _lastUsedRoomId=null;
+  try{ if(myName) backToLobby(); else showScreen('lobby'); }catch(e){}
+  try{ refreshRooms(); }catch(e){}
 });
 
 socket.on('online_players',(list)=>{
@@ -794,15 +810,10 @@ function rejoinPrevRoom(){
   socket.emit('rejoin_room',{roomId:_lastUsedRoomId,name:myName});
 }
 
-function selectMyMode(mode) {
-  myGameMode = mode;
-  if(!playerModes) playerModes={};
-  playerModes[socket.id] = mode;
-  socket.emit('set_player_mode', {mode});
-  updatePlayerList(roomPlayers);
-  const tBtn = document.getElementById('mode-tetris-btn');
-  const pBtn = document.getElementById('mode-puyo-btn');
-  const status = document.getElementById('mode-select-status');
+function _styleModeButtons(mode, tBtnId, pBtnId, statusId) {
+  const tBtn = document.getElementById(tBtnId);
+  const pBtn = document.getElementById(pBtnId);
+  const status = document.getElementById(statusId);
   if (mode === 'tetris') {
     if(tBtn){tBtn.style.background='rgba(0,245,255,0.2)';tBtn.style.borderColor='var(--neon-cyan)';tBtn.style.color='var(--neon-cyan)';}
     if(pBtn){pBtn.style.background='rgba(10,15,30,0.5)';pBtn.style.borderColor='rgba(255,154,206,0.3)';pBtn.style.color='rgba(255,154,206,0.5)';}
@@ -812,6 +823,22 @@ function selectMyMode(mode) {
     if(tBtn){tBtn.style.background='rgba(10,15,30,0.5)';tBtn.style.borderColor='rgba(0,245,255,0.3)';tBtn.style.color='rgba(0,245,255,0.5)';}
     if(status) status.textContent='Puyo Puyo selected';
   }
+}
+
+function selectMyMode(mode) {
+  myGameMode = mode;
+  if(!playerModes) playerModes={};
+  playerModes[socket.id] = mode;
+  socket.emit('set_player_mode', {mode});
+  updatePlayerList(roomPlayers);
+  _styleModeButtons(mode, 'mode-tetris-btn', 'mode-puyo-btn', 'mode-select-status');
+  _styleModeButtons(mode, 'qp-mode-tetris-btn', 'qp-mode-puyo-btn', 'qp-mode-select-status');
+}
+
+// クイックプレイ画面のモードセレクタ表示を現在の選択に同期する
+function _qpSyncModeButtons(){
+  const mode = (playerModes && playerModes[socket.id]) || myGameMode || 'tetris';
+  _styleModeButtons(mode, 'qp-mode-tetris-btn', 'qp-mode-puyo-btn', 'qp-mode-select-status');
 }
 
 const MOD_DESCRIPTIONS = {
@@ -1056,7 +1083,11 @@ const _QPDROP_FALL_REF=6.0;        // HUDゲージのスケール基準（=1000m
 let _qpDropMode=false;             // 部屋設定 dropMode の鏡像
 let _qpMyAlt=0;                    // 自分の高度 m（drop mode では毎日下がる）
 let _qpDropLastMs=null;            // ローカル降下の基準時刻（null=未設定。0は正常値なので未設定判定には使わない）
+let _qpDropRiseUntil=0;            // サーバーでmが上がった直後の「上昇」表現の期限(ms)
+let _qpReplayFlow=null;            // リプレイ再生中: 記録mから算出したflow（null=通常）
 let _qpFlowDir=-1;                 // 背景が最後に流れた方向（-1=上向き/降下中, +1=下向き/上昇中）。0近傍の反転時のちらつきを抑える
+let _qpStarFlow=0;                 // 星・湯気の流れを滑らかにする符号付き平滑値（+で下方向。反転時に急に切り替わらない）
+let _qpDropSrvM=null;              // 直近に受け取ったサーバー権威のm。上昇判定はローカル補間値でなくこれと比較する（降下中の誤発火防止）
 // 高度から降下速度を求める（n=floor(m/100) の二次式）
 //   100m→0.6 / 200m→0.8 / 300m→1.1 / 400m→1.5 / 500m→2.0 / … / 1000m→6.0
 function _qpDropFall(alt){
@@ -1067,19 +1098,27 @@ function _qpDropFall(alt){
 function _qpDropSetMode(on, alt){
   const was=_qpDropMode;
   _qpDropMode=!!on;
-  if(_qpDropMode&&!was){ _qpDropLastMs=performance.now(); }
-  if(typeof alt==='number'&&isFinite(alt)){ _qpMyAlt=Math.max(0,alt); _qpDropLastMs=performance.now(); }
+  if(_qpDropMode&&!was){ _qpDropLastMs=performance.now(); _qpDropSrvM=null; }
+  if(typeof alt==='number'&&isFinite(alt)){ _qpMyAlt=Math.max(0,alt); _qpDropLastMs=performance.now(); _qpDropSrvM=Math.max(0,alt); }
 }
 // 高度はサーバーが権威なので常にサーバー値を上書きする（間の降下はローカルで補間する）
 function _qpDropSetAlt(alt){
   if(typeof alt!=='number'||!isFinite(alt))return;
-  _qpMyAlt=Math.max(0,alt); _qpDropLastMs=performance.now();
+  const a=Math.max(0,alt);
+  // ライン送信などで「サーバー側のm」が実際に上がったときだけ上昇（背景が下向き）の表現を出す。
+  // ローカル補間中の _qpMyAlt（降下で server より低くなっている）と比較すると降下中に誤発火するため、
+  // 直近のサーバー値 _qpDropSrvM と比較する。未取得の初回のみ現在のローカル高度を基準にする。
+  const prev=(_qpDropSrvM!==null)?_qpDropSrvM:_qpMyAlt;
+  if(_qpDropMode&&a>prev+0.05)_qpDropRiseUntil=performance.now()+700;
+  _qpDropSrvM=a;
+  _qpMyAlt=a; _qpDropLastMs=performance.now();
 }
-// climb level による基本上昇速度（m/s）。高度更新・背景 flow・HUD で同じ値を使う
+// climb level による上昇表現用の速度（m/s）。実mには加算しない（背景の流れ方向の表現のみ）
 function _qpDropBaseRise(){
   return 0.25*((typeof qpMyLevel!=='undefined'&&qpMyLevel)||1);
 }
 // 現在フレームの高度。壁時計差で降下させるので 1フレーム何回呼んでも二重に減らない
+// drop mode では上昇力は無く、重力のみで m は下がる（上がるのはサーバーがライン送信で加算したときだけ）
 function _qpDropAltNow(){
   if(!_qpDropMode)return 0;
   const now=performance.now();
@@ -1088,25 +1127,22 @@ function _qpDropAltNow(){
   _qpDropLastMs=now;
   if(dt<=0)return _qpMyAlt;
   const f=_qpDropFall(_qpMyAlt);
-  const br=_qpDropBaseRise();
-  _qpMyAlt=Math.max(0,_qpMyAlt+br*(dt/1000)-f*(dt/1000));
+  _qpMyAlt=Math.max(0,_qpMyAlt-f*(dt/1000));
   return _qpMyAlt;
 }
 // 背景の縦スクロール係数。ネットの上下方向を符号で表す。
-//   負 = 降下優勢（落下中なので背景は上へ流れる）
-//   正 = 上昇優勢（登っているので背景は下へ流れる）
-//   0  = 基本上昇と降下速度が拮抗して実質停止
+//   負 = 降下（落下中なので背景は上へ流れる）
+//   正 = 上昇（ライン送信でmが上がった直後だけ。背景は下へ流れる）
 // 大きさは 0m の降下速度を 1 とした倍率で、優勢側の速度を使う。
-//   降下優勢: 0m -1.00 / 100m -1.20 / 1000m -12.0
-//   上昇優勢: +br/0.5（br=0.25×climb level なので level1 で +0.50）
-// ネット差（br-f）ではなく優勢側の速度を使うのは、拮抗している付近でスクロールが
-// 止まって見えなくなるのを避けるため。
+//   降下: 0m -1.00 / 100m -1.20 / 1000m -12.0
+//   上昇: +br/0.5（br=0.25×climb level なので level1 で +0.50）
 // 星と湯気の双方が速度と方向をこれから直接読む
 function _qpDropFlowStep(){
+  if(_qpReplayFlow!==null)return _qpReplayFlow;   // リプレイ: 記録mから算出したflowを優先
   if(!_qpDropMode)return 0;
+  if(performance.now()<_qpDropRiseUntil) return _qpDropBaseRise()/_QPDROP_FALL_A;
   const fall=_qpDropFall(_qpDropAltNow());
-  const br=_qpDropBaseRise();
-  return br>=fall?(br/_QPDROP_FALL_A):(-fall/_QPDROP_FALL_A);
+  return -fall/_QPDROP_FALL_A;
 }
 // クイックプレイ: botごとの背景の横位置をセッション中固定（試合をまたいでもワープしない）
 const _qpBotXMap={};
@@ -1141,22 +1177,67 @@ function qpGarbageReady(ms, fromPuyo, lines){
     if(fromPuyo) return Math.round(Math.max(0,lines||0)*1000/_QPGARBAGE_READY_DIVISOR);
     return 0;
   }
+  if(quickPlayMode&&roomSettings&&roomSettings.expertMode) return 500;
   return quickPlayMode?3000:ms;
 }
 
 // duo設定UIはクイックプレイ専用（ホストのみ表示）。通常ルームでは一切表示・反映しない
+// CC2 weights: 通常パネル用とQP用の両方の入力をroomSettingsに合わせる
+const CC2_SETTING_KEYS=[['cc2B2b','cc2-b2b'],['cc2Combo','cc2-combo'],['cc2Tspin','cc2-tspin'],['cc2Attack','cc2-attack']];
+function _cc2SyncInputs(rs){
+  rs=rs||roomSettings||{};
+  for(const [key,id] of CC2_SETTING_KEYS){
+    const v=parseFloat(rs[key]);
+    const val=Number.isFinite(v)?Math.max(0,Math.min(5,v)):1;
+    for(const base of [id,'qp-'+id]){
+      const inp=document.getElementById(base+'-input');
+      const out=document.getElementById(base+'-val');
+      if(inp)inp.value=val;
+      if(out)out.textContent=val.toFixed(1)+'×';
+    }
+  }
+}
+
+// PUYO settings sync (normal + QP)
+function _puyoSyncInputs(rs){
+  rs=rs||roomSettings||{};
+  const v=parseFloat(rs.puyoPowerMult);
+  const val=Number.isFinite(v)?Math.max(0.25,Math.min(3.0,v)):1.0;
+  const ppi=document.getElementById('puyo-power-input');
+  const ppv=document.getElementById('puyo-power-val');
+  if(ppi)ppi.value=val;
+  if(ppv)ppv.textContent=val.toFixed(2)+'×';
+  const qpi=document.getElementById('qp-puyo-power-input');
+  const qpv=document.getElementById('qp-puyo-power-val');
+  if(qpi)qpi.value=val;
+  if(qpv)qpv.textContent=val.toFixed(2)+'×';
+  const qpt=document.getElementById('qp-puyo-bots-toggle');
+  if(qpt)qpt.checked=!!(rs.qpPuyoBots);
+}
+
 function qpSyncDuoPanel(show){
+  const vis=(quickPlayMode&&isHost&&show);
   const wrap=document.getElementById('qp-duo-wrap');
-  if(wrap)wrap.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  if(wrap)wrap.style.display=vis?'flex':'none';
   // 4WIDE 選択はホストだけ変更できる（通常の待室と同じ扱い）
   const wwrap=document.getElementById('qp-width-wrap');
-  if(wwrap)wwrap.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  if(wwrap)wwrap.style.display=vis?'flex':'none';
   const fw=document.getElementById('qp-fourwide-toggle');
-  if(fw){fw.checked=!!(roomSettings&&roomSettings.fourWideMode);fw.disabled=!(quickPlayMode&&isHost&&show);}
+  if(fw){fw.checked=!!(roomSettings&&roomSettings.fourWideMode);fw.disabled=!vis;}
   const dw=document.getElementById('qp-drop-wrap');
-  if(dw)dw.style.display=(quickPlayMode&&isHost&&show)?'flex':'none';
+  if(dw)dw.style.display=vis?'flex':'none';
   const dtg=document.getElementById('qp-drop-toggle');
-  if(dtg){dtg.checked=!!(roomSettings&&roomSettings.dropMode);dtg.disabled=!(quickPlayMode&&isHost&&show);}
+  if(dtg){dtg.checked=!!(roomSettings&&roomSettings.dropMode);dtg.disabled=!vis;}
+  const ew=document.getElementById('qp-expert-wrap');
+  if(ew)ew.style.display=vis?'flex':'none';
+  const etg=document.getElementById('qp-expert-toggle');
+  if(etg){etg.checked=!!(roomSettings&&roomSettings.expertMode);etg.disabled=!vis;}
+  // CC2 weights（ホストのみ変更可）
+  const cw=document.getElementById('qp-cc2-wrap');
+  if(cw)cw.style.display=vis?'flex':'none';
+  const pw=document.getElementById('qp-puyo-wrap');
+  if(pw)pw.style.display=vis?'flex':'none';
+  _cc2SyncInputs(roomSettings);_puyoSyncInputs(roomSettings);
   if(!quickPlayMode)return;
   const duoOn=document.getElementById('duo-on-toggle');if(duoOn)duoOn.checked=!!(roomSettings&&roomSettings.duoOn);
   const duoHard=document.getElementById('duo-hard-toggle');if(duoHard)duoHard.checked=!!(roomSettings&&roomSettings.duoHard);
@@ -1217,12 +1298,13 @@ function qpEnsureStarfield(){
       // drop mode: 速度は |y加速度| に比例し、枯れて0以下で上へ反転する（ロビーの星の海）
       const flow=_qpDropFlowStep();
       const dropOn=_qpDropMode;
-      const speed=dropOn?(300*Math.abs(flow)):(18+qpStarSpeed*460);
-      const dir=dropOn?Math.sign(flow):1;
+      // 流れの向き・速さを平滑化して、上昇/降下の切り替え時に滑らかに減速→反転させる
+      _qpStarFlow+=((dropOn?flow:0)-_qpStarFlow)*(1-Math.exp(-dt/200));
+      const vel=dropOn?(300*_qpStarFlow*0.7):((18+qpStarSpeed*460)*0.7);
       for(const s of _qpStars){
-        s.y+=speed*s._z*(dt/1000)*0.7*dir + qpStarDrop*(dt/1000);
-        if(dir<0){ if(s.y<-6){s.y=H+6;s.x=Math.random()*W;} }
-        else if(dir>0&&s.y>H+6){s.y=-6;s.x=Math.random()*W;}
+        s.y+=vel*s._z*(dt/1000) + qpStarDrop*(dt/1000);
+        if(vel<0){ if(s.y<-6){s.y=H+6;s.x=Math.random()*W;} }
+        else if(vel>0&&s.y>H+6){s.y=-6;s.x=Math.random()*W;}
         s._tw+=dt*0.0018;
         s.alpha=Math.max(0.15,0.45+0.4*Math.sin(s._tw)+0.2*s._z);
       }
@@ -1234,6 +1316,153 @@ function qpEnsureStarfield(){
 function qpDestroyStarfield(){
   if(_qpStarApp){ try{_qpStarApp.destroy(true);}catch(e){} _qpStarApp=null; }
   _qpStars=[];
+  _qpStarFlow=0;
+}
+
+// ── QP プレイ中の背景（星・湯気）をテトリス/ぷよ両レンダラーで共有する ──
+// 既存の GameRenderer の実装をそのまま関数化したもの。host は以下のフィールドを持つ:
+//   mainBX/mainBY（盤面左上） mainBW/mainBH（盤面サイズ, 省略時は BOARD_W/H×_uiScale）
+//   _uiScale, W, H, bgLayer, _qpBgStarsG, _qpBgStars,
+//   _qpSteamTex, _qpRiseParticles, _qpSteamPool, _qpRiseAcc
+function _qpMainBW(host){ return host.mainBW||BOARD_W*(host._uiScale||1); }
+function _qpMainBH(host){ return host.mainBH||BOARD_H*(host._uiScale||1); }
+// QP背景の星・湯気を生成する（GameRenderer._qpMakeSteamTexture と同一）
+function qpSteamTextureMake(){
+  const S=32;
+  const cv=document.createElement('canvas');cv.width=S;cv.height=S;
+  const ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,S,S);
+  const count=settings.quality==='minimum'?30:48;
+  for(let i=0;i<count;i++){
+    const ang=Math.random()*Math.PI*2;
+    const r=Math.pow(Math.random(),0.6)*S*0.44;
+    const x=S/2+Math.cos(ang)*r, y=S/2+Math.sin(ang)*r;
+    const rad=0.9+Math.random()*1.6;
+    ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${(0.35+Math.random()*0.65).toFixed(2)})`;
+    ctx.fill();
+  }
+  try{ return PIXI.Texture.from(cv); }catch(e){ return PIXI.Texture.WHITE; }
+}
+// QP背景レイヤ（星Graphics + 湯気プール）を host に用意する
+function qpBgStarsInit(host){
+  host.bgLayer=new PIXI.Container();
+  host.root.addChild(host.bgLayer);
+  host._qpBgStarsG=new PIXI.Graphics();host.bgLayer.addChild(host._qpBgStarsG);
+  host._qpBgStars=[];
+  const n=settings.quality==='minimum'?60:settings.quality==='low'?120:220;
+  for(let i=0;i<n;i++){
+    host._qpBgStars.push({
+      x:Math.random()*host.W,y:Math.random()*host.H,
+      z:0.15+Math.random()*0.85,s:Math.random()<0.12?3.4:1.6,
+      tw:Math.random()*Math.PI*2,col:[0x00f5ff,0xffbe0b,0xff8ab4,0xffffff][i%4]
+    });
+  }
+  host._qpSteamTex=qpSteamTextureMake();
+  host._qpRiseParticles=[];
+  host._qpSteamPool=[];
+  host._qpRiseAcc=0;
+}
+// プレイ中の背景の星（クライム速度に応じて流れる）GameRenderer._qpBgStarsUpdate と同一
+function qpBgStarsUpdateFor(host,dt){
+  const g=host._qpBgStarsG; if(!g)return;
+  g.clear();
+  const stars=host._qpBgStars||[];
+  qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
+  const flow=_qpDropFlowStep();
+  const dropOn=_qpDropMode;
+  // 流れを符号付きで平滑化（+で下方向）。drop mode の上昇⇔降下の反転をなめらかにする
+  _qpStarFlow+=((dropOn?flow:0)-_qpStarFlow)*(1-Math.exp(-dt/200));
+  const vel=dropOn?(180*_qpStarFlow):(10+qpStarSpeed*300);
+  const move=vel*(dt/1000);
+  const bw=_qpMainBW(host), bh=_qpMainBH(host);
+  const cx=host.mainBX+bw/2;
+  const below=host.mainBY+bh;
+  for(const s of stars){
+    s.y+=move*s.z + qpStarDrop*(dt/1000);
+    if(vel<0){ if(s.y<-4){s.y=host.H+4;s.x=Math.random()*host.W;} }
+    else if(vel>0&&s.y>host.H+4){s.y=-4;s.x=Math.random()*host.W;}
+    s.tw+=dt*0.0018;
+    const a=Math.max(0.08,0.3+0.3*Math.sin(s.tw)+0.2*s.z);
+    g.beginFill(s.col,a);g.drawCircle(s.x,s.y,Math.max(1.3,s.s));g.endFill();
+  }
+  if(stars.length)qpStarDrop*=Math.exp(-dt/4000);
+  if(stars.length){
+    g.beginFill(0x0a0f1e,0.6);
+    g.drawRect(cx-bw/2-20,below-2,bw+40,4);
+    g.endFill();
+  }
+}
+function qpRecycleSteamFor(host,p){
+  try{ if(p.sp&&p.sp.parent)p.sp.parent.removeChild(p.sp); }catch(e){}
+  if(host._qpSteamPool)host._qpSteamPool.push(p.sp);
+}
+// 盤面下から流れる「湯気」。GameRenderer._qpRiseUpdate と同一
+function qpRiseUpdateFor(host,dt){
+  if(!host._qpSteamTex)return;
+  const bw=_qpMainBW(host), bh=_qpMainBH(host);
+  const cx=host.mainBX+bw/2;
+  const top=host.mainBY;
+  const below=host.mainBY+bh;
+  host._qpRiseAcc=(host._qpRiseAcc||0)+dt;
+  const halfW=bw/2;
+  const flow=_qpDropFlowStep();
+  const dropOn=_qpDropMode;
+  if(flow!==0)_qpFlowDir=Math.sign(flow);
+  // 湯気も背景（星）と同じ向きへ流す: 降下(flow<0)→上へ, 上昇(flow>0)/通常→下へ
+  const sflow=dropOn?_qpStarFlow:0;
+  const dir=dropOn?(sflow>0.02?1:(sflow<-0.02?-1:_qpFlowDir)):1;
+  const cs=dropOn?Math.abs(sflow):(Math.max(0,Math.min(1,qpStarSpeed||0)));
+  if(_qpSteamBoost>0.001)_qpSteamBoost*=Math.exp(-dt/900);
+  else _qpSteamBoost=0;
+  const sb=_qpSteamBoost||0;
+  const spawnMs=(26-cs*14)/(1+sb*0.35);
+  const _qlv=(typeof qpMyLevel!=='undefined')?qpMyLevel:1;
+  if(_qlv!==_qpSteamColLv){_qpSteamColLv=_qlv;_qpSteamColVal=parseInt(((typeof qpLevelColor2==='function'&&qpLevelColor2(_qlv))||'#06d6a0').slice(1),16)||0x06d6a0;}
+  const col=_qpSteamColVal;
+  if(host._qpRiseAcc>spawnMs){
+    host._qpRiseAcc=0;
+    const n=settings.quality==='minimum'?1:2;
+    for(let k=0;k<n;k++){
+      let sp=host._qpSteamPool&&host._qpSteamPool.pop();
+      if(!sp){sp=new PIXI.Sprite(host._qpSteamTex);sp.anchor.set(0.5);}
+      host.bgLayer.addChild(sp);
+      const spd=(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7);
+      host._qpRiseParticles.push({
+        sp,
+        x:cx+(Math.random()*2-1)*halfW*0.95*(0.85+cs*0.3),
+        // 流れの上流側から出て、登っている向き（dir: +1=下, -1=上）へ流れる
+        y:dir>0?(top-1-Math.random()*6):(below+1+Math.random()*6),
+        vx:(Math.random()*2-1)*0.03*(0.8+cs*0.6),
+        vy:spd*dir,
+        life:1,
+        rot:Math.random()*Math.PI*2,
+        rotV:(Math.random()*2-1)*0.00025,
+        base:16+Math.random()*12+cs*9,
+        grow:1.4+Math.random()*1.0+cs*0.5
+      });
+    }
+  }
+  const parts=host._qpRiseParticles;
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i];
+    p.y+=p.vy*dt;
+    p.x+=p.vx*dt;
+    p.life-=dt*0.00055;
+    if(p.life<=0||p.y<-26||p.y>host.H+26){qpRecycleSteamFor(host,p);parts.splice(i,1);continue;}
+    const lf=Math.min(1,p.life);
+    p.rot+=p.rotV*dt;
+    p.sp.x=p.x;p.sp.y=p.y;
+    p.sp.tint=col;
+    p.sp.alpha=Math.min(1,p.life)*0.6;
+    p.sp.rotation=p.rot;
+    const s=p.base*(1+(1-lf)*p.grow);
+    p.sp.scale.set(s/32);
+  }
+  if(parts.length>140){
+    const ex=parts.splice(0,parts.length-140);
+    for(const p of ex)qpRecycleSteamFor(host,p);
+  }
 }
 
 // ── リーダーボード ──────────────────────────────────────────────
@@ -1393,11 +1622,13 @@ function qpMatchReset(){
   qpMyDisplayM=0;qpMyLastServerM=0;qpMyLevel=1;qpMyXp=0;qpMyTargetedBy=0;qpLastGainSeen=0;qpLastClearGain=0;
   qpStarSpeed=0.05;
   _qpStarSpeedTgt=0.05;
+  _qpStarFlow=0;
   _qpLastLocalClearMs=0;
   qpWarnUntil=0;qpWarnLines=0;
   _qpRankSig='';
   // drop mode: 次の試合は y加速度 からやり直す（背景の流れも中立に戻す）
   _qpMyAlt=0;_qpDropLastMs=null;
+  _qpDropSrvM=null;
   const hud=document.getElementById('qp-hud');
   if(hud)hud.style.display='none';
   const rk=document.getElementById('qp-rank');
@@ -1425,7 +1656,8 @@ function qpMatchHudSync(){
   const hud=document.getElementById('qp-hud');if(!hud)return;
   if(renderer&&renderer.mainBX!==undefined&&renderer._uiScale){
     const sc=renderer._uiScale;
-    const bw=BOARD_W*sc,bh=BOARD_H*sc;
+    // ぷよQPは盤面サイズが違うので mainBW/mainBH を優先する
+    const bw=renderer.mainBW||BOARD_W*sc,bh=renderer.mainBH||BOARD_H*sc;
     const lv=((renderer.mainBX||0)+bw/2)+'px',tv=((renderer.mainBY||0)+bh+10)+'px';
     if(hud.__l!==lv){hud.__l=lv;hud.style.left=lv;}
     if(hud.__t!==tv){hud.__t=tv;hud.style.top=tv;}
@@ -1477,11 +1709,12 @@ function qpMatchHudSync(){
       const frac=(alt%_QPDROP_FALL_EVERY)/_QPDROP_FALL_EVERY;
       const af=document.getElementById('qp-hud-accel-fill');
       if(af)af.style.width=(frac*100).toFixed(1)+'%';
-      // 数値は実際の縦速度（基本上昇 - 降下）。背景・湯気も同じ符号で動くので
-      // ここが「+」なのに背景が上へ流れているような齟齬が起きない。
+      // 数値は実際の縦速度。上昇力は無いので基本は降下（負）。
+      // ライン送信でサーバー側のmが上がった直後だけ正（上昇）になる。
       const av=document.getElementById('qp-hud-accel-val');
       if(av){
-        const v=_qpDropBaseRise()-f;
+        const rising=performance.now()<_qpDropRiseUntil;
+        const v=rising?_qpDropBaseRise():-f;
         av.textContent=(v>=0?'+':'')+v.toFixed(2);
       }
       const at0=alt<=_QPDROP_FALL_EVERY*0.001;   // 0m に落ちると降下が最速になる（赤くする）
@@ -1494,12 +1727,22 @@ function qpMatchHudSync(){
 // ── クイックプレイ画面のエントリ・退出 ──────────────────────────
 function openQuickPlay(){
   if(!myName)return;
+  if(roomId || qpRoomId || quickPlayMode){
+    try{ socket.emit('leave_room'); }catch(e){}
+    roomId=null; quickPlayMode=false; qpRoomId=null; qpPlayers=[]; qpPlayerMap={}; qpBoards={}; qpSelectedId=null;
+    _qpDropMode=false; _qpMyAlt=0; _qpDropLastMs=null; qpMatchEnded=false;
+    if(gameApp){try{gameApp.destroy(true);}catch(e){} gameApp=null;}
+    gameState=null; renderer=null; qpDestroyStarfield();
+    const hud=document.getElementById('qp-hud'); if(hud)hud.style.display='none';
+  }
+  _lastUsedRoomId=null;
   showScreen('quickplay');
   const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
   const modSel=document.getElementById('qp-mod-select');
   if(modSel)modSel.value=playerMods[socket.id]||'none';
   const modDesc=document.getElementById('qp-mod-desc');
   if(modDesc)modDesc.textContent=MOD_DESCRIPTIONS[playerMods[socket.id]||'none']||'';
+  _qpSyncModeButtons();
   qpEnsureStarfield();
   document.getElementById('qp-play-btn').style.display='none';
   const el=document.getElementById('qp-leaderboard');if(el)el.innerHTML='<div class="no-rooms" style="padding:1rem">Connecting...</div>';
@@ -1509,6 +1752,7 @@ function qpLeave(){
   socket.emit('leave_room');
   roomId=null;roomPlayers=[];roomPlayers.length=0;
   quickPlayMode=false;qpRoomId=null;qpPlayers=[];qpPlayerMap={};qpBoards={};qpSelectedId=null;
+  _lastUsedRoomId=null;
   for(const k in _qpBotXMap)delete _qpBotXMap[k];
   _qpBotLaneN=0;
   // drop mode: 退出時は解除してKept背景が元どおり下向きに流れるようにする
@@ -1632,6 +1876,9 @@ socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   if(modSel)modSel.value=playerMods[socket.id]||'none';
   const pt=document.getElementById('qp-play-btn');
   if(pt)pt.style.display=isHost&&!started?'block':'none';
+  _qpSyncModeButtons();
+  const msw=document.getElementById('qp-mode-select-wrap');
+  if(msw)msw.style.display=started?'none':'flex';
   const ps=document.getElementById('qp-status-msg');
   if(ps)ps.textContent=started?'MATCH IN PROGRESS...':'試合前 — ボットのプレイを観戦できます';
   // サーバーからのルーム設定を反映（duo のオン/オフの正はサーバー側）
@@ -1796,7 +2043,9 @@ function updateRoomSettingsUI(rs){
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
   const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
   const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear'||rs.botType==='puyo')?rs.botType:'normal';
+  const tmSel=document.getElementById('target-mode-select');if(tmSel)tmSel.value=(rs.targetMode==='spread')?'spread':'random';
   const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
+  _cc2SyncInputs(rs);
   // duo設定はクイックプレイ専用: 通常ルームでは同期しない
   if(quickPlayMode)qpSyncDuoPanel(true);
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
@@ -1867,9 +2116,9 @@ function _saveRoomSettings(){
   try{localStorage.setItem('tetris_roomSettings',JSON.stringify(toSave));}catch(e){}
 }
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode','duoOn','duoHard','dropMode'];
-  const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate','companionPps'];
-  const strKeys=['botType'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','cheeseMode','blitzMode','fourWideMode','puyotetMode','bombMode','slowMode','season1Mode','batchComboMode','duoOn','duoHard','dropMode','expertMode','qpPuyoBots'];
+  const floatKeys=['multiplierDelayMin','multiplierIntervalSec','multiplierRate','companionPps','cc2B2b','cc2Combo','cc2Tspin','cc2Attack','puyoPowerMult'];
+  const strKeys=['botType','targetMode'];
   // duo系キーはクイックプレイ専用: 通常ルームでは無視して反映しない
   if(!quickPlayMode&&['duoOn','duoHard','companionPps'].includes(key))return;
   let parsed;
@@ -2009,6 +2258,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
       players, bagSeed, myId, playerName: myName,
       roomPlayers: [...roomPlayers],
       mode: quickPlayMode ? 'quickplay' : (roomSettings.puyotetMode?'puyotet':'multi'),
+      dropMode: !!(roomSettings&&roomSettings.dropMode),
     });
   }
   showScreen('game');
@@ -2771,6 +3021,7 @@ class TetrisGame{
     // ── Last Stand: せり上がり中に消した分を、せり上がり（未適用ゴミ）から相殺 ──
     if(count>0) this._cancelLastStandRise(count);
     this._lastLinesCleared=count; // for training data
+    this._lastCancelledByGarbage=0;
     const is180Spin=this.lastSpin==='180';
     // 180°スピンはライン消去があった場合のみスピン扱い（確定はcount>0後に上書き）
     const rawIsSpin=!!this.lastSpin;
@@ -2861,17 +3112,17 @@ class TetrisGame{
         }
       }
 
-      // ── Time-based firepower multiplier ────────────────────────
-      /*
-      const elapsedSec = (performance.now() - this.startTime) / 1000;
-      const delaySec = (roomSettings.multiplierDelayMin || 1.6) * 60;
-      const interval = roomSettings.multiplierIntervalSec || 1;
-      const rate = roomSettings.multiplierRate || 0.03;
-      if (elapsedSec > delaySec) {
-        const steps = Math.floor((elapsedSec - delaySec) / interval);
-        attack = Math.floor(attack * (1 + steps * rate));
+      // ── Time-based firepower multiplier（通常ルームのみ。QPでは適用しない） ──
+      if(attack>0 && !(typeof quickPlayMode!=='undefined'&&quickPlayMode)){
+        const elapsedSec = (performance.now() - this.startTime) / 1000;
+        const delaySec = (roomSettings.multiplierDelayMin ?? 1.6) * 60;
+        const interval = roomSettings.multiplierIntervalSec ?? 1;
+        const rate = roomSettings.multiplierRate ?? 0.03;
+        if (elapsedSec > delaySec && interval > 0) {
+          const steps = Math.floor((elapsedSec - delaySec) / interval);
+          attack = Math.floor(attack * (1 + steps * rate));
+        }
       }
-      */
 
       // ── Bad Hole MOD: blight ──
       // ゴミを含む消去で起動。次のライン消し(スピン問わず)で火力2倍になり、その時点で解除。
@@ -2979,6 +3230,7 @@ class TetrisGame{
       this.garbageQueue=this.garbageQueue.filter(g=>g.lines>0);
       // 相殺に使われたライン数
       const cancelledByGarbage = attack - cancelPower;
+      this._lastCancelledByGarbage = cancelledByGarbage;
       // ── Expert MOD: 相殺した半分を蓄積（次にゴミが出現する時に一緒に出す） ──
       if(myMod==='expert' && cancelledByGarbage>0){
         this._expertStored += Math.floor(cancelledByGarbage/2);
@@ -3262,7 +3514,9 @@ class TetrisGame{
     this._lockedInDanger=false;
     const _linesCleared=this._lastLinesCleared||0;
     // クイックプレイ: ライン消去と同時に星を流す（サーバー確認待ちの遅延をなくす）
-    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&_linesCleared>0&&!this._pendingGameOver){
+    // expert mode: 相殺したラインでは登れない（m/climb speedを上げない）
+    const expertNoClimb = quickPlayMode && !!(roomSettings&&roomSettings.expertMode) && (this._lastCancelledByGarbage||0)>0;
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&_linesCleared>0&&!this._pendingGameOver&&!expertNoClimb){
       qpLocalClearBoost(_linesCleared);
     }
     // CLUTCH: 上部ギリギリでラインを消して初めてクラッチ
@@ -3516,7 +3770,7 @@ class TetrisGame{
           // ── Last Stand / Quick Play: 0.2秒ごとに1段ずつ出現 ──
           if(g.laststandConsecutive){
             lsRows.push(row);
-          }else if(quickPlayMode){
+          }else if(quickPlayMode&&!(roomSettings&&roomSettings.expertMode)){
             qpRows.push(row);
           }else{
             this._pushRow(row);this.board.shift();
@@ -5459,7 +5713,10 @@ function openReplayViewer(replayData, mode) {
   // ダミーのゲーム状態（レンダラー用）
   gameState = new TetrisGame(bagSeed);
   gameState.alive = false; // 重力など無効化
-  renderer = new GameRenderer(gameApp, players, gameState);
+  // クイックプレイのリプレイ判定（レンダラー生成前に必要）
+  const _isQuickplayReplay = (meta && meta.mode === 'quickplay') || mode === 'quickplay';
+  const _isDropModeReplay = !!meta.dropMode;
+  renderer = new GameRenderer(gameApp, players, gameState, {qpBg: _isQuickplayReplay});
   renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
   renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
   // リプレイ用: ゴミキューのreadyAtをリプレイ時刻軸に引き直す基準
@@ -5496,7 +5753,15 @@ function openReplayViewer(replayData, mode) {
   }
   let _replayLastTime = performance.now();
   // クイックプレイのリプレイ: m と climb speed を表示
-  const isQuickplayReplay = (meta && meta.mode === 'quickplay') || mode === 'quickplay';
+  const isQuickplayReplay = _isQuickplayReplay;
+  // ドロップモードのリプレイ: 背景の星・湯気の速度/向き/色を記録mから再現
+  if (isQuickplayReplay) {
+    _qpDropMode = _isDropModeReplay;
+    _qpMyAlt = 0; _qpDropLastMs = 0; _qpDropRiseUntil = 0; _qpReplayFlow = null;
+    _qpDropSrvM = null;
+    _qpStarFlow = 0;
+    qpMyLevel = 1;
+  }
   let qpReplayHud = null, _lastQpHudLv = 0;
   if (isQuickplayReplay) {
     qpReplayHud = new PIXI.Text('', new PIXI.TextStyle({
@@ -5510,6 +5775,22 @@ function openReplayViewer(replayData, mode) {
     const now = performance.now();
     const dt = Math.min(now - _replayLastTime, 50);
     _replayLastTime = now;
+    // ドロップモードのリプレイ: 記録mから背景の星・湯気の flow を算出（速度/向き/色を再現）
+    if (isQuickplayReplay) {
+      qpMyLevel = replayState.qpLevel || 1;
+      if (_isDropModeReplay) {
+        if (typeof ReplayPlayer !== 'undefined' && ReplayPlayer.paused) {
+          _qpReplayFlow = 0;
+        } else if (performance.now() < _qpDropRiseUntil) {
+          _qpReplayFlow = _qpDropBaseRise() / _QPDROP_FALL_A;
+        } else {
+          _qpReplayFlow = -_qpDropFall(replayState.qpM) / _QPDROP_FALL_A;
+        }
+      } else {
+        // 非ドロップのQP: 記録した climb speed で星の流れを再現
+        qpStarSpeed = replayState.qpClimbSpeed || 0;
+      }
+    }
     if (renderer) renderer.update(dt * ANIM_SPEED);
     if (qpReplayHud) {
       qpReplayHud.text = `m ${qpFmtM(replayState.qpM)}   Lv.${replayState.qpLevel || 1}   CLIMB SPEED ${Math.round((replayState.qpClimbSpeed || 0) * 100)}%`;
@@ -5545,6 +5826,8 @@ function openReplayViewer(replayData, mode) {
             replayState.qpM = data.qpM;
             replayState.qpLevel = data.qpLevel || 1;
             replayState.qpClimbSpeed = data.qpClimbSpeed || 0;
+            // ライブと同じ判定で「上昇」表現（m増加→700msの下向きflow）を再現
+            if (isQuickplayReplay && _isDropModeReplay) _qpDropSetAlt(data.qpM);
           }
           if (data.garbageQueue) {
             // リプレイ同期: readyAtは元ゲームの絶対時刻なのでリプレイ時刻軸に引き直す
@@ -5969,6 +6252,9 @@ Object.assign(ReplayUI, {
   saveReplayFromViewer() { this.saveReplay(); },
   exitViewer() {
     ReplayPlayer.stop();
+    // リプレイ用のQP背景状態をリセット（通常のQP/対戦へ戻れるように）
+    _qpReplayFlow = null; _qpDropMode = false; _qpDropRiseUntil = 0;
+    _qpMyAlt = 0; _qpDropLastMs = null; qpMyLevel = 1; _qpStarFlow = 0; _qpDropSrvM = null;
     const p = document.getElementById('replay-ctrl-panel');
     if (p) p.remove();
     const fl = document.getElementById('fortyliner-overlay');
@@ -6276,8 +6562,10 @@ function _opRippleUpdateAll(opData,dt){
 }
 
 class GameRenderer{
-  constructor(app,players,gs){
+  constructor(app,players,gs,opts){
     this.app=app;this.players=players;this.gs=gs;
+    // リプレイ等: quickPlayMode でなくても QP 背景（星・湯気）を有効化する
+    this._qpBgForce=!!(opts&&opts.qpBg);
     this.W=app.screen.width;this.H=app.screen.height;
     this.myPlayer=players.find(p=>p.id===myId);
     this.opponentPlayers=players.filter(p=>p.id!==myId);
@@ -6356,7 +6644,7 @@ class GameRenderer{
       this.bgLayer.addChild(vg);
     }
     // QUICK PLAY: プレイ中の背景にも星を流す
-    if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
+    if((typeof quickPlayMode!=='undefined'&&quickPlayMode)||this._qpBgForce){
       this._qpBgStarsG=new PIXI.Graphics();this.bgLayer.addChild(this._qpBgStarsG);
       this._qpBgStars=[];
       const n=settings.quality==='minimum'?60:settings.quality==='low'?120:220;
@@ -6376,137 +6664,13 @@ class GameRenderer{
   }
 
   // 湯気用テクスチャ: 粒を散らした小さめの1枚絵（縮小しても粒が見えるサイズに）
-  _qpMakeSteamTexture(){
-    const S=32;
-    const cv=document.createElement('canvas');cv.width=S;cv.height=S;
-    const ctx=cv.getContext('2d');
-    ctx.clearRect(0,0,S,S);
-    const count=settings.quality==='minimum'?30:48;
-    for(let i=0;i<count;i++){
-      const ang=Math.random()*Math.PI*2;
-      const r=Math.pow(Math.random(),0.6)*S*0.44;
-      const x=S/2+Math.cos(ang)*r, y=S/2+Math.sin(ang)*r;
-      const rad=0.9+Math.random()*1.6;   // S=32基準なので拡大縮小後も粒が見える
-      ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);
-      ctx.fillStyle=`rgba(255,255,255,${(0.35+Math.random()*0.65).toFixed(2)})`;
-      ctx.fill();
-    }
-    try{ return PIXI.Texture.from(cv); }catch(e){ return PIXI.Texture.WHITE; }
-  }
-
-  // プレイ中の背景の星（クライム速度に応じて流れる）
-  _qpBgStarsUpdate(dt){
-    const g=this._qpBgStarsG;
-    g.clear();
-    const stars=this._qpBgStars||[];
-    const sc=this._uiScale||1;
-    qpStarSpeed+=(_qpStarSpeedTgt-qpStarSpeed)*(1-Math.exp(-dt/160));
-    // drop mode: 速度は |y加速度| に比例し、枯れて0以下で上へ反転する
-    // （drop mode でないときは従来の m 上昇率ベースの速度のまま）
-    const flow=_qpDropFlowStep();
-    const dropOn=_qpDropMode;
-    const speed=dropOn?(180*Math.abs(flow)):(10+qpStarSpeed*300);
-    const move=speed*(dt/1000);
-    const dir=dropOn?Math.sign(flow):1;
-    const cx=this.mainBX+BOARD_W*sc/2;
-    const below=this.mainBY+BOARD_H*sc;
-    for(const s of stars){
-      s.y+=move*s.z*dir + qpStarDrop*(dt/1000);
-      if(dir<0){ if(s.y<-4){s.y=this.H+4;s.x=Math.random()*this.W;} }
-      else if(dir>0&&s.y>this.H+4){s.y=-4;s.x=Math.random()*this.W;}
-      s.tw+=dt*0.0018;
-      const a=Math.max(0.08,0.3+0.3*Math.sin(s.tw)+0.2*s.z);
-      g.beginFill(s.col,a);g.drawCircle(s.x,s.y,Math.max(1.3,s.s));g.endFill();
-    }
-    // ライン消去で下がる星は2秒ほどかけて滑らかに収束
-    if(stars.length)qpStarDrop*=Math.exp(-dt/4000);
-    // 盤面直下は星を避け気味に（視認性）
-    if(stars.length){
-      g.beginFill(0x0a0f1e,0.6);
-      g.drawRect(cx-BOARD_W*sc/2-20,below-2,BOARD_W*sc+40,4);
-      g.endFill();
-    }
-  }
-
-  // 盤面下から下方向へ流れる「湯気」で登っている感を出す（粒テクスチャ1枚=1パーティクルで低負荷・色はclimb levelで変わる）
-  _qpRiseUpdate(dt){
-    if(!this._qpSteamTex)return;
-    const sc=this._uiScale||1;
-    const cx=this.mainBX+BOARD_W*sc/2;
-    const below=this.mainBY+BOARD_H*sc;
-    const above=this.mainBY;                 // drop mode の落下時に湯気を発生させる上端
-    this._qpRiseAcc=(this._qpRiseAcc||0)+dt;
-    const halfW=BOARD_W*sc/2;
-    // drop mode: 落下中は盤面上から発生させて上へ流す（登っている感の反転）
-    // 速度は星と同じく |y加速度| に比例させる
-    // ※cs/flow は下の spawnMs から使うので、ここで必ず先に確定させる
-    //   （後ろに宣言すると TDZ で毎フレーム例外になる）
-    const flow=_qpDropFlowStep();
-    const dropOn=_qpDropMode;
-    // flow>0 = 上昇優勢（背景は下向き）。降下優勢のときだけ盤面上から発生させて上へ流す。
-    // 拮抗している付近で符号が毎フレームフリップすると湯気が上下交互に生えてちらつくので、
-    // 最後に動いた方向を保持して発生位置を安定させる。
-    if(flow!==0)_qpFlowDir=Math.sign(flow);
-    const descending=dropOn&&_qpFlowDir<0;
-    // drop mode: 湯気の速さを降下速度から直接作る（丸め・上限クランプは挟まない）
-    // 0m で cs=1.0、100m で 1.33、900m で 4.0（登るほど速く流れる）
-    const cs=dropOn?Math.abs(flow):(Math.max(0,Math.min(1,qpStarSpeed||0)));
-    // ライン消去で一瞬スピードが上がった湯気（1秒ほどで減衰）
-    if(_qpSteamBoost>0.001)_qpSteamBoost*=Math.exp(-dt/900);
-    else _qpSteamBoost=0;
-    const sb=_qpSteamBoost||0;
-    const spawnMs=(26-cs*14)/(1+sb*0.35);
-    // 現在のclimb levelの色（毎フレーム更新してレベル変化と連動）
-    const _qlv=(typeof qpMyLevel!=='undefined')?qpMyLevel:1;
-    if(_qlv!==_qpSteamColLv){_qpSteamColLv=_qlv;_qpSteamColVal=parseInt(((typeof qpLevelColor2==='function'&&qpLevelColor2(_qlv))||'#06d6a0').slice(1),16)||0x06d6a0;}
-    const col=_qpSteamColVal;
-    if(this._qpRiseAcc>spawnMs){
-      this._qpRiseAcc=0;
-      const n=settings.quality==='minimum'?1:2;
-      for(let k=0;k<n;k++){
-        let sp=this._qpSteamPool&&this._qpSteamPool.pop();
-        if(!sp){sp=new PIXI.Sprite(this._qpSteamTex);sp.anchor.set(0.5);}
-        this.bgLayer.addChild(sp);
-        const spd=(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7);
-        this._qpRiseParticles.push({
-          sp,
-          x:cx+(Math.random()*2-1)*halfW*0.95*(0.85+cs*0.3),
-          y:descending?(above-1-Math.random()*6):(below+1+Math.random()*6),
-          vx:(Math.random()*2-1)*0.03*(0.8+cs*0.6),
-          vy:descending?(-spd):spd,   // 降下中は上へ、上昇中は下へ流れる
-          life:1,                 // 寿命開始値。0になると _qpRecycleSteam で回収される
-          rot:Math.random()*Math.PI*2,
-          rotV:(Math.random()*2-1)*0.00025,
-          base:16+Math.random()*12+cs*9,     // 粒群の基準サイズ（速いほど少し大きい）
-          grow:1.4+Math.random()*1.0+cs*0.5  // 時間とともに広がる量
-        });
-      }
-    }
-    const parts=this._qpRiseParticles;
-    for(let i=parts.length-1;i>=0;i--){
-      const p=parts[i];
-      p.y+=p.vy*dt;
-      p.x+=p.vx*dt;
-      p.life-=dt*0.00055;
-      if(p.life<=0||(descending?(p.y<-26):(p.y>this.H+26))){this._qpRecycleSteam(p);parts.splice(i,1);continue;}
-      const lf=Math.min(1,p.life);
-      p.rot+=p.rotV*dt;
-      p.sp.x=p.x;p.sp.y=p.y;
-      p.sp.tint=col;
-      p.sp.alpha=Math.min(1,p.life)*0.6;
-      p.sp.rotation=p.rot;
-      const s=p.base*(1+(1-lf)*p.grow);   // 広がって薄れる
-      p.sp.scale.set(s/32);
-    }
-    if(parts.length>140){
-      const ex=parts.splice(0,parts.length-140);
-      for(const p of ex)this._qpRecycleSteam(p);
-    }
-  }
-  _qpRecycleSteam(p){
-    try{ if(p.sp&&p.sp.parent)p.sp.parent.removeChild(p.sp); }catch(e){}
-    if(this._qpSteamPool)this._qpSteamPool.push(p.sp);
-  }
+  // ※実体はモジュール関数 qpSteamTextureMake()（PuyoRenderer と共有）
+  _qpMakeSteamTexture(){ return qpSteamTextureMake(); }
+  // プレイ中の背景の星（クライム速度に応じて流れる）→ qpBgStarsUpdateFor() と共有
+  _qpBgStarsUpdate(dt){ qpBgStarsUpdateFor(this,dt); }
+  // 盤面下から流れる「湯気」→ qpRiseUpdateFor() と共有
+  _qpRiseUpdate(dt){ qpRiseUpdateFor(this,dt); }
+  _qpRecycleSteam(p){ qpRecycleSteamFor(this,p); }
 
   // 10行以上ゴミの警告：Last Stand MODの拡張マークと同じ見た目（8角形アウトライン・脈動・回転・赤「!」）
   _qpDrawWarning(dt){
@@ -6732,6 +6896,12 @@ class GameRenderer{
       }
       return;
     }
+    // 通常ルーム: 参加人数が10人以下なら生存している敵(ボット含む)の盤面を
+    // 自分の盤面の周囲（左右の列＋上下へ伸びるリング状）に並べて表示する
+    if(!this._isDuo && this.opponentPlayers.length>=2 && this.players.length<=10){
+      this._ringLayoutOpponents(alive);
+      return;
+    }
     // 非クイックプレイの1v1: 唯一の相手を右のフルサイズ枠に表示
     if(!this._isDuo&&this.opponentPlayers.length===1&&alive[0]){
       const d=this.opBoardData[alive[0].id];
@@ -6764,6 +6934,47 @@ class GameRenderer{
       d.origX=bx;d.origXcenter=bx+this._opBW/2;
       d.cont.visible=true;
     });
+  }
+
+  // 生存している敵を自盤面の周囲にリング状（左右の列、行数が増えれば上下へ伸びる）に配置。
+  // 通常ルームの参加人数が10人以下のときのみ使用。収まるよう盤面を自動縮小する。
+  _ringLayoutOpponents(alive){
+    const n=alive.length;
+    if(n===0)return;
+    const sc=this._uiScale||1;
+    const W=this.W,H=this.H,margin=12;
+    const mainW=BOARD_W*sc,mainH=BOARD_H*sc;
+    const ccx=this.mainBX+mainW/2;
+    const ccy=this.mainBY+mainH/2;
+    // 小盤面の元サイズは実データから取得（buildOpponentBoards の設定と必ず一致させる）
+    const _rd=this.opBoardData[alive[0].id];
+    const baseBW=(_rd&&_rd.boardW)||this._opBW||120;
+    const baseBH=(_rd&&_rd.boardH)||((ROWS+2)*12);
+    const perLeft=Math.ceil(n/2);
+    const perRight=n-perLeft;
+    const rows=Math.max(1,perLeft,perRight);
+    // 縦: rows枚＋隙間が画面高に収まるスケール
+    let s=Math.min(1,(H-2*margin-(rows-1)*6)/(rows*baseBH));
+    // 横: 自盤面の左右の空きに収まるスケール（次のミノ等の余白ぶんを差し引く）
+    const sideSpaceX=Math.max(24,(W-mainW)/2-margin*2-40);
+    s=Math.min(s,sideSpaceX/baseBW);
+    s=Math.max(0.16,s);
+    const gap=8,bw=baseBW*s,bh=baseBH*s;
+    const leftCX=ccx-mainW/2-gap-bw/2;
+    const rightCX=ccx+mainW/2+gap+bw/2;
+    const place=(p,i,count,cx)=>{
+      const d=this.opBoardData[p.id];if(!d)return;
+      const total=count*bh+(count-1)*gap;
+      const topY=ccy-total/2+i*(bh+gap);
+      d.cont.pivot.set(0,0);d.cont.rotation=0;d.cont.alpha=1;
+      d.cont.scale.set(s);
+      d.cont.x=cx-bw/2;d.cont.y=topY;
+      d.origX=d.cont.x;d.origXcenter=cx;
+      d.origY=topY;d.origYcenter=topY+bh/2;
+      d.cont.visible=true;
+    };
+    alive.slice(0,perLeft).forEach((p,i)=>place(p,i,perLeft,leftCX));
+    alive.slice(perLeft).forEach((p,i)=>place(p,i,perRight,rightCX));
   }
 
   buildMainBoard(){
@@ -10731,12 +10942,14 @@ class GameRenderer{
     }
     // QUICK PLAY: 背景の星・上昇パーティクル・ゴミ警告星
     if(typeof quickPlayMode!=='undefined'&&quickPlayMode){
-      if(this._qpBgStarsG)this._qpBgStarsUpdate(dt);
-      if(this._qpSteamTex)this._qpRiseUpdate(dt);
       this._qpDrawWarning(dt);
     }
+    if((typeof quickPlayMode!=='undefined'&&quickPlayMode)||this._qpBgForce){
+      if(this._qpBgStarsG)this._qpBgStarsUpdate(dt);
+      if(this._qpSteamTex)this._qpRiseUpdate(dt);
+    }
     // QUICK PLAY: HUD（m上昇・XP・レベル・狙われ数）を1フレームごとに同期
-    if(typeof qpMatchHudSync==='function')qpMatchHudSync();
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&typeof qpMatchHudSync==='function')qpMatchHudSync();
   }
 
   // ロックミノの重心を boardContローカル座標系（盤面0~BOARD_W, 0~BOARD_H。ピースはCELL単位）で返す
@@ -10817,19 +11030,32 @@ class GameRenderer{
       return d&&!d.dead&&d.cont.visible;
     });
     if(targets.length===0)return;
+    const isQP=(typeof quickPlayMode!=='undefined'&&quickPlayMode);
     // クイックプレイでは矢印は1本だけ（実際の攻撃対象を優先）
-    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&targets.length>1){
+    if(isQP&&targets.length>1){
       const _meSt=(typeof qpPlayerMap!=='undefined'&&qpPlayerMap)?qpPlayerMap[socket.id]:null;
       const _tid=_meSt&&_meSt.targetId;
       const _one=targets.find(p=>p.id===_tid)||targets[0];
       targets=[_one];
     }
     const _as=(settings.arrowSpeed||100)/100;
-    const dur=(Math.min(950,500+attack*40)/2)*(1/_as);
-    const size=Math.min(52,16+attack*4)*((settings.arrowSize||100)/100);
     const color=this._arrowColor();
+    // 通常ルーム: spreadモードでは「分散した分の量」で矢印サイズを決める
+    // （サーバーの resolveAttackTargets と同じ計算: 送信火力を生存対象数で均等割り）
+    let perTarget=null;
+    if(!isQP){
+      const _mode=(typeof roomSettings!=='undefined'&&roomSettings&&roomSettings.targetMode)||'random';
+      if(_mode==='spread'&&targets.length>1){
+        const _sent=(typeof myMod!=='undefined'&&myMod==='doubleGarbage')?attack*2:attack;
+        const _per=Math.floor(_sent/targets.length);
+        if(_per>1) perTarget=_per;
+      }
+    }
     for(const p of targets){
       const d=this.opBoardData[p.id];
+      const amt=(perTarget!=null)?perTarget:attack;
+      const dur=(Math.min(950,500+amt*40)/2)*(1/_as);
+      const size=Math.min(52,16+amt*4)*((settings.arrowSize||100)/100);
       // ゴミゲージではなく相手の盤面内のランダムな位置へ
       this._spawnArrow(start,this._boardRandomPoint(d.cont,d.boardW,d.boardH),size,color,dur);
     }
@@ -11115,6 +11341,9 @@ class SpectatorRenderer{
     this.opBoardData={};
     this.root=new PIXI.Container();app.stage.addChild(this.root);
     this._buildBoards();
+    // 誰が誰へ攻撃したかの矢印（盤面より前面に描画）
+    this._arrows=[];
+    this.arrowLayer=new PIXI.Container();this.root.addChild(this.arrowLayer);
   }
   _buildBoards(){
     const n=this.players.length;
@@ -11353,6 +11582,67 @@ class SpectatorRenderer{
       }
     });
     _opRippleUpdateAll(this.opBoardData,dt);
+    this._updateArrows(dt);
+  }
+
+  // 盤面のスクリーン座標での中心を返す
+  _boardCenter(d){
+    try{
+      const tl=d.cont.toGlobal(new PIXI.Point(0,0));
+      const br=d.cont.toGlobal(new PIXI.Point(d.bw,d.bh));
+      return {x:(tl.x+br.x)/2,y:(tl.y+br.y)/2};
+    }catch(e){return {x:this.W/2,y:this.H/2};}
+  }
+
+  // 誰が誰へ攻撃したかを示す矢印（fromId の盤面 → toId の盤面）を出す
+  showAttackArrow(fromId,toId,attack){
+    if(!fromId||!toId||fromId===toId)return;
+    if(settings.particles==='off'||settings.quality==='minimum')return;
+    const df=this.opBoardData[fromId],dt=this.opBoardData[toId];
+    if(!df||!dt)return;
+    const p0=this._boardCenter(df);
+    const p2=this._boardCenter(dt);
+    const _as=(settings.arrowSpeed||100)/100;
+    const amt=attack||0;
+    const dur=(Math.min(950,500+amt*40)/2)*(1/_as);
+    const size=Math.min(52,16+amt*4)*((settings.arrowSize||100)/100);
+    const palette=[0xff006e,0xffaa00,0x00ffaa,0x00f5ff,0xaa00ff,0xffe600,0xff4dd2,0x4dff50];
+    const color=palette[Math.floor(Math.random()*palette.length)];
+    const p1={x:this.W*(0.15+Math.random()*0.7),y:this.H*(0.2+Math.random()*0.6)};
+    const g=new PIXI.Graphics();
+    this.arrowLayer.addChild(g);
+    this._arrows.push({g,p0,p1,p2,t:0,dur,size,color,trail:[]});
+  }
+
+  _updateArrows(dt){
+    if(!this._arrows||this._arrows.length===0)return;
+    this._arrows=this._arrows.filter(a=>{
+      a.t+=dt;
+      if(a.t>=a.dur){try{a.g.destroy();}catch(e){}return false;}
+      const p=a.t/a.dur,inv=1-p;
+      const cx=inv*inv*a.p0.x+2*inv*p*a.p1.x+p*p*a.p2.x;
+      const cy=inv*inv*a.p0.y+2*inv*p*a.p1.y+p*p*a.p2.y;
+      const tx=2*inv*(a.p1.x-a.p0.x)+2*p*(a.p2.x-a.p1.x);
+      const ty=2*inv*(a.p1.y-a.p0.y)+2*p*(a.p2.y-a.p1.y);
+      const ang=Math.atan2(ty,tx);
+      a.trail.push({x:cx,y:cy});
+      if(a.trail.length>18)a.trail.shift();
+      const g=a.g;g.clear();
+      const sz=a.size;
+      for(let i=0;i<a.trail.length;i++){
+        const tr=a.trail[i];
+        const k=(i+1)/a.trail.length;
+        g.beginFill(a.color,(0.5*k));
+        g.drawCircle(tr.x,tr.y,Math.max(1.5,sz*0.5*k));
+        g.endFill();
+      }
+      g.beginFill(a.color,0.9);
+      g.moveTo(cx+Math.cos(ang)*sz,cy+Math.sin(ang)*sz);
+      g.lineTo(cx+Math.cos(ang+2.5)*sz*0.5,cy+Math.sin(ang+2.5)*sz*0.5);
+      g.lineTo(cx+Math.cos(ang-2.5)*sz*0.5,cy+Math.sin(ang-2.5)*sz*0.5);
+      g.closePath();g.endFill();
+      return true;
+    });
   }
   markDead(pid){
     const d=this.opBoardData[pid];if(!d)return;
@@ -11752,6 +12042,11 @@ socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear,attack,lo
 socket.on('attack_sent',({fromId,toId,attack,clearRows,cancelledByGarbage,lockX,lockY})=>{
   ReplayRecorder.record('attack_sent',{fromId,toId,attack,clearRows,cancelledByGarbage,lockX,lockY});
   if(!renderer)return;
+  // 観戦中: 誰が誰へ送ったかを盤面間の矢印で表示
+  if(isSpectator){
+    if(renderer.showAttackArrow && fromId!==myId && toId!==myId) renderer.showAttackArrow(fromId,toId,attack);
+    return;
+  }
   if(fromId===myId){
     // My attack going to opponent — update gauge immediately
     const opData=renderer.opPuyoData?.[toId]||renderer.opBoardData?.[toId];
@@ -12798,7 +13093,7 @@ class PuyoGame {
     for(const v of this.ojamaQueue){
       if(remaining<=0){newQueue.push(v);continue;}
       const take=Math.min(v.amount,remaining);
-      if(v.amount-take>0)newQueue.push({amount:v.amount-take,time:v.time});
+      if(v.amount-take>0)newQueue.push({amount:v.amount-take,time:v.time,readyMs:v.readyMs});
       remaining-=take;
       cancelled+=take;
       if(typeof _puyoOnCancel==='function') _puyoOnCancel(take);
@@ -12815,11 +13110,13 @@ class PuyoGame {
     // 消した着手ではおじゃまを降らさない。溜まっている分は消さずにキューに残し、
     // 次に「消さない着手」をしたときにまとめて降す。
     const now=performance.now();
-    // Only apply ojama that have been in queue for 3+ seconds
+    // 準備完了までの時間は「ゲージに積まれたおじゃまの量」に比例する（量/2 秒）。
+    // 受信時に readyMs = そのときの合計×500ms を記録しておき、経過したものだけ降らす。
+    // （v.readyMs が無い古い要素は従来どおり 1000ms を既定にする）
     const ready=[];
     const waiting=[];
     for(const v of this.ojamaQueue){
-      if(now-(v.time||0)>=1000) ready.push(v.amount);
+      if(now-(v.time||0)>=(v.readyMs||1000)) ready.push(v.amount);
       else waiting.push(v);
     }
     this.ojamaQueue=waiting;
@@ -12873,21 +13170,29 @@ class PuyoGame {
       // 連鎖終了
       this._inChain=false;
       this.dropping=false;
+      // QP限定: 連鎖なしの着手では火力を送らない（送るのは「消した時」のみ）。
+      //   消した時（chain>0）は通常火力 + combo + 1 を加算する → 下の else if を参照。
+      const qpNoChain=(typeof quickPlayMode!=='undefined'&&quickPlayMode);
       // 連鎖が発生しなかった場合のみコンボリセット
       if(this.chain===0){
-        // この着手は「1つも消していない」。
-        // → 溜まっているおじゃまはここで降る（消した着手では落とさない）。
+        // この着手は「1つも消していない」。火力は送らず、溜まっているおじゃまだけ降る。
         this._updateCombo(false);
         this._applyOjama();
+      } else if(qpNoChain){
+        // QP: 通常火力+combo+1（既存の combo-1 ボーナスに代えて上乗せ）
+        this._chainAttack+=(this.comboCount||0)+1;
+      } else {
+        // 通常ルーム: コンボボーナスを加算 (連続設置で消した回数-1)
+        if(this.comboCount>=2) this._chainAttack+=this.comboCount-1;
       }
-      // コンボボーナスを加算 (連続設置で消した回数-1)
-      if(this.comboCount>=2) this._chainAttack+=this.comboCount-1;
-      if(this._chainAttack>0){
+      // QPではぷよのマージン(時間経過の火力ブースト)は適用しない
+      if(this._chainAttack>0&&!qpNoChain){
         const elapsed = (performance.now() - this.startTime) / 1000;
-        const delaySec = (roomSettings.multiplierDelayMin || 1.6) * 60;
-        const interval = roomSettings.multiplierIntervalSec || 1;
-        const rate = roomSettings.multiplierRate || 0.03;
-        if (elapsed > delaySec) {
+        // ?? を使う: 「開始時間0 / 増加量0」等の 0 指定を || が潰してしまうのを防ぐ
+        const delaySec = (roomSettings.multiplierDelayMin ?? 1.6) * 60;
+        const interval = roomSettings.multiplierIntervalSec ?? 1;
+        const rate = roomSettings.multiplierRate ?? 0.03;
+        if (elapsed > delaySec && interval > 0) {
           const steps = Math.floor((elapsed - delaySec) / interval);
           this._chainAttack = Math.floor(this._chainAttack * (1 + steps * rate));
         }
@@ -12965,6 +13270,10 @@ class PuyoGame {
 
     // Emit pop event for renderer effects
     if(typeof _puyoOnPop==='function') _puyoOnPop(poppingCells, this.chain, this.comboCount||0);
+    // クイックプレイ: 連鎖で星の流れ・湯気を一瞬加速（テトリスQPのライン消去と同じ演出）
+    if(typeof quickPlayMode!=='undefined'&&quickPlayMode&&typeof qpLocalClearBoost==='function'){
+      qpLocalClearBoost(Math.max(1,Math.min(6,this.chain)));
+    }
 
     this._emitBoard();
     setTimeout(()=>this._resolveChain(), 400);
@@ -13012,7 +13321,12 @@ class PuyoGame {
   }
 
   queueOjama(ojama){
-    this.ojamaQueue.push({amount:ojama, time:performance.now()});
+    const amt=Math.max(0,ojama|0);
+    if(amt<=0)return;
+    // 準備完了までの時間 = ゲージに積まれた合計おじゃま数 / 2 秒（量が多いほど降るまで長い）
+    const total=this._queuedOjama()+amt;
+    const readyMs=total*500;
+    this.ojamaQueue.push({amount:amt, time:performance.now(), readyMs});
     this._emitBoard();
   }
 
@@ -13141,6 +13455,10 @@ class PuyoRenderer {
     app.stage.addChild(this.root);
 
     this._is1v1=Object.keys(this.opPuyoData).length===1;
+    // クイックプレイでは自盤面を中央に置き、相手盤面は背景へ散らす（テトリスQPと同じ体験）
+    const _qp=typeof quickPlayMode!=='undefined'&&!!quickPlayMode;
+    this._qpWorld=_qp;
+    if(_qp) this._is1v1=false;
     // 両盤面(自+相手)が収まるスケールを計算
     const targetW=this._is1v1?PUYO_COLS*PUYO_CELL*2+80:PUYO_COLS*PUYO_CELL*2+80;
     const scByW=this.W/(targetW+40);
@@ -13152,7 +13470,11 @@ class PuyoRenderer {
     const bW=PUYO_COLS*cell, bH=12*cell;
     this._bW=bW; this._bH=bH;
 
-    if(this._is1v1){
+    if(_qp){
+      // QP: 自盤面を中央に。相手は後で背景へ散らすので仮位置のみ。
+      this._myBX=Math.floor((this.W-bW)/2);
+      this._opBX=Math.floor(this.W*0.72);
+    } else if(this._is1v1){
       // 1v1: 両盤面を均等配置、より大きく
       const gap=Math.floor(80*sc);
       this._myBX=Math.floor((this.W-bW*2-gap)/2);
@@ -13163,11 +13485,15 @@ class PuyoRenderer {
     }
     this._myBY=Math.floor((this.H-bH)/2);
     this._opBY=this._myBY;
+    // HUD / 星・湯気が参照する共通エイリアス（GameRenderer と同じフィールド名）
+    this.mainBX=this._myBX; this.mainBY=this._myBY;
+    this.mainBW=bW; this.mainBH=bH; this._uiScale=sc;
 
     // ─── テクスチャキャッシュ: color(0-6) × size → PIXI.Texture ───
     this._texCache=new Map();
 
     this._buildBg();
+    if(_qp) qpBgStarsInit(this);   // 背景の星・湯気レイヤ（背景塗りより上・盤面より下）
     this._buildMyBoardSprites();
     this._buildOpBoardSprites();
     this._buildParticleLayer();
@@ -14489,7 +14815,71 @@ class PuyoRenderer {
 
     _opRippleUpdateAll(this.opPuyoData,dt);
 
+    // クイックプレイ: 相手盤面を背景へ散らし、星・湯気・HUDを描画する
+    if(this._qpWorld){
+      if(typeof qpMatchHudSync==='function')qpMatchHudSync();
+      this._qpLayoutOpponents(dt);
+      if(this._qpBgStarsG)qpBgStarsUpdateFor(this,dt);
+      if(this._qpSteamTex)qpRiseUpdateFor(this,dt);
+    }
+
     this.drawAll();
+  }
+
+  // QP: 生きている相手盤面を「自分のm中心の遠近マッピング」で背景に散らす（GameRenderer流）
+  _qpLayoutOpponents(dt){
+    if(typeof quickPlayMode==='undefined'||!quickPlayMode)return;
+    const ids=Object.keys(this.opPuyoData);
+    if(!ids.length)return;
+    const meS=qpPlayerMap&&qpPlayerMap[socket.id];
+    const meM=(meS&&meS.m)||0;
+    const bw=this._bW;
+    const mainCX=this._myBX+bw/2;
+    const center=this._myBY+this._bH/2;
+    const laneXFor=(t,opW)=>{
+      const leftMax=Math.max(8,mainCX-opW-8);
+      const rightMin=Math.min(this.W-8,mainCX+bw+8);
+      if(t<0.5){const u=Math.min(1,Math.max(0,t/0.5));return u*Math.max(4,leftMax-4);}
+      const u=Math.min(1,Math.max(0,(t-0.5)/0.5));
+      const rr=Math.max(4,this.W-8-rightMin);
+      return Math.min(this.W-4,rightMin+u*rr);
+    };
+    // 深さ: ppsが速い相手ほど手前、遅い相手ほど奥（位置が固まらないよう黄金比で分散）
+    const depthList=ids.map(id=>({id,pps:(qpPlayerMap&&qpPlayerMap[id]&&qpPlayerMap[id].botPps)||0}))
+      .sort((a,b)=>b.pps-a.pps);
+    const dn=depthList.length;
+    depthList.forEach((e,i)=>{const dd=this.opPuyoData[e.id];if(dd)dd._qpDepth=dn>1?i/(dn-1):0;});
+
+    const visibleEnd=Math.min(ids.length,8);
+    ids.forEach((id,i)=>{
+      const d=this.opPuyoData[id];
+      if(!d||!d._cont)return;
+      if(i>=visibleEnd){ if(d._cont.visible)d._cont.visible=false; return; }
+      const opW=d._bW||bw, opH=d._bH||this._bH;
+      const laneT=(typeof _qpBotLane==='function')?_qpBotLane(id):0.5;
+      const st=qpPlayerMap&&qpPlayerMap[id];
+      const mm=st?st.m:0;
+      const depth=d._qpDepth||0;
+      const perM=Math.max(0.01,this.H*0.035)*(0.82+0.36*laneT);
+      const stagger=(laneT*2-1)*this.H*0.05;
+      const targetY=center-(mm-meM)*perM+stagger-depth*this.H*0.05;
+      const targetX=laneXFor(laneT,opW);
+      // 位置・スケールをフレームレート非依存の指数補間で滑らかに追従
+      if(d._qpXCur===undefined||Math.abs(d._qpXCur-targetX)>this.W) d._qpXCur=targetX;
+      else d._qpXCur+=(targetX-d._qpXCur)*(1-Math.exp(-dt/120));
+      if(d._qpYCur===undefined||Math.abs(d._qpYCur-targetY)>this.H) d._qpYCur=targetY;
+      else d._qpYCur+=(targetY-d._qpYCur)*(1-Math.exp(-dt/120));
+      const dist=Math.abs(mm-meM);
+      const fs=Math.max(0.18,Math.min(1.0,Math.pow(0.9,Math.min(6,dist))*(1-0.45*depth)));
+      if(d._qpScaleCur===undefined) d._qpScaleCur=fs;
+      else d._qpScaleCur+=(fs-d._qpScaleCur)*(1-Math.exp(-dt/180));
+      d._cont.pivot.set(opW/2,opH/2);
+      d._cont.x=d._qpXCur+opW/2;
+      d._cont.y=d._qpYCur+opH/2+(d.sinkOffset||0);
+      d._cont.scale.set(d._qpScaleCur);
+      d._cont.alpha=1-0.4*depth;
+      d._cont.visible=true;
+    });
   }
 
   onGameOver(){}

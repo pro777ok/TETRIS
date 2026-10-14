@@ -568,10 +568,12 @@ class PuyoBot {
     // 連鎖倍率ブースト → 攻撃送信（クライアントは連鎖終端で毎回実施する）
     if (this._chainAttack > 0) {
       const rs = (room && room.roomSettings) || {};
-      const delaySec = (rs.multiplierDelayMin || 1.6) * 60;
-      const interval = rs.multiplierIntervalSec || 1;
-      const rate = rs.multiplierRate || 0.03;
-      if (elapsedSec > delaySec) {
+      // 通常ルームのみ。QP では人間側と同様に火力倍率を適用しない。
+      // ?? を使う: 開始時間0 / 増加量0 の指定を || が潰さないようにする
+      const delaySec = (rs.multiplierDelayMin ?? 1.6) * 60;
+      const interval = rs.multiplierIntervalSec ?? 1;
+      const rate = rs.multiplierRate ?? 0.03;
+      if (room && !room.quickPlayMode && elapsedSec > delaySec && interval > 0) {
         const steps = Math.floor((elapsedSec - delaySec) / interval);
         this._chainAttack = Math.floor(this._chainAttack * (1 + steps * rate));
       }

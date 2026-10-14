@@ -183,9 +183,12 @@
   #game-lobby {
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: safe center;
     background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
     gap: 1.2rem;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 1.2rem 0;
   }
   .game-lobby-card {
     background: rgba(10,15,30,0.9);
@@ -226,6 +229,17 @@
   .room-item-id { font-family: 'Orbitron', sans-serif; color: var(--neon-yellow); font-size: 0.95rem; letter-spacing: 0.15em; }
   .room-item-players { color: rgba(255,255,255,0.5); font-size: 0.8rem; }
   .room-item-join { color: var(--neon-cyan); font-size: 0.8rem; }
+  .room-item-delete {
+    background: rgba(255,0,80,0.12);
+    border: 1px solid rgba(255,0,80,0.4);
+    color: #ff5c8a;
+    font-size: 0.72rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .room-item-delete:hover { background: rgba(255,0,80,0.3); border-color: #ff5c8a; color: #fff; }
   .no-rooms { color: rgba(255,255,255,0.3); font-size: 0.85rem; text-align: center; padding: 1rem 0; }
   .no-players { color: rgba(255,255,255,0.3); font-size: 0.85rem; }
   .online-player-tag {
@@ -1163,8 +1177,52 @@
     color: rgba(255,255,255,0.35);
     max-width: 360px;
   }
+  /* YOUR GAME MODE (テトリス/ぷよ選択) */
+  #qp-mode-select-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    align-items: center;
+    margin: 0.4rem auto;
+    padding: 0.55rem 0.9rem;
+    max-width: 430px;
+    width: calc(100% - 8px);
+    background: rgba(0,20,30,0.55);
+    border: 1px solid rgba(255,154,206,0.25);
+    border-radius: 10px;
+  }
+  #qp-mode-select-wrap .qp-mode-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.68rem;
+    color: rgba(255,154,206,0.9);
+    letter-spacing: 0.14em;
+  }
+  #qp-mode-select-wrap .qp-mode-btns {
+    display: flex;
+    gap: 0.5rem;
+    width: 100%;
+  }
+  #qp-mode-select-wrap .qp-mode-btns button {
+    flex: 1;
+    padding: 0.45rem;
+    border-radius: 6px;
+    border: 2px solid rgba(255,154,206,0.3);
+    background: rgba(10,15,30,0.5);
+    color: rgba(255,154,206,0.5);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  #qp-mode-select-status {
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.35);
+    text-align: center;
+  }
   /* DUO SETTINGS (クイックプレイ専用ホストパネル) */
-  #qp-duo-wrap {
+  #qp-duo-wrap,
+  #qp-cc2-wrap {
     display: none;
     flex-direction: column;
     gap: 0.35rem;
@@ -1176,14 +1234,47 @@
     border-radius: 10px;
     text-align: left;
   }
-  #qp-duo-wrap .qp-duo-title {
+  #qp-cc2-wrap {
+    border-color: rgba(0,245,255,0.3);
+  }
+  #qp-duo-wrap .qp-duo-title,
+  #qp-cc2-wrap .qp-duo-title {
     font-family: 'Orbitron', sans-serif;
     font-size: 0.68rem;
     color: #ff9ace;
     letter-spacing: 0.14em;
     margin-bottom: 0.3rem;
   }
-  #qp-duo-wrap .qp-duo-sub {
+  #qp-cc2-wrap .qp-duo-title {
+    color: var(--neon-cyan);
+  }
+  #qp-duo-wrap .qp-duo-sub,
+  #qp-cc2-wrap .qp-duo-sub {
+    color: rgba(255,255,255,0.35);
+    font-size: 0.58rem;
+    letter-spacing: 0.02em;
+    font-family: 'Share Tech Mono', monospace;
+  }
+  #qp-puyo-wrap {
+    display: none;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin: 0.5rem auto 0.2rem;
+    padding: 0.65rem 0.9rem;
+    max-width: 430px;
+    background: rgba(0,20,30,0.55);
+    border: 1px solid rgba(255,154,206,0.35);
+    border-radius: 10px;
+    text-align: left;
+  }
+  #qp-puyo-wrap .qp-duo-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.68rem;
+    color: rgba(255,154,206,0.95);
+    letter-spacing: 0.14em;
+    margin-bottom: 0.3rem;
+  }
+  #qp-puyo-wrap .qp-duo-sub {
     color: rgba(255,255,255,0.35);
     font-size: 0.58rem;
     letter-spacing: 0.02em;
@@ -1458,80 +1549,154 @@
       </div>
     </div>
     <div id="qp-status-msg"></div>
-    <div id="qp-mod-wrap">
-      <span class="qp-mod-label">⚙ MOD</span>
-      <select id="qp-mod-select" onchange="setPlayerMod(this.value)">
-        <option value="none">なし</option>
-        <option value="doubleGarbage">ダブルガベージ</option>
-        <option value="allspin">オールスピン</option>
-        <option value="warlock">ウォーロック</option>
-        <option value="laststand">ラストスタンド</option>
-        <option value="badhole">バッドホール</option>
-        <option value="tower">タワー</option>
-        <option value="helmet">ヘルメット</option>
-        <option value="rock">ロック</option>
-        <option value="rebound">リバウンド</option>
-        <option value="expert">エキスパート</option>
-        <option value="messiness">メッシネス</option>
-        <option value="gravity">グラビティ</option>
-        <option value="solid">ソリッド</option>
-      </select>
-      <span id="qp-mod-desc"></span>
+
+    <!-- YOUR GAME MODE (各プレイヤーがテトリス/ぷよを選択) -->
+    <div id="qp-mode-select-wrap">
+      <div class="qp-mode-title">🎮 YOUR GAME MODE</div>
+      <div class="qp-mode-btns">
+        <button id="qp-mode-tetris-btn" onclick="selectMyMode('tetris')">🟦 TETRIS</button>
+        <button id="qp-mode-puyo-btn" onclick="selectMyMode('puyo')">🟡 PUYO PUYO</button>
+      </div>
+      <div id="qp-mode-select-status">Tetris selected</div>
     </div>
 
-    <!-- BOARD WIDTH (クイックプレイ専用・ホストのみ変更可) -->
-    <div id="qp-width-wrap" class="qp-duo-wrap">
-      <div class="qp-duo-title">📏 BOARD WIDTH <span class="qp-duo-sub">4WIDE を選ぶと盤面4列になり bot も4wideで戦う</span></div>
-      <div class="hs-row">
-        <label>📐 4WIDE <span class="qp-duo-sub">4列・縦に深い盤面</span></label>
-        <label class="toggle-switch" style="margin-left:auto">
-          <input type="checkbox" id="qp-fourwide-toggle" onchange="updateRoomSetting('fourWideMode',this.checked)">
-          <div class="toggle-track"></div>
-          <div class="toggle-knob"></div>
-        </label>
+    <div id="qp-settings-scroll" style="max-height:min(60vh,420px);overflow:auto;padding:0 4px 4px;scroll-behavior:smooth;width:100%">
+      <div id="qp-mod-wrap">
+        <span class="qp-mod-label">⚙ MOD</span>
+        <select id="qp-mod-select" onchange="setPlayerMod(this.value)">
+          <option value="none">なし</option>
+          <option value="doubleGarbage">ダブルガベージ</option>
+          <option value="allspin">オールスピン</option>
+          <option value="warlock">ウォーロック</option>
+          <option value="laststand">ラストスタンド</option>
+          <option value="badhole">バッドホール</option>
+          <option value="tower">タワー</option>
+          <option value="helmet">ヘルメット</option>
+          <option value="rock">ロック</option>
+          <option value="rebound">リバウンド</option>
+          <option value="expert">エキスパート</option>
+          <option value="messiness">メッシネス</option>
+          <option value="gravity">グラビティ</option>
+          <option value="solid">ソリッド</option>
+        </select>
+        <span id="qp-mod-desc"></span>
       </div>
-    </div>
 
-    <!-- DROP MODE (クイックプレイ専用・ホストのみ変更可) -->
-    <div id="qp-drop-wrap" class="qp-duo-wrap">
-      <div class="qp-duo-title">🪂 DROP MODE <span class="qp-duo-sub">ラインを送るほどy加速度が回復する。枯れると登れずmが落ちる（人間のみ）</span></div>
-      <div class="hs-row">
-        <label>🪂 DROP MODE <span class="qp-duo-sub">0.1秒ごとに-0.01</span></label>
-        <label class="toggle-switch" style="margin-left:auto">
-          <input type="checkbox" id="qp-drop-toggle" onchange="updateRoomSetting('dropMode',this.checked)">
-          <div class="toggle-track"></div>
-          <div class="toggle-knob"></div>
-        </label>
+      <!-- BOARD WIDTH (クイックプレイ専用・ホストのみ変更可) -->
+      <div id="qp-width-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">📏 BOARD WIDTH <span class="qp-duo-sub">4WIDE を選ぶと盤面4列になり bot も4wideで戦う</span></div>
+        <div class="hs-row">
+          <label>📐 4WIDE <span class="qp-duo-sub">4列・縦に深い盤面</span></label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="qp-fourwide-toggle" onchange="updateRoomSetting('fourWideMode',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
       </div>
-    </div>
 
-    <!-- DUO SETTINGS (クイックプレイ専用・ホストのみ表示) -->
-    <div id="qp-duo-wrap" class="qp-duo-wrap">
-      <div class="qp-duo-title">👥 DUO MODE <span class="qp-duo-sub">クイックプレイ専用 — 相方botとチーム同時登頂</span></div>
-      <div class="hs-row">
-        <label>👥 DUO ON</label>
-        <label class="toggle-switch" style="margin-left:auto">
-          <input type="checkbox" id="duo-on-toggle" onchange="updateRoomSetting('duoOn',this.checked)">
-          <div class="toggle-track"></div>
-          <div class="toggle-knob"></div>
-        </label>
+      <!-- DROP MODE (クイックプレイ専用・ホストのみ変更可) -->
+      <div id="qp-drop-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">🪂 DROP MODE <span class="qp-duo-sub">ラインを送るほどy加速度が回復する。枯れると登れずmが落ちる（人間のみ）</span></div>
+        <div class="hs-row">
+          <label>🪂 DROP MODE <span class="qp-duo-sub">0.1秒ごとに-0.01</span></label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="qp-drop-toggle" onchange="updateRoomSetting('dropMode',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
       </div>
-      <div class="hs-row" id="companion-pps-row">
-        <label>🤝 Companion PPS</label>
-        <input type="range" id="companion-pps-input" min="0.5" max="6" step="0.5" value="2.5"
-          oninput="document.getElementById('companion-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('companionPps',this.value)">
-        <span class="hs-val" id="companion-pps-val">2.5 PPS</span>
-      </div>
-      <div class="hs-row" id="duo-hard-row">
-        <label>🔥 DUO HARD <span class="qp-duo-sub">相方と相互フレンドリーファイア（直列穴）</span></label>
-        <label class="toggle-switch" style="margin-left:auto">
-          <input type="checkbox" id="duo-hard-toggle" onchange="updateRoomSetting('duoHard',this.checked)">
-          <div class="toggle-track"></div>
-          <div class="toggle-knob"></div>
-        </label>
-      </div>
-    </div>
 
+      <!-- EXPERT MODE (クイックプレイ専用・ホストのみ変更可) -->
+      <div id="qp-expert-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">🔥 EXPERT MODE <span class="qp-duo-sub">ゴミ準備0.5秒・相殺では登れない(m/climb上昇なし)・受けるゴミ1.3倍・ゴミは即時出現</span></div>
+        <div class="hs-row">
+          <label>🔥 EXPERT MODE <span class="qp-duo-sub">高難度ルール</span></label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="qp-expert-toggle" onchange="updateRoomSetting('expertMode',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
+      </div>
+
+      <!-- CC2 WEIGHTS (クイックプレイ専用・ホストのみ変更可) -->
+      <div id="qp-cc2-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">🧊 CC2 WEIGHTS <span class="qp-duo-sub">BOT Type が COLD CLEAR のとき有効（0=無効 / 1=既定 / 5=最重視）</span></div>
+        <div class="hs-row">
+          <label>🧊 B2B <span class="qp-duo-sub">B2B維持・B2B消去・ウェル</span></label>
+          <input type="range" id="qp-cc2-b2b-input" min="0" max="5" step="0.1" value="1"
+            oninput="document.getElementById('qp-cc2-b2b-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2B2b',this.value)">
+          <span class="hs-val" id="qp-cc2-b2b-val">1.0×</span>
+        </div>
+        <div class="hs-row">
+          <label>🔥 COMBO <span class="qp-duo-sub">連鎖攻撃の重み</span></label>
+          <input type="range" id="qp-cc2-combo-input" min="0" max="5" step="0.1" value="1"
+            oninput="document.getElementById('qp-cc2-combo-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Combo',this.value)">
+          <span class="hs-val" id="qp-cc2-combo-val">1.0×</span>
+        </div>
+        <div class="hs-row">
+          <label>🌀 T-SPIN <span class="qp-duo-sub">Tスピン・Tスロットの重み</span></label>
+          <input type="range" id="qp-cc2-tspin-input" min="0" max="5" step="0.1" value="1"
+            oninput="document.getElementById('qp-cc2-tspin-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Tspin',this.value)">
+          <span class="hs-val" id="qp-cc2-tspin-val">1.0×</span>
+        </div>
+        <div class="hs-row">
+          <label>🎯 ATTACK <span class="qp-duo-sub">ライン消去・PCの攻撃重み</span></label>
+          <input type="range" id="qp-cc2-attack-input" min="0" max="5" step="0.1" value="1"
+            oninput="document.getElementById('qp-cc2-attack-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Attack',this.value)">
+          <span class="hs-val" id="qp-cc2-attack-val">1.0×</span>
+        </div>
+      </div>
+
+      <!-- PUYO (クイックプレイ専用・ホストのみ変更可) -->
+      <div id="qp-puyo-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">🟣 PUYO <span class="qp-duo-sub">QPボットにPuyoを混ぜる／Tetris↔Puyo 火力倍率</span></div>
+        <div class="hs-row">
+          <label>🟣 INCLUDE PUYO BOTS <span class="qp-duo-sub">QPプールにPuyoボットを追加</span></label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="qp-puyo-bots-toggle" onchange="updateRoomSetting('qpPuyoBots',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
+        <div class="hs-row">
+          <label>💥 PUYO POWER <span class="qp-duo-sub">Tetris↔Puyo 火力倍率</span></label>
+          <input type="range" id="qp-puyo-power-input" min="0.25" max="3.0" step="0.05" value="1.0"
+            oninput="document.getElementById('qp-puyo-power-val').textContent=parseFloat(this.value).toFixed(2)+'×';updateRoomSetting('puyoPowerMult',this.value)">
+          <span class="hs-val" id="qp-puyo-power-val">1.00×</span>
+        </div>
+      </div>
+
+      <!-- DUO SETTINGS (クイックプレイ専用・ホストのみ表示) -->
+      <div id="qp-duo-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">👥 DUO MODE <span class="qp-duo-sub">クイックプレイ専用 — 相方botとチーム同時登頂</span></div>
+        <div class="hs-row">
+          <label>👥 DUO ON</label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="duo-on-toggle" onchange="updateRoomSetting('duoOn',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
+        <div class="hs-row" id="companion-pps-row">
+          <label>🤝 Companion PPS</label>
+          <input type="range" id="companion-pps-input" min="0.5" max="6" step="0.5" value="2.5"
+            oninput="document.getElementById('companion-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('companionPps',this.value)">
+          <span class="hs-val" id="companion-pps-val">2.5 PPS</span>
+        </div>
+        <div class="hs-row" id="duo-hard-row">
+          <label>🔥 DUO HARD <span class="qp-duo-sub">相方と相互フレンドリーファイア（直列穴）</span></label>
+          <label class="toggle-switch" style="margin-left:auto">
+            <input type="checkbox" id="duo-hard-toggle" onchange="updateRoomSetting('duoHard',this.checked)">
+            <div class="toggle-track"></div>
+            <div class="toggle-knob"></div>
+          </label>
+        </div>
+      </div>
+
+    </div>
     <div id="qp-footer">
       <button class="btn btn-primary" id="qp-play-btn" onclick="qpStart()" style="display:none">▶ PLAY</button>
       <button class="btn btn-secondary" id="qp-leave-btn" onclick="qpLeave()">← LEAVE</button>
@@ -1648,6 +1813,38 @@
             <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">MOD</span>
           </div>
 
+          <div style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin:0.4rem 0 0.2rem">🧊 COLD CLEAR WEIGHTS — BOT Type が COLD CLEAR のとき有効（0=無効 / 1=既定 / 5=最重視）</div>
+          <div class="hs-row">
+            <label>🧊 CC2 B2B <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">B2B・ウェル</span></label>
+            <input type="range" id="cc2-b2b-input" min="0" max="5" step="0.1" value="1"
+              oninput="document.getElementById('cc2-b2b-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2B2b',this.value)">
+            <span class="hs-val" id="cc2-b2b-val">1.0×</span>
+          </div>
+          <div class="hs-row">
+            <label>🔥 CC2 COMBO <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">連鎖攻撃</span></label>
+            <input type="range" id="cc2-combo-input" min="0" max="5" step="0.1" value="1"
+              oninput="document.getElementById('cc2-combo-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Combo',this.value)">
+            <span class="hs-val" id="cc2-combo-val">1.0×</span>
+          </div>
+          <div class="hs-row">
+            <label>🌀 CC2 T-SPIN <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">Tスピン</span></label>
+            <input type="range" id="cc2-tspin-input" min="0" max="5" step="0.1" value="1"
+              oninput="document.getElementById('cc2-tspin-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Tspin',this.value)">
+            <span class="hs-val" id="cc2-tspin-val">1.0×</span>
+          </div>
+          <div class="hs-row">
+            <label>🎯 CC2 ATTACK <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">ライン攻撃</span></label>
+            <input type="range" id="cc2-attack-input" min="0" max="5" step="0.1" value="1"
+              oninput="document.getElementById('cc2-attack-val').textContent=parseFloat(this.value).toFixed(1)+'×';updateRoomSetting('cc2Attack',this.value)">
+            <span class="hs-val" id="cc2-attack-val">1.0×</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🟡 PUYO POWER <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">vs TETRIS</span></label>
+            <input type="range" id="puyo-power-input" min="0.25" max="3.0" step="0.25" value="1.0"
+              oninput="document.getElementById('puyo-power-val').textContent=parseFloat(this.value).toFixed(2)+'×';updateRoomSetting('puyoPowerMult',this.value)">
+            <span class="hs-val" id="puyo-power-val">1.0×</span>
+          </div>
           <div class="hs-row" style="margin-top:0.3rem">
             <label>♟ Shogi Mode</label>
             <label class="toggle-switch" style="width:46px;height:24px">
@@ -1766,6 +1963,15 @@
               <div class="toggle-knob"></div>
             </label>
             <span class="hs-val" style="font-size:0.65rem;color:rgba(0,245,255,0.5)">コンボ中に攻撃を蓄積、終了時に一括送信</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
+            <label>🎯 Target Mode</label>
+            <select id="target-mode-select" onchange="updateRoomSetting('targetMode',this.value)"
+              style="flex:1;max-width:150px;background:rgba(0,0,0,0.4);color:#fff;border:1px solid rgba(0,245,255,0.3);border-radius:4px;padding:2px 4px;font-size:0.72rem">
+              <option value="random">Random (1人へ全火力)</option>
+              <option value="spread">Spread (全員へ分散)</option>
+            </select>
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
