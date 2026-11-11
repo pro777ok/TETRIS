@@ -500,7 +500,7 @@ function qpSendLines(room, fromId, target, lines, clearRows, lockX, lockY) {
   // duo: 攻撃側・受信側とも「実効100%」で、各メンバーがフルで受け取る → チーム合計=2xではなく、受信は1人1人に対し100%
   // 受けるゴミ量の倍率: 1mで0.5倍、100m登るごとに現状の1.1倍（qpClimbGarbageMult）
   // QP: 受け取る火力は全体的に半分（QP_RECEIVE_DMG_MULT）
-  // expert mode: 受けるゴミブロックの倍率1.2倍 / ダブルガベージ×2・サイコロ×0.8は受信側MOD（receiveGarbageMultiplier）
+  // expert mode: 受けるゴミブロックの倍率1.2倍 / ダブルガベージ×2は受信側MOD（receiveGarbageMultiplier）
   const expertRecv = (room.roomSettings && room.roomSettings.expertMode) ? 1.2 : 1;
   const receiveMult = receiveGarbageMultiplier(room, target.id) * qpClimbGarbageMult(room, target) * QP_RECEIVE_DMG_MULT * expertRecv;
   const received = Math.max(1, Math.round(Math.max(1, adj) * receiveMult));
@@ -653,24 +653,20 @@ const QP_TIME_DMG_MAX = 2.0;            // QP: 受信ダメージの時間倍率
 const QP_RECEIVE_DMG_MULT = 0.5;        // QP: 受け取る火力（被弾量）を半分にする
 const QP_SERIAL_FULL_M = 1000;          // このmでゴミが「そのまま出る」形になる
 const QP_SERIAL_NATURAL = 0.3;          // そのまま出るときの穴追従率（従来挙動）
-// drop mode: 人間だけが持つ「高度に対する降下速度」。100m ごとに加速幅が 0.1 ずつ増えていく
-// 二次式で、登るほど一気に速くなる。
-//   100m→0.6 / 200m→0.8 / 300m→1.1 / 400m→1.5 / 500m→2.0 / … / 1000m→6.0
-// 自動上昇（0.25×climbLevel/秒）と同時に働き、両者が釣り合う高度に収束する。
-const QP_DROP_FALL_EVERY = 100;    // 何mごとに段が変わるか
-const QP_DROP_FALL_A = 0.5;        // n=0（0m）の降下速度
-const QP_DROP_FALL_B = 0.05;       // 係数: f(n) = A + B*n*(n+1) = A + B*(100m+200m+300m…)
+// drop mode: 人間だけが持つ「高度に対する降下速度」(m/s)。
+//   1秒あたりの降下量 = (現在のm / 160) * 0.6
+// 現在mに比例するので、高度が下がるほど降下も緩やかになり、0m で静止する。
+const QP_DROP_FALL_RATE_PER_M = 0.6 / 160;
 
 // drop mode がこのプレイヤーに適用されるか（人間のみ。botは対象外）
 function qpDropActive(room, p){
   if (!room || !room.roomSettings || !room.roomSettings.dropMode) return false;
   return !!(p && !p.isBot);
 }
-// 高度から降下速度を求める（n = floor(m/100) の二次式。上の表に厳密一致）
+// 高度から降下速度(m/s)を求める: (現在のm / 160) * 0.6
 function qpDropFall(alt){
   const a = Math.max(0, alt || 0);
-  const n = Math.floor(a / QP_DROP_FALL_EVERY);
-  return (QP_DROP_FALL_A + QP_DROP_FALL_B * n * (n + 1)) * 50;
+  return a * QP_DROP_FALL_RATE_PER_M;
 }
 
 // 対象の実効m（duoではチーム共有ゲージ）
@@ -942,11 +938,10 @@ const COLS_4WIDE = 4;
 // ── MOD helpers ────────────────────────────────────────────────────
 // レガシー名（互換）。仕様: ダブルガベージは「受け取るゴミの量」を2倍にする受信側MOD
 function applyDoubleGarbage(room, senderId, lines) { return lines; }
-// 受信側MODによる受信ゴミ倍率: ダブルガベージ×2・サイコロ×0.8（複数可で乗算）
+// 受信側MODによる受信ゴミ倍率: ダブルガベージ×2（複数可で乗算）
 function receiveGarbageMultiplier(room, targetId) {
   let m = 1;
   if (hasMod(room, targetId, 'doubleGarbage')) m *= 2;
-  if (hasMod(room, targetId, 'dice')) m *= 0.8;
   return m;
 }
 
@@ -3891,7 +3886,7 @@ class BotPlayer {
           this.totalAttackSent += totalAttack;
         }
         const holes3 = this._b2bBreakHoles3 || 0;
-        // ダブルガベージ・サイコロは受信側MOD。ボット直渡しはここで倍率適用、
+        // ダブルガベージは受信側MOD。ボット直渡しはここで倍率適用、
         // 人間は deliverAttackTo 内で adjustForTargetMod×受信倍率 が適用される（二重適用しない）
         const flushBuffer = batchCombo && totalAttack > attack;
         const targets = resolveAttackTargets(room, this.id, totalAttack);
@@ -4230,7 +4225,7 @@ function puyoSendAttack(room, fromId, total) {
   const mult = (room.roomSettings && room.roomSettings.garbageMultiplier) || 2;
   targets.forEach(({ target: p, lines: assigned }) => {
     const targetMode = (room.playerModes && room.playerModes[p.id]) || 'tetris';
-    // ダブルガベージMODは「受け取るゴミの量」を2倍（受信側）・サイコロ×0.8
+    // ダブルガベージMODは「受け取るゴミの量」を2倍（受信側）
     const recvMult = receiveGarbageMultiplier(room, p.id);
     if (p.isBot && typeof p.queueOjama === 'function') {
       p.queueOjama(Math.floor(assigned * recvMult));
@@ -5004,7 +4999,7 @@ io.on('connection', (socket) => {
 
     const total=attack||0;
     if (total>0) {
-      // ダブルガベージ・サイコロは受信側MOD（deliverAttackTo 内で受信倍率を適用）
+      // ダブルガベージは受信側MOD（deliverAttackTo 内で受信倍率を適用）
       const targets = resolveAttackTargets(room, socket.id, total);
       targets.forEach(({target:p, lines:assigned})=>{
         let finalLines = assigned;

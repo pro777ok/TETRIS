@@ -905,8 +905,8 @@ const MOD_DESCRIPTIONS = {
   expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現',
   messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
   gravity: '1ブロック置くごとに落下速度が1.1倍になる',
-  dice: 'ラインを消すたびに1.2秒間のエフェクトが入り操作が硬直する。受けるゴミは0.8倍・穴がすごくバラバラ',
-  freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。さらに1ピース置くごとに固定時間が-1ms（最低0.3秒）'
+  dice: 'ラインを消すたびに1.15秒間のエフェクトが入り操作が硬直する。穴がすごくバラバラ',
+  freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。50m上がるごとに-10ms、最低0.3秒'
 };
 
 function glBackToTitle(){
@@ -1105,10 +1105,10 @@ let _qpSteamColLv=-1,_qpSteamColVal=0x06d6a0;
 // ── quickplay drop mode ──────────────────────────────────────────
 // サーバー計算の「高度→降下速度」をクライアントで補間し、背景（星・湯気）の流れに使う。
 // サーバーは qp_update でしか値を送らないので、間の降下はローカルで行う。
-// ※定数は server/server.js の QP_DROP_FALL_* と同値に保つこと
-const _QPDROP_FALL_EVERY=100;      // 何mごとに段が変わるか
-const _QPDROP_FALL_A=0.5;          // n=0（0m）の降下速度
-const _QPDROP_FALL_B=0.05;         // 係数: f(n)=A+B*n*(n+1)（serverのQP_DROP_FALL_*と必ず揃える）
+// ※定数は server/server.js の QP_DROP_FALL_RATE_PER_M と同値に保つこと
+const _QPDROP_FALL_EVERY=100;      // HUDゲージ用（旧: 段の区切り。降下式は連続式になった）
+const _QPDROP_FALL_A=0.5;          // 背景フローの正規化基準
+const _QPDROP_FALL_RATE_PER_M=0.6/160; // 1秒あたりの降下量 = (現在のm/160)*0.6
 const _QPDROP_FALL_REF=6.0;        // HUDゲージのスケール基準（=1000mの降下速度）
 let _qpDropMode=false;             // 部屋設定 dropMode の鏡像
 let _qpMyAlt=0;                    // 自分の高度 m（drop mode では毎日下がる）
@@ -1118,12 +1118,10 @@ let _qpReplayFlow=null;            // リプレイ再生中: 記録mから算出
 let _qpFlowDir=-1;                 // 背景が最後に流れた方向（-1=上向き/降下中, +1=下向き/上昇中）。0近傍の反転時のちらつきを抑える
 let _qpStarFlow=0;                 // 星・湯気の流れを滑らかにする符号付き平滑値（+で下方向。反転時に急に切り替わらない）
 let _qpDropSrvM=null;              // 直近に受け取ったサーバー権威のm。上昇判定はローカル補間値でなくこれと比較する（降下中の誤発火防止）
-// 高度から降下速度を求める（n=floor(m/100) の二次式）
-//   100m→0.6 / 200m→0.8 / 300m→1.1 / 400m→1.5 / 500m→2.0 / … / 1000m→6.0
+// 高度から降下速度(m/s)を求める: (現在のm / 160) * 0.6
 function _qpDropFall(alt){
   const a=Math.max(0,alt||0);
-  const n=Math.floor(a/_QPDROP_FALL_EVERY);
-  return _QPDROP_FALL_A+_QPDROP_FALL_B*n*(n+1);
+  return a * _QPDROP_FALL_RATE_PER_M;
 }
 function _qpDropSetMode(on, alt){
   const was=_qpDropMode;
@@ -2486,6 +2484,8 @@ const SFX={
 // ---- Constants ----
 const COLS=10,HIDDEN=7;let ROWS=20;
 const COLS_4WIDE=4;
+// ── MOD: サイコロ ── 硬直（エフェクト+操作不能+盤面崩落）時間 = 1.15秒
+const DICE_FREEZE_MS=1150;
 // ゲーム中の実効列数（4wideモードで切り替わる）
 function getGameCols(){return fourWideMode?COLS_4WIDE:COLS;}
 // Sミノを黄緑(0x8BC34A)に変更
@@ -2872,6 +2872,11 @@ class TetrisGame{
 
   // Cancel lock timer if piece leaves surface; reset if still on surface
   _updateLockAfterMove(){
+    // ── MOD: フリーフォール ── インスタント到達後は移動・回転で穴の上に浮いても通常落下に戻らず即座に最下部へ落とす
+    if(myHasMod('freefall')&&(this._freefallPieces||0)>=28&&this.current){
+      const gy=this.ghostY();
+      if(gy>this.current.y)this.current.y=gy;
+    }
     if(!this.isValid(this.current,0,1)){
       this.tryResetLock();
     } else {
@@ -2879,7 +2884,7 @@ class TetrisGame{
     }
   }
 
-  // ── MOD: サイコロ ── ライン消去時に1.2秒のエフェクト+操作硬直 ──
+  // ── MOD: サイコロ ── ライン消去時に1.15秒のエフェクト+操作硬直 ──
   _diceFreeze(ms, effectBlocks){
     this._diceFreezeUntil=performance.now()+ms;
     this._diceFreezeStart=performance.now();
@@ -2936,7 +2941,7 @@ class TetrisGame{
     let base;
     if(myHasMod('freefall')){
       const pieces=this._freefallPieces||0;
-      base=Math.max(250, 500 - pieces * 0.5);
+      base=Math.max(250, 500 - Math.floor((_qpMyAlt||0) / 50) * 10);
     } else {
       base=this._lockHalf?Math.min(this.lockDelay,500):this.lockDelay;
     }
@@ -3159,7 +3164,7 @@ class TetrisGame{
             this.board[r][c] = 0; // 行の内容は消すが、行自体は残す（上のラインを浮かせたままにする）
           }
         }
-        this._diceFreeze(1150, effectBlocks);
+        this._diceFreeze(DICE_FREEZE_MS, effectBlocks);
         
         // 1.15秒後にボードを崩落させる
         setTimeout(() => {
@@ -3169,7 +3174,7 @@ class TetrisGame{
           for(let i=0;i<count;i++)this.board.unshift(Array(getGameCols()).fill(0));
           while(this.board.length>ROWS+HIDDEN&&this.board[0].every(c=>c===0))this.board.shift();
           renderer&&renderer.drawBoard();
-        }, 1150);
+        }, DICE_FREEZE_MS);
       } else {
         // *** FIX: Remove cleared lines FIRST before adding garbage ***
         // This prevents index shifting bugs when garbage is added simultaneously
@@ -4298,7 +4303,7 @@ class TetrisGame{
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,messy:true});
       return;
     }
-    // ── MOD: サイコロ (受ける側) ── 受信×0.8(サーバー適用)・穴がすごくバラバラ
+    // ── MOD: サイコロ (受ける側) ── 穴がすごくバラバラ（受信量の減少なし）
     if(has('dice')){
       const readyAt=performance.now()+qpGarbageReady(1000);
       if(!puyotetMode&&lines>10){
@@ -4448,7 +4453,12 @@ class TetrisGame{
     this.gravityMs+=dt;
     if(this.gravityMs>=msPerDrop){
       this.gravityMs=0;
-      if(this.isValid(this.current,0,1))this.current.y++;
+      if(myHasMod('freefall')&&(this._freefallPieces||0)>=28){
+        // ── MOD: フリーフォール（インスタント）── 1フレーム1マスではなく1フレームで最下部まで一気に落下
+        while(this.isValid(this.current,0,1))this.current.y++;
+        this._lockHalf=false;this.startLockTimer();
+      }
+      else if(this.isValid(this.current,0,1))this.current.y++;
       else{this._lockHalf=false;this.startLockTimer();}
     }
   }
@@ -7442,7 +7452,7 @@ class GameRenderer{
     // ── MOD: サイコロ ── 消去されたブロックの残像（ランダムな透明度、左から順に飛び散りながら消去）
     if(this.gs._diceEffectBlocks && this.gs._diceEffectBlocks.length > 0){
       const startTime = this.gs._diceFreezeStart;
-      const duration = 1150;
+      const duration = DICE_FREEZE_MS;
       const now = performance.now();
       const elapsed = now - startTime;
       const progress = Math.min(1, elapsed / duration);
