@@ -14,17 +14,29 @@
 // 人間が puyo_attack を送った時と完全に同じ処理 (puyoSendAttack) を使う。
 // ─────────────────────────────────────────────────────────────────
 
+// 思考（着手の意思決定）は puyo-ai2.js を worker_threads 上で呼び出す
+// （puyo-ai-pool.js）。読みの深さはルーム設定 puyoLookahead で変わる。
+const PuyoAI = require('../puyo-ai2.js');
+const { getPool } = require('./puyo-ai-pool.js');
+
 const PUYO_COLS = 6;
 const PUYO_ROWS = 13;                 // row0=hidden, rows1-12 visible
+const PUYO_VISIBLE_ROWS = 12;         // puyo-ai2.js の盤面は 6x12（隠し行なし）
 const PUYO_COLOR_COUNT = 4;           // クライアント PUYO_COLOR_COUNT と同値
 const PUYO_OJAMA = 6;                 // おじゃま色
 const PUYO_SAT = [[-1, 0], [0, 1], [1, 0], [0, -1]]; // rotation: sub above/right/below/left
 const PUYO_GARBAGE_RATE = 1.0;        // クライアント garbageRate と同値
 const PUYO_EMIT_MS = 120;             // 相手へ盤面を送る間隔(ms)
 const PUYO_OJAMA_READY_MS = 1000;     // 这么久待在ったおじゃまは次の着手で乗る
-const PUYO_LOOKAHEAD_TOP = 5;         // 2手先まで評価する1手目の候補数
+const PUYO_LOOKAHEAD_MAX = 5;         // ルーム設定 puyoLookahead の上限
+const PUYO_LOOKAHEAD_DEFAULT = 2;     // puyo-ai2.js の既定値
 
-// ── AI 評価重み ────────────────────────────────────────────────
+// bot の色番号(1-4)と puyo-ai2.js の色文字の対応。5 は puyo-ai 側の探査用。
+const AI_LETTER = ['', 'r', 'g', 'b', 'y', 'p'];
+
+// ── 旧AI（puyo-ai 導入前）の評価重み / 定数 ──────────────────────
+// botType==='puyo_old' で選べるレガシー実装用。新AI(puyo-ai2)とは別系統。
+const PUYO_LOOKAHEAD_TOP = 5;         // 2手先まで評価する1手目の候補数
 // 色数→連鎖価値テーブル（0..54個）。4個そろえると消えるので色数が
 // 増えるほど価値が跳ね上がる = 連鎖組みのポテンシャル。
 const CHAIN_VAL = [
@@ -49,6 +61,7 @@ const W_CHAIN_POT = 130;  // 連鎖のポテンシャル：消えたら落ちて
 const W_OJAMA_CLEARED = 9; // 連鎖で消えたおじゃま1個あたり（防御の主軸）
 const POP_MISS = 55;     // 消せるのに消さなかったときのペナルティ（連鎖組みのための余地を奪わない程度に）
 const CHAIN_POT_MAX = 14;// ポテンシャル計算で評価する最大連鎖長
+
 const PUYO_OJAMA_PER_LOCK = 12; // 1ロックで降らすおじゃまの上限（溜まったゴミを一気に落とさない）
 
 let HOST = null; // {io, rooms, puyoSendAttack, checkGameEnd} を bind で注入
@@ -173,7 +186,59 @@ function resolveChain(b, moves) {
   return { chain, attack, popped, ojamaCleared };
 }
 
-// ── 連鎖ポテンシャル ────────────────────────────────────────────
+// ── puyo-ai2.js との盤面変換 ─────────────────────────────────────
+// このbotの盤面: b[row][col] (13行。row0=隠し行, row1-12=表示)。色1-4, おじゃま6。
+// puyo-ai2.js の盤面: c[col][y] (6列x12行。y=0=最下段)。文字 'r','g','b','y','p',
+// おじゃまは 'k'。表示12行 (row1-12) だけを渡す（隠し行はAIの対象外）。
+function botBoardToAICells(b) {
+  const cells = [];
+  for (let x = 0; x < PUYO_COLS; x++) {
+    const col = new Array(PUYO_VISIBLE_ROWS);
+    for (let y = 0; y < PUYO_VISIBLE_ROWS; y++) {
+      const v = b[PUYO_ROWS - 1 - y][x];          // y=0 が最下段(row12)
+      col[y] = v === 0 ? ' ' : (v === PUYO_OJAMA ? 'k' : (AI_LETTER[v] || 'r'));
+    }
+    cells.push(col);
+  }
+  return cells;
+}
+
+// puyo-ai2.js の着手 [pos, rot] を、このbotの placePair 形式 {rot, pivotC} に直す。
+// puyo-ai: rot0=縦(下がbeans[0]) / 1=横(左がbeans[0]) / 2=横の上下反転 / 3=横の左右反転
+function aiMoveToBot(move) {
+  if (!move) return null;
+  const p = move[0], r = move[1];
+  if (r === 0) return { rot: 0, pivotC: p };
+  if (r === 1) return { rot: 1, pivotC: p };
+  if (r === 2) return { rot: 2, pivotC: p };
+  return { rot: 3, pivotC: p + 1 };   // r === 3
+}
+
+// ペアの落とし込み（クライアント _lock と同じ：各セルを自列の dropRow まで落とす）
+// 成功したら true（盤は破壊的に更新される）
+function placePair(b, colors, rot, pivotC) {
+  const dr = PUYO_SAT[rot][0], dc = PUYO_SAT[rot][1];
+  const sc = pivotC + dc;
+  if (pivotC < 0 || pivotC >= PUYO_COLS || sc < 0 || sc >= PUYO_COLS) return false;
+  const pivotR = 1;                       // スポーン行
+  const sr = pivotR + dr;                 // サテライト行
+  const dropRow = (startR, c) => { let r = startR < 0 ? 0 : startR; while (r + 1 < PUYO_ROWS && b[r + 1][c] === 0) r++; return r; };
+  const set = (r, c, col) => {
+    if (r < 0 || r >= PUYO_ROWS || c < 0 || c >= PUYO_COLS) return false;
+    if (b[r][c] !== 0) return false;
+    b[r][c] = col; return true;
+  };
+  const vertical = pivotC === sc;
+  // 縦向きは下にある方を先に置く（クライアントと同じ順序）
+  const lowerFirst = vertical ? (pivotR >= sr) : true;
+  const [rA, cA, vA] = lowerFirst ? [dropRow(pivotR, pivotC), pivotC, colors[0]] : [dropRow(sr, sc), sc, colors[1]];
+  if (!set(rA, cA, vA)) return false;
+  const [rB, cB, vB] = lowerFirst ? [dropRow(sr, sc), sc, colors[1]] : [dropRow(pivotR, pivotC), pivotC, colors[0]];
+  if (!set(rB, cB, vB)) { b[rA][cA] = 0; return false; } // 2個目が置けなければ 1個目も戻す
+  return true;
+}
+
+// ── 旧AI（レガシー）: 連鎖ポテンシャル / 盤面評価 ─────────────────
 // 「ここで消えたら、ここが落ちて、ここが消える」を盤面上で実際に再現して測る。
 // 開始色4通りを走査し、重力をクライアントどおりに適用しながら連鎖が何手まで伸びるかを実測する。
 // 同じ色は1手ですべて消えるので、連鎖の次手は「消えた色とは異なる色」になる。
@@ -218,30 +283,6 @@ function chainPotential(b) {
   return best;
 }
 
-// ペアの落とし込み（クライアント _lock と同じ：各セルを自列の dropRow まで落とす）
-// 成功したら true（盤は破壊的に更新される）
-function placePair(b, colors, rot, pivotC) {
-  const dr = PUYO_SAT[rot][0], dc = PUYO_SAT[rot][1];
-  const sc = pivotC + dc;
-  if (pivotC < 0 || pivotC >= PUYO_COLS || sc < 0 || sc >= PUYO_COLS) return false;
-  const pivotR = 1;                       // スポーン行
-  const sr = pivotR + dr;                 // サテライト行
-  const dropRow = (startR, c) => { let r = startR < 0 ? 0 : startR; while (r + 1 < PUYO_ROWS && b[r + 1][c] === 0) r++; return r; };
-  const set = (r, c, col) => {
-    if (r < 0 || r >= PUYO_ROWS || c < 0 || c >= PUYO_COLS) return false;
-    if (b[r][c] !== 0) return false;
-    b[r][c] = col; return true;
-  };
-  const vertical = pivotC === sc;
-  // 縦向きは下にある方を先に置く（クライアントと同じ順序）
-  const lowerFirst = vertical ? (pivotR >= sr) : true;
-  const [rA, cA, vA] = lowerFirst ? [dropRow(pivotR, pivotC), pivotC, colors[0]] : [dropRow(sr, sc), sc, colors[1]];
-  if (!set(rA, cA, vA)) return false;
-  const [rB, cB, vB] = lowerFirst ? [dropRow(sr, sc), sc, colors[1]] : [dropRow(pivotR, pivotC), pivotC, colors[0]];
-  if (!set(rB, cB, vB)) { b[rA][cA] = 0; return false; } // 2個目が置けなければ 1個目も戻す
-  return true;
-}
-
 // ── 盤面評価（高点数ほど良い） ──────────────────────────────────
 function evaluate(b) {
   const cnt = [0, 0, 0, 0, 0, 0, 0];
@@ -261,7 +302,7 @@ function evaluate(b) {
   for (let color = 1; color <= PUYO_COLOR_COUNT; color++) {
     score += CHAIN_VAL[Math.min(cnt[color], chainMax)];
   }
-// 2) 2個/3個並び（あと1〜2個で発火するグループ）を個別に評価
+  // 2) 2個/3個並び（あと1〜2個で発火するグループ）を個別に評価
   for (const g of findGroups(b)) {
     if (g.color === PUYO_OJAMA) continue;
     if (g.size === 2) score += W_GROUP2;
@@ -274,7 +315,7 @@ function evaluate(b) {
       if (v && v !== PUYO_OJAMA && b[r + 1][c] === v) score += W_ADJ;
     }
   }
-    // 4) 列高さ（well を低く保つ。上に積もるほど重く）
+  // 4) 列高さ（well を低く保つ。上に積もるほど重く）
   for (let c = 0; c < PUYO_COLS; c++) {
     let h = 0;
     for (let r = 0; r < PUYO_ROWS; r++) if (b[r][c] !== 0) { h = PUYO_ROWS - r; break; }
@@ -294,10 +335,16 @@ class PuyoBot {
   constructor(id, name, level, roomId, bag, customCode, botType, botPps) {
     this.id = id; this.name = name; this.level = level; this.roomId = roomId;
     this.isBot = true; this.botLevel = level;
-    this.botType = 'puyo';
+    // 'puyo' = 新AI(puyo-ai2) / 'puyo_old' = レガシー実装（puyo-ai 導入前のコード）
+    this.botType = (botType === 'puyo_old') ? 'puyo_old' : 'puyo';
+    this.legacy = (botType === 'puyo_old');
     const room = HOST ? HOST.rooms[roomId] : null;
     this.botPps = (typeof botPps === 'number' && botPps > 0) ? botPps
       : (room && room.roomSettings && room.roomSettings.botPps) || 2.5;
+    // 読みの深さ（何手先まで読むか）はルーム設定 puyoLookahead で決まる。
+    const la = room && room.roomSettings ? parseInt(room.roomSettings.puyoLookahead, 10) : NaN;
+    this.lookahead = Number.isFinite(la) ? Math.max(0, Math.min(PUYO_LOOKAHEAD_MAX, la)) : PUYO_LOOKAHEAD_DEFAULT;
+    this.pool = getPool();
     // テトリスボットと同じインタフェース（一覧表示・checkGameEnd 等）
     this.board = null;          // ぷよ盤面 so this.puyoBoard を使う
     this.cols = PUYO_COLS;
@@ -308,6 +355,7 @@ class PuyoBot {
     this.customCode = customCode || null; this._customFn = null;
     this.thinkTimer = null; this.emitTimer = null;
     this.alive = true;
+    this._thinking = false;   // AI 思考中は落下中ペアを描画しない（浮いて見えるのを防ぐ）
 
     // ぷよ盤面
     this.puyoBoard = newBoard();
@@ -320,7 +368,11 @@ class PuyoBot {
     // ゴミの配置で消費すると、受け取ったゴミの量・タイミングが違うだけで
     // 乱数列がずれて、人間と next の順番が合わなくなる。
     this.grng = Math.random;
-    this.nextQueue = [this._makePair(), this._makePair(), this._makePair()];
+    // puyo-ai2.js に渡す「次のペア」を lookahead 手ぶん確保する（表示は先頭3つ）。
+    // 生成順は変えないので、先頭は従来と同じ並びになる。
+    const qLen = Math.max(3, this.lookahead + 1);
+    this.nextQueue = [];
+    for (let i = 0; i < qLen; i++) this.nextQueue.push(this._makePair());
     this.current = null;
     this.chain = 0; this.comboCount = 0; this.lastPlacementCleared = false;
     this.garbageRate = PUYO_GARBAGE_RATE;
@@ -428,13 +480,16 @@ class PuyoBot {
   // ── 盤面送信（クライアント puyo_board_update と同じ形） ──────
   _emitBoard() {
     if (!HOST || !HOST.io) return;
-    const sat = this.current ? [this.current.pivotR + PUYO_SAT[this.current.rotation][0], this.current.pivotC + PUYO_SAT[this.current.rotation][1]] : null;
+    // AI 思考中（_thinking）は落下中ペアを送らない。送ると最上段に固まって
+    // 「ぷよが浮いている」ように見える。思考が終わってから落下アニメを見せる。
+    const cur = (this.current && !this._thinking) ? this.current : null;
+    const sat = cur ? [cur.pivotR + PUYO_SAT[cur.rotation][0], cur.pivotC + PUYO_SAT[cur.rotation][1]] : null;
     HOST.io.to(this.roomId).emit('opponent_puyo_update', {
       id: this.id,
       board: this.puyoBoard.map(r => r.slice()),
-      current: this.current ? {
-        pivotR: this.current.pivotR, pivotC: this.current.pivotC,
-        rotation: this.current.rotation, colors: this.current.colors,
+      current: cur ? {
+        pivotR: cur.pivotR, pivotC: cur.pivotC,
+        rotation: cur.rotation, colors: cur.colors,
         satR: sat ? sat[0] : null, satC: sat ? sat[1] : null
       } : null,
       nextQueue: this.nextQueue.slice(0, 3).map(p => [p[0], p[1]]),
@@ -461,8 +516,53 @@ class PuyoBot {
   }
   _clearEmitTimer() { if (this.emitTimer) { clearInterval(this.emitTimer); this.emitTimer = null; } }
 
-  // ── 1手+2手先探索 ────────────────────────────────────────────
+  // ── 着手決定（puyo-ai2.js に委譲） ──────────────────────────────
+  // 盤面と次のペアを puyo-ai2.js の形式へ変換し、worker_threads 上で
+  // 「何手先まで読むか (lookahead)」を指定して着手を求める。
+  // 探索は重いのでメインスレッドでは走らせない（puyo-ai-pool.js）。
+  // ワーカーが使えない/落ちたときは lookahead:0 の同期探索でしのぐ。
   _choosePlacement() {
+    const board = this.puyoBoard;
+    if (!this.current) return Promise.resolve(null);
+    // 旧AI（puyo-ai 導入前）は自前の探索。結果を Promise でラップして think 側を共通化する。
+    if (this.legacy) return Promise.resolve(this._legacyChoose());
+    const colors = this.current.colors;
+    const cells = botBoardToAICells(board);
+    // ペアの色順に注意。bot/クライアントの colors は [pivot, satellite] だが、
+    // puyo-ai2.js の placement() は逆順のスロット（beans[0] が pivot 側に来る）を
+    // 前提にしている。ここで反転しないと、AI が評価した盤と実際に置かれる盤で
+    // ペアの上下/左右が入れ替わり、AI の着手と結果が食い違う。
+    const beans = [AI_LETTER[colors[1]] || 'g', AI_LETTER[colors[0]] || 'r'];
+    const nexts = [];
+    for (let i = 0; i < this.lookahead && i < this.nextQueue.length; i++) {
+      const p = this.nextQueue[i];
+      nexts.push([AI_LETTER[p[1]] || 'g', AI_LETTER[p[0]] || 'r']);
+    }
+    const syncFallback = () => {
+      try {
+        const ai = PuyoAI.createAI({ lookahead: 0 });
+        return ai.getMove(new PuyoAI.Board(cells), beans, nexts);
+      } catch (e) { return null; }
+    };
+    const msg = { cells, beans, nexts, lookahead: Math.max(0, this.lookahead) };
+    return this.pool.choose(msg, syncFallback).then((m) => {
+      const cand = aiMoveToBot(m);
+      // 選んだ手が今の盤で本当に置けるか検証する（puyo-ai の盤は隠し行を持たず、
+      // 縦2個が入りきらないケースを検出できないため）。
+      if (cand && placePair(cloneBoard(board), colors, cand.rot, cand.pivotC)) return cand;
+      // 念のため合法手を総当たりで探す（1個でも置ければ死なない）。
+      for (let rot = 0; rot < 4; rot++) {
+        for (let pc = 0; pc < PUYO_COLS; pc++) {
+          if (placePair(cloneBoard(board), colors, rot, pc)) return { rot, pivotC: pc };
+        }
+      }
+      return null;
+    });
+  }
+
+  // ── 旧AI（レガシー）の着手決定 ──────────────────────────────────
+  // puyo-ai 導入前のロジック。同期実行。2手先まで読む。
+  _legacyChoose() {
     const board = this.puyoBoard;
     if (!this.current) return null;
     const colors = this.current.colors;
@@ -473,12 +573,7 @@ class PuyoBot {
         const nb = cloneBoard(board);
         if (!placePair(nb, colors, rot, pc)) continue;
         const res = resolveChain(nb);
-        cands.push({
-          rot, pivotC: pc, nb, chain: res.chain, attack: res.attack, ojamaCleared: res.ojamaCleared,
-          base: evaluate(nb),
-          // 連鎖を「組む」形にする：消えたら落ちて消える潜在連鎖長を実測する
-          pot: chainPotential(nb)
-        });
+        cands.push({ rot, pivotC: pc, nb, chain: res.chain, attack: res.attack, ojamaCleared: res.ojamaCleared, pot: chainPotential(nb), base: evaluate(nb) });
       }
     }
     if (!cands.length) return null;
@@ -518,11 +613,48 @@ class PuyoBot {
     return best;
   }
 
+  // 置く列・回転で、ペアをそのまま真下に落としたときの pivot 行を求める（描画用）。
+  // クライアントの _isValid/_moveDown と同じ「2セル一緒に落ちる」判定。
+  _simulateFall(rot, pivotC) {
+    const dr = PUYO_SAT[rot][0], dc = PUYO_SAT[rot][1];
+    const free = (r, c) => r >= 0 && r < PUYO_ROWS && c >= 0 && c < PUYO_COLS && this.puyoBoard[r][c] === 0;
+    const okAt = (pr) => free(pr, pivotC) && free(pr + dr, pivotC + dc);
+    let pr = 1;
+    if (!okAt(pr)) return pr;
+    while (okAt(pr + 1)) pr++;
+    return pr;
+  }
+
+  // 落下アニメ（描画用）：place する前に current を targetR まで数ステップで下ろす。
+  // AI の思考中は _emitBoard が current を送らないので、ここで初めて落下が見える。
+  _animateFall(targetR) {
+    return new Promise((resolve) => {
+      if (!this.alive || !this.current) { resolve(); return; }
+      const startR = this.current.pivotR;
+      const steps = 4;
+      const dur = Math.max(30, Math.min(140, Math.round(this.thinkDelay * 0.5)));
+      const stepMs = Math.max(16, Math.round(dur / steps));
+      let k = 0;
+      const tickAnim = () => {
+        if (!this.alive || !this.current) { resolve(); return; }
+        k++;
+        if (k >= steps) { this.current.pivotR = targetR; this._emitBoard(); resolve(); return; }
+        this.current.pivotR = startR + ((targetR - startR) * k) / steps;
+        this._emitBoard();
+        setTimeout(tickAnim, stepMs);
+      };
+      setTimeout(tickAnim, stepMs);
+    });
+  }
+
   // 1ペア処理（place → 連鎖解決 → 攻撃送信 or 次のペア）
-  think() {
-    if (!this.alive || !this.current) return;
+  // 思考は非同期（worker_threads）なので、完了時に onDone を呼ぶ。
+  think(onDone) {
+    const done = () => { if (typeof onDone === 'function') onDone(); };
+    if (!this.alive || !this.current) { done(); return; }
     const room = this._room();
-    if (room && room.shogiMode) return;
+    if (room && room.shogiMode) { done(); return; }
+    this._thinking = true;   // 思考中は落下中ペアを送らない（浮いて見えるのを防ぐ）
     this.chain = 0;
     this.pieceCount++;
     const now = Date.now();
@@ -536,81 +668,97 @@ class PuyoBot {
     // ため、まだおじゃまは乗せない。
     // 設置するのは「いま持つペア」。nextQueue[0] は次のペアなので使わない
     const colors = this.current.colors;
-    const move = this._choosePlacement();
-    if (!move) { this._topOut('no-placement'); return; }
-    this.current = null;
-    if (!placePair(this.puyoBoard, colors, move.rot, move.pivotC)) { this._topOut('place-failed'); return; }
-    // 連鎖解決で実際に落ちたセルを採取して、相手の盤面に落下アニメを出す
-    const fallMoves = [];
-    const res = resolveChain(this.puyoBoard, fallMoves);
-    if (res.chain > 0) {
-      this.chain = res.chain;
-      this._updateCombo(true);
-      this.totalGarbageCleared += res.popped;
-      this.score += res.attack * 100;
-      // 相殺できた分を除いた余りをチェーン攻撃として蓄積（クライアント _resolveChain と同じ）
-      this._chainAttack += this._cancelOjama(res.attack);
-    } else {
-      this._updateCombo(false);
-      if (this.comboCount >= 2) this._chainAttack += this.comboCount - 1;
-      // 「ぷよが消えている最中はおじゃまを振らない」。
-      // ぷよを消している間にゴミを降らすと自分の連鎖が潰れるため、
-      // 連鎖が終わって盤が静止している（= 消せなかった）ときだけゴミを降ろす。
-      this._applyOjama();
-      // _applyOjama は row0（盤頂の隠し行）から書き込む。クライアントは _lock 内で
-      // place/_resolveChain より前に適用し、直後の重力で底へ落としてバランスを取っている。
-      // bot は「消えなかった着手の後」という順番を要求されているため適用後に重力をかける。
-      // これをしないとゴミが盤頂の隠し行に残り _checkTopOut() が即成立して、
-      // ゴミを1個受け取った瞬間にゲームオーバーになる。
-      applyGravity(this.puyoBoard, fallMoves);
-    }
-    if (fallMoves.length) this._emitFall(fallMoves);
-    // 連鎖倍率ブースト → 攻撃送信（クライアントは連鎖終端で毎回実施する）
-    if (this._chainAttack > 0) {
-      const rs = (room && room.roomSettings) || {};
-      // 通常ルームのみ。QP では人間側と同様に火力倍率を適用しない。
-      // ?? を使う: 開始時間0 / 増加量0 の指定を || が潰さないようにする
-      const delaySec = (rs.multiplierDelayMin ?? 1.6) * 60;
-      const interval = rs.multiplierIntervalSec ?? 1;
-      const rate = rs.multiplierRate ?? 0.03;
-      if (room && !room.quickPlayMode && elapsedSec > delaySec && interval > 0) {
-        const steps = Math.floor((elapsedSec - delaySec) / interval);
-        this._chainAttack = Math.floor(this._chainAttack * (1 + steps * rate));
+    // 思考中は this.current / this.puyoBoard を据え置く（受信おじゃまはキューに溜まる）。
+    this._choosePlacement().then(async (move) => {
+      if (!this.alive) { done(); return; }
+      this._thinking = false;
+      if (!move) { this._topOut('no-placement'); done(); return; }
+      // 落下アニメ（描画用）：選んだ列・回転で実際に落ちる位置まで見せてから置く。
+      // AI 思考中は current を送っていないので、ここで初めて「落下」が見える。
+      this.current.rotation = move.rot;
+      this.current.pivotC = move.pivotC;
+      await this._animateFall(this._simulateFall(move.rot, move.pivotC));
+      if (!this.alive || !this.current) { done(); return; }
+      this.current = null;
+      if (!placePair(this.puyoBoard, colors, move.rot, move.pivotC)) { this._topOut('place-failed'); done(); return; }
+      // 連鎖解決で実際に落ちたセルを採取して、相手の盤面に落下アニメを出す
+      const fallMoves = [];
+      const res = resolveChain(this.puyoBoard, fallMoves);
+      if (res.chain > 0) {
+        this.chain = res.chain;
+        this._updateCombo(true);
+        this.totalGarbageCleared += res.popped;
+        this.score += res.attack * 100;
+        // 相殺できた分を除いた余りをチェーン攻撃として蓄積（クライアント _resolveChain と同じ）
+        this._chainAttack += this._cancelOjama(res.attack);
+      } else {
+        this._updateCombo(false);
+        if (this.comboCount >= 2) this._chainAttack += this.comboCount - 1;
+        // 「ぷよが消えている最中はおじゃまを振らない」。
+        // ぷよを消している間にゴミを降らすと自分の連鎖が潰れるため、
+        // 連鎖が終わって盤が静止している（= 消せなかった）ときだけゴミを降ろす。
+        this._applyOjama();
+        // _applyOjama は row0（盤頂の隠し行）から書き込む。クライアントは _lock 内で
+        // place/_resolveChain より前に適用し、直後の重力で底へ落としてバランスを取っている。
+        // bot は「消えなかった着手の後」という順番を要求されているため適用後に重力をかける。
+        // これをしないとゴミが盤頂の隠し行に残り _checkTopOut() が即成立して、
+        // ゴミを1個受け取った瞬間にゲームオーバーになる。
+        applyGravity(this.puyoBoard, fallMoves);
       }
-      const send = this._chainAttack;
+      if (fallMoves.length) this._emitFall(fallMoves);
+      // 連鎖倍率ブースト → 攻撃送信（クライアントは連鎖終端で毎回実施する）
+      if (this._chainAttack > 0) {
+        const rs = (room && room.roomSettings) || {};
+        // 通常ルームのみ。QP では人間側と同様に火力倍率を適用しない。
+        // ?? を使う: 開始時間0 / 増加量0 の指定を || が潰さないようにする
+        const delaySec = (rs.multiplierDelayMin ?? 1.6) * 60;
+        const interval = rs.multiplierIntervalSec ?? 1;
+        const rate = rs.multiplierRate ?? 0.03;
+        if (room && !room.quickPlayMode && elapsedSec > delaySec && interval > 0) {
+          const steps = Math.floor((elapsedSec - delaySec) / interval);
+          this._chainAttack = Math.floor(this._chainAttack * (1 + steps * rate));
+        }
+        const send = this._chainAttack;
+        this._chainAttack = 0;
+        this.totalAttackSent += send;
+        this._sendAttack(send);
+      }
       this._chainAttack = 0;
-      this.totalAttackSent += send;
-      this._sendAttack(send);
-    }
-    this._chainAttack = 0;
-    this._emitBoard();
-    if (this._checkTopOut()) { this._topOut('after-lock'); return; }
-    this._spawnPair();
-    this._emitBoard();
+      this._emitBoard();
+      if (this._checkTopOut()) { this._topOut('after-lock'); done(); return; }
+      this._spawnPair();
+      // 次の思考が始まるまでの待ち時間もペアを最上段に出さない（落下アニメ時だけ見せる）
+      this._thinking = true;
+      this._emitBoard();
+      done();
+    }).catch((e) => {
+      // Botの例外でサーバー全体が落ちないようガードする
+      this._thinking = false;
+      console.error(`[PUYO BOT] ${this.name} think() error:`, e && e.stack || e);
+      done();
+    });
   }
 
   startAutonomous(extraDelay = 0) {
     if (this.thinkTimer) return;
     this._ensureEmitTimer();
-    const targetInterval = this.thinkDelay;
     const tick = () => {
       if (!this.alive) return;
       const room = this._room();
       if (!room || room.shogiMode) return;
-      if (!room.started && !(room.quickPlayMode && room._qpStandby)) return;
       this.thinkTimer = setTimeout(() => {
         const t0 = Date.now();
-        // Botの例外でサーバー全体が落ちないようガードする
-        try {
-          this.think();
-        } catch (e) {
-          console.error(`[PUYO BOT] ${this.name} think() error:`, e && e.stack || e);
-        }
-        const elapsed = Date.now() - t0;
-        this.thinkTimer = setTimeout(tick, Math.max(30, targetInterval - elapsed));
+        // think は非同期（worker_threads で思考）。完了後に次の間隔を計って再スケジュールする。
+        // Botの例外でサーバー全体が落ちないようガードする。
+        this.think(() => {
+          const elapsed = Date.now() - t0;
+          if (!this.alive) return;
+          // botPps は対戦中でも変更されるため、開始時に固定せず毎周期 this.thinkDelay を読み直す。
+          this.thinkTimer = setTimeout(tick, Math.max(30, this.thinkDelay - elapsed));
+        });
       }, 0);
     };
-    this.thinkTimer = setTimeout(tick, extraDelay + targetInterval);
+    this.thinkTimer = setTimeout(tick, extraDelay + this.thinkDelay);
   }
 
   stop() {
@@ -628,6 +776,7 @@ class PuyoBot {
       console.log(`[PUYO BOT] ${this.name} TOPOUT reason=${reason || '?'} pieces=${this.pieceCount} chain=${this.chain} boardOjama=${onBoard} pendingOjama=${pend} recv=${this.totalGarbageReceived} cleared=${this.totalGarbageCleared} sent=${this.totalAttackSent}`);
     }
     this.alive = false;
+    this._thinking = false;
     this.current = null;
     this.chain = 0;
     this._emitBoard();

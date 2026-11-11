@@ -1404,6 +1404,22 @@
     15%  { opacity: 1; }
     100% { opacity: 0; transform: translateY(-26px); }
   }
+  .qp-bonus-pop {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.6rem;
+    font-weight: 900;
+    color: #ffe066;
+    margin-top: -0.1rem;
+    letter-spacing: .04em;
+    text-shadow: 0 0 10px rgba(255,200,0,0.9), 0 0 22px rgba(255,140,0,0.6);
+    animation: qpBonusPop 1.5s ease-out forwards;
+  }
+  @keyframes qpBonusPop {
+    0%   { transform: scale(0.6) translateY(6px); opacity: 0; }
+    18%  { transform: scale(1.15) translateY(0);  opacity: 1; }
+    35%  { transform: scale(1.0) translateY(0);   opacity: 1; }
+    100% { transform: scale(1.0) translateY(-34px); opacity: 0; }
+  }
 
   /* 試合中のランキング */
   #qp-rank {
@@ -1561,24 +1577,24 @@
     </div>
 
     <div id="qp-settings-scroll" style="max-height:min(60vh,420px);overflow:auto;padding:0 4px 4px;scroll-behavior:smooth;width:100%">
-      <div id="qp-mod-wrap">
+      <div id="qp-mod-wrap" data-mod-scope="qp">
         <span class="qp-mod-label">⚙ MOD</span>
-        <select id="qp-mod-select" onchange="setPlayerMod(this.value)">
-          <option value="none">なし</option>
-          <option value="doubleGarbage">ダブルガベージ</option>
-          <option value="allspin">オールスピン</option>
-          <option value="warlock">ウォーロック</option>
-          <option value="laststand">ラストスタンド</option>
-          <option value="badhole">バッドホール</option>
-          <option value="tower">タワー</option>
-          <option value="helmet">ヘルメット</option>
-          <option value="rock">ロック</option>
-          <option value="rebound">リバウンド</option>
-          <option value="expert">エキスパート</option>
-          <option value="messiness">メッシネス</option>
-          <option value="gravity">グラビティ</option>
-          <option value="solid">ソリッド</option>
-        </select>
+        <div id="qp-mod-list" class="mod-check-grid" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 8px;font-size:0.72rem;line-height:1.2;">
+          <label><input type="checkbox" data-mod="doubleGarbage" onchange="setPlayerModToggle('doubleGarbage',this.checked)"> ダブルガベージ</label>
+          <label><input type="checkbox" data-mod="allspin" onchange="setPlayerModToggle('allspin',this.checked)"> オールスピン</label>
+          <label><input type="checkbox" data-mod="warlock" onchange="setPlayerModToggle('warlock',this.checked)"> ウォーロック</label>
+          <label><input type="checkbox" data-mod="laststand" onchange="setPlayerModToggle('laststand',this.checked)"> ラストスタンド</label>
+          <label><input type="checkbox" data-mod="badhole" onchange="setPlayerModToggle('badhole',this.checked)"> バッドホール</label>
+          <label><input type="checkbox" data-mod="tower" onchange="setPlayerModToggle('tower',this.checked)"> タワー</label>
+          <label><input type="checkbox" data-mod="helmet" onchange="setPlayerModToggle('helmet',this.checked)"> ヘルメット</label>
+          <label><input type="checkbox" data-mod="rock" onchange="setPlayerModToggle('rock',this.checked)"> ロック</label>
+          <label><input type="checkbox" data-mod="rebound" onchange="setPlayerModToggle('rebound',this.checked)"> リバウンド</label>
+          <label><input type="checkbox" data-mod="expert" onchange="setPlayerModToggle('expert',this.checked)"> エキスパート</label>
+          <label><input type="checkbox" data-mod="messiness" onchange="setPlayerModToggle('messiness',this.checked)"> メッシネス</label>
+          <label><input type="checkbox" data-mod="gravity" onchange="setPlayerModToggle('gravity',this.checked)"> グラビティ</label>
+          <label><input type="checkbox" data-mod="dice" onchange="setPlayerModToggle('dice',this.checked)"> サイコロ</label>
+          <label><input type="checkbox" data-mod="freefall" onchange="setPlayerModToggle('freefall',this.checked)"> フリーフォール</label>
+        </div>
         <span id="qp-mod-desc"></span>
       </div>
 
@@ -1610,7 +1626,7 @@
 
       <!-- EXPERT MODE (クイックプレイ専用・ホストのみ変更可) -->
       <div id="qp-expert-wrap" class="qp-duo-wrap">
-        <div class="qp-duo-title">🔥 EXPERT MODE <span class="qp-duo-sub">ゴミ準備0.5秒・相殺では登れない(m/climb上昇なし)・受けるゴミ1.3倍・ゴミは即時出現</span></div>
+        <div class="qp-duo-title">🔥 EXPERT MODE <span class="qp-duo-sub">ゴミ準備0.5秒・相殺分はm/climb上昇なし・穴ズレ+10%・ゴミは即時出現</span></div>
         <div class="hs-row">
           <label>🔥 EXPERT MODE <span class="qp-duo-sub">高難度ルール</span></label>
           <label class="toggle-switch" style="margin-left:auto">
@@ -1777,6 +1793,7 @@
               <option value="allspin">ALLSPIN</option>
               <option value="coldclear">COLD CLEAR</option>
               <option value="puyo">PUYO PUYO</option>
+              <option value="puyo_old">PUYO PUYO (旧AI)</option>
             </select>
             <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">種類</span>
           </div>
@@ -1792,25 +1809,24 @@
               oninput="document.getElementById('bot-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('botPps',this.value)">
             <span class="hs-val" id="bot-pps-val">2.5 PPS</span>
           </div>
-          <div class="hs-row">
-            <label>🔮 BOT MOD</label>
-            <select id="bot-mod-select" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:6px;padding:0.2rem 0.4rem;font-size:0.75rem">
-              <option value="none">なし</option>
-              <option value="doubleGarbage">ダブルガベージ</option>
-              <option value="allspin">オールスピン</option>
-              <option value="warlock">ウォーロック</option>
-              <option value="laststand">ラストスタンド</option>
-              <option value="badhole">バッドホール</option>
-              <option value="tower">タワー</option>
-              <option value="helmet">ヘルメット</option>
-              <option value="rock">ロック</option>
-              <option value="rebound">リバウンド</option>
-              <option value="expert">エキスパート</option>
-              <option value="messiness">メッシネス</option>
-              <option value="gravity">グラビティ</option>
-              <option value="solid">ソリッド</option>
-            </select>
-            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">MOD</span>
+          <div style="margin-top:0.35rem">
+            <label style="font-size:0.7rem;color:rgba(255,255,255,0.55)">🔮 BOT MOD（複数選択可）</label>
+            <div id="bot-mod-select" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 6px;font-size:0.68rem;color:#c8f7ff;background:rgba(0,20,30,0.5);border:1px solid rgba(0,245,255,0.15);border-radius:6px;padding:0.25rem 0.35rem;max-height:8.5rem;overflow:auto;margin-top:0.2rem;">
+              <label><input type="checkbox" data-mod="doubleGarbage"> ダブルガベージ</label>
+              <label><input type="checkbox" data-mod="allspin"> オールスピン</label>
+              <label><input type="checkbox" data-mod="warlock"> ウォーロック</label>
+              <label><input type="checkbox" data-mod="laststand"> ラストスタンド</label>
+              <label><input type="checkbox" data-mod="badhole"> バッドホール</label>
+              <label><input type="checkbox" data-mod="tower"> タワー</label>
+              <label><input type="checkbox" data-mod="helmet"> ヘルメット</label>
+              <label><input type="checkbox" data-mod="rock"> ロック</label>
+              <label><input type="checkbox" data-mod="rebound"> リバウンド</label>
+              <label><input type="checkbox" data-mod="expert"> エキスパート</label>
+              <label><input type="checkbox" data-mod="messiness"> メッシネス</label>
+              <label><input type="checkbox" data-mod="gravity"> グラビティ</label>
+              <label><input type="checkbox" data-mod="dice"> サイコロ</label>
+              <label><input type="checkbox" data-mod="freefall"> フリーフォール</label>
+              </div>
           </div>
 
           <div style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin:0.4rem 0 0.2rem">🧊 COLD CLEAR WEIGHTS — BOT Type が COLD CLEAR のとき有効（0=無効 / 1=既定 / 5=最重視）</div>
@@ -1844,6 +1860,13 @@
             <input type="range" id="puyo-power-input" min="0.25" max="3.0" step="0.25" value="1.0"
               oninput="document.getElementById('puyo-power-val').textContent=parseFloat(this.value).toFixed(2)+'×';updateRoomSetting('puyoPowerMult',this.value)">
             <span class="hs-val" id="puyo-power-val">1.0×</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🧠 PUYO AI 読み <span style="font-size:0.6rem;color:rgba(255,255,255,0.35)">PUYOボットが何手先まで読むか</span></label>
+            <input type="range" id="puyo-lookahead-input" min="0" max="5" step="1" value="2"
+              oninput="document.getElementById('puyo-lookahead-val').textContent=this.value+'手';updateRoomSetting('puyoLookahead',this.value)">
+            <span class="hs-val" id="puyo-lookahead-val">2手</span>
           </div>
           <div class="hs-row" style="margin-top:0.3rem">
             <label>♟ Shogi Mode</label>
@@ -2062,27 +2085,24 @@
         <div id="mode-select-status" style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin-top:0.4rem;text-align:center">Tetris selected</div>
       </div>
 
-      <!-- MOD SELECTION (per-player) -->
+      <!-- MOD SELECTION (per-player, multiple) -->
       <div id="mod-select-wrap" style="margin:0.5rem 0;background:rgba(0,0,0,0.3);border-radius:8px;padding:0.6rem 0.8rem;border:1px solid rgba(0,245,255,0.2)">
-        <div style="font-family:'Orbitron',sans-serif;font-size:0.7rem;color:rgba(0,245,255,0.8);letter-spacing:0.15em;margin-bottom:0.4rem">⚙ YOUR MOD</div>
-        <div style="display:flex;align-items:center;gap:0.5rem">
-          <select id="mod-select" style="flex:1;background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.3);border-radius:6px;padding:0.3rem 0.5rem;font-size:0.75rem;font-family:'Share Tech Mono',monospace"
-            onchange="setPlayerMod(this.value)">
-            <option value="none">なし</option>
-            <option value="doubleGarbage">ダブルガベージ</option>
-            <option value="allspin">オールスピン</option>
-            <option value="warlock">ウォーロック</option>
-            <option value="laststand">ラストスタンド</option>
-            <option value="badhole">バッドホール</option>
-            <option value="tower">タワー</option>
-            <option value="helmet">ヘルメット</option>
-            <option value="rock">ロック</option>
-            <option value="rebound">リバウンド</option>
-            <option value="expert">エキスパート</option>
-            <option value="messiness">メッシネス</option>
-            <option value="gravity">グラビティ</option>
-            <option value="solid">ソリッド</option>
-          </select>
+        <div style="font-family:'Orbitron',sans-serif;font-size:0.7rem;color:rgba(0,245,255,0.8);letter-spacing:0.15em;margin-bottom:0.4rem">⚙ YOUR MOD (複数選択可)</div>
+        <div id="mod-select-list" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 8px;font-size:0.75rem;line-height:1.2;color:#c8f7ff;">
+          <label><input type="checkbox" data-mod="doubleGarbage" onchange="setPlayerModToggle('doubleGarbage',this.checked)"> ダブルガベージ</label>
+          <label><input type="checkbox" data-mod="allspin" onchange="setPlayerModToggle('allspin',this.checked)"> オールスピン</label>
+          <label><input type="checkbox" data-mod="warlock" onchange="setPlayerModToggle('warlock',this.checked)"> ウォーロック</label>
+          <label><input type="checkbox" data-mod="laststand" onchange="setPlayerModToggle('laststand',this.checked)"> ラストスタンド</label>
+          <label><input type="checkbox" data-mod="badhole" onchange="setPlayerModToggle('badhole',this.checked)"> バッドホール</label>
+          <label><input type="checkbox" data-mod="tower" onchange="setPlayerModToggle('tower',this.checked)"> タワー</label>
+          <label><input type="checkbox" data-mod="helmet" onchange="setPlayerModToggle('helmet',this.checked)"> ヘルメット</label>
+          <label><input type="checkbox" data-mod="rock" onchange="setPlayerModToggle('rock',this.checked)"> ロック</label>
+          <label><input type="checkbox" data-mod="rebound" onchange="setPlayerModToggle('rebound',this.checked)"> リバウンド</label>
+          <label><input type="checkbox" data-mod="expert" onchange="setPlayerModToggle('expert',this.checked)"> エキスパート</label>
+          <label><input type="checkbox" data-mod="messiness" onchange="setPlayerModToggle('messiness',this.checked)"> メッシネス</label>
+          <label><input type="checkbox" data-mod="gravity" onchange="setPlayerModToggle('gravity',this.checked)"> グラビティ</label>
+          <label><input type="checkbox" data-mod="dice" onchange="setPlayerModToggle('dice',this.checked)"> サイコロ</label>
+          <label><input type="checkbox" data-mod="freefall" onchange="setPlayerModToggle('freefall',this.checked)"> フリーフォール</label>
         </div>
         <div id="mod-select-desc" style="font-size:0.6rem;color:rgba(255,255,255,0.35);margin-top:0.3rem"></div>
       </div>
@@ -2207,6 +2227,13 @@
       <select id="shake-select" onchange="updateSetting('shake',this.value)">
         <option value="off">OFF</option>
         <option value="on" selected>ON</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>ERROR BANNER</label>
+      <select id="error-banner-select" onchange="updateSetting('errorBanner',this.value)">
+        <option value="on" selected>ON (エラー時に赤帯表示)</option>
+        <option value="off">OFF (隠す)</option>
       </select>
     </div>
     <div class="settings-row">

@@ -11,6 +11,7 @@ function _addGameTicker(fn) {
 let mobileControlsEnabled = false; // Mobile controls toggle
 let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',shakeIntensity:100,sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,arrowSpeed:100,arrowSize:100,shakeSpeed:100,rippleStrength:100,rippleSpeed:100,
   overlayOpacity:33,
+  errorBanner:'on',
   uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
   dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false}};
 function loadSettings(){
@@ -58,6 +59,7 @@ function updateSetting(key,val){
   else if(key==='dcdDelay'){settings.dcdDelay=parseInt(val);document.getElementById('dcd-delay-val').textContent=val+'ms';}
   else if(key==='swipeThreshold'){settings.swipeThreshold=parseInt(val);document.getElementById('swipe-threshold-val').textContent=val+'px';}
   else if(key==='maxFPS'){settings.maxFPS=parseInt(val);document.getElementById('maxfps-val').textContent=val+'fps';if(gameApp&&gameApp.ticker)gameApp.ticker.maxFPS=parseInt(val);PIXI.Ticker.shared.maxFPS=parseInt(val);}
+  else if(key==='errorBanner')settings.errorBanner=val;
   else if(key==='dpad'){if(val.part){settings.dpad[val.part]={...settings.dpad[val.part],...val.data};}else{settings.dpad={...settings.dpad,...val};}applyDpadLayout();}
   else if(key==='uiLayout'){settings.uiLayout={...settings.uiLayout,...val};applyUiLayout();}
   saveSettings();
@@ -217,7 +219,8 @@ let batchComboMode=false; // バッチコンボモード
 let isSpectator=false; // 観戦モードフラグ
 let myGameMode='tetris'; // 'tetris' or 'puyo' - this player's chosen mode
 let playerModes={}; // map of playerId -> 'tetris'|'puyo'
-let playerMods={}; // map of playerId -> 'none'|'doubleGarbage'|'allspin'|'warlock'|'laststand'|'badhole'
+let playerMods={}; // map of playerId -> primary mod (compat)
+let playerModLists={}; // map of playerId -> string[] (multiple mods)
 let _allspinConsecType=null; // AllSpin penalty: consecutive clear piece type tracking
 let _allspinConsecCount=0;   // AllSpin penalty: consecutive same-type count
 let _warlockB2bBonus=0;      // Warlock: extra B2B bonus from penalty replacement
@@ -428,7 +431,7 @@ function backToLobby(){
 // ---- Mutation Mode ----
 let mutationMode=false;
 let mutationSeed=0;
-let roomSettings={mutationRate:60,gravityBase:1000,gravityDec:80,gravityMin:50,lockDelay:1000,garbageMultiplier:2,multiplierDelayMin:1.6,multiplierIntervalSec:1,multiplierRate:0.03,targetMode:'random',expertMode:false};
+let roomSettings={mutationRate:60,gravityBase:1000,gravityDec:80,gravityMin:50,lockDelay:500,garbageMultiplier:2,puyoLookahead:2,multiplierDelayMin:1.6,multiplierIntervalSec:1,multiplierRate:0.03,targetMode:'random',expertMode:false};
 
 function toggleMutation(enabled){
   if(!isHost)return;
@@ -841,9 +844,56 @@ function _qpSyncModeButtons(){
   _styleModeButtons(mode, 'qp-mode-tetris-btn', 'qp-mode-puyo-btn', 'qp-mode-select-status');
 }
 
+// Normalize mod list from server/client
+function getPlayerModList(id){
+  if(Array.isArray(playerModLists?.[id])) return playerModLists[id].filter(m=>m&&m!=='none');
+  const m=playerMods?.[id]; return (m&&m!=='none')?[m]:[];
+}
+function hasPlayerMod(id, mod){ return getPlayerModList(id).includes(mod); }
+function myMods(){ return getPlayerModList(socket.id); }
+function myHasMod(mod){ return hasPlayerMod(socket.id, mod); }
+
+function _syncModSelectUI(){
+  const list = (myMods && typeof myMods=== 'function') ? myMods() : (playerModLists && playerModLists[socket.id] ? playerModLists[socket.id].filter(m=>m&&m!=='none') : []);
+  const safeList = (list&&list.filter) ? list.filter(m=>m&&m!=='none') : [];
+  const syncList = (wrapId, descId) => {
+    const wrap = document.getElementById(wrapId);
+    if(!wrap) return;
+    const cbs = wrap ? wrap.querySelectorAll('input[type=checkbox][data-mod]') : [];
+    if(cbs) cbs.forEach(cb=>{ try{cb.checked = safeList.includes(cb.dataset.mod);}catch(e){} });
+    const desc = document.getElementById(descId);
+    if(desc) try{desc.textContent = safeList.map(m=>MOD_DESCRIPTIONS[m]||m).join(' / ')}catch(e){}
+  };
+  try{syncList('mod-select-wrap','mod-select-desc')}catch(e){}
+  try{syncList('qp-mod-wrap','qp-mod-desc')}catch(e){}
+  // bot add panel: checkbox grid
+  try{
+    const bsel = document.getElementById('bot-mod-select');
+    if(bsel && bsel.querySelectorAll) bsel.querySelectorAll('input[type=checkbox][data-mod]').forEach(cb=>{ /* keep selection; don't overwrite */ });
+  }catch(e){}
+}
+
+function setPlayerMod(mod){ // compat: single mod
+  if(!mod || mod==='none') setPlayerMods([]);
+  else setPlayerMods([mod]);
+}
+function setPlayerMods(mods){
+  const clean = Array.from(new Set((mods||[]).filter(m=>m&&m!=='none')));
+  playerMods[socket.id] = clean[0] || 'none';
+  playerModLists[socket.id] = clean;
+  socket.emit('set_player_mod', {mods: clean});
+  _syncModSelectUI();
+}
+function setPlayerModToggle(mod, enabled){
+  const list = myMods();
+  const on = !!enabled;
+  const next = on ? Array.from(new Set([...list, mod])) : list.filter(m=>m!==mod);
+  setPlayerMods(next);
+}
+
 const MOD_DESCRIPTIONS = {
   none: '',
-  doubleGarbage: '攻撃が2倍になる（送るゴミ×2）',
+  doubleGarbage: '受けるゴミが2倍になる（受信側×2）',
   allspin: 'MINI→TSPIN + 連続同種消除で耐久ゴミ出現',
   warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミは穴バラバラ・半減・3秒準備、送る攻撃もB2B解除時以外は半減、重力がレベルで増えない',
   laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
@@ -855,24 +905,9 @@ const MOD_DESCRIPTIONS = {
   expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現',
   messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
   gravity: '1ブロック置くごとに落下速度が1.1倍になる',
-  solid: '受けるゴミはAllSpinと同じ耐久ペナルティライン5段(5回ラインを消すと変化)。変化した時は相手へ1ライン送信し、一度に変化した分は直列(同じ穴列)'
+  dice: 'ラインを消すたびに1.2秒間のエフェクトが入り操作が硬直する。受けるゴミは0.8倍・穴がすごくバラバラ',
+  freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。さらに1ピース置くごとに固定時間が-1ms（最低0.3秒）'
 };
-
-function setPlayerMod(mod) {
-  playerMods[socket.id] = mod;
-  socket.emit('set_player_mod', {mod});
-  // Update description
-  const desc = document.getElementById('mod-select-desc');
-  if(desc) desc.textContent = MOD_DESCRIPTIONS[mod] || '';
-  // Sync dropdown if called programmatically
-  const sel = document.getElementById('mod-select');
-  if(sel && sel.value !== mod) sel.value = mod;
-  // Quick Play用MOD選択の同期
-  const qsel = document.getElementById('qp-mod-select');
-  if(qsel && qsel.value !== mod) qsel.value = mod;
-  const qdesc = document.getElementById('qp-mod-desc');
-  if(qdesc) qdesc.textContent = MOD_DESCRIPTIONS[mod] || '';
-}
 
 function glBackToTitle(){
   myName='';roomId=null;_lastUsedRoomId=null;
@@ -998,31 +1033,26 @@ socket.on('player_modes_update',({playerModes:pm})=>{
   });
   updatePlayerList(roomPlayers);
 });
-socket.on('player_mods_update',({playerMods:pm})=>{
+socket.on('player_mods_update',({playerMods:pm, playerModLists:pml})=>{
   playerMods=pm||{};
+  if(pml) playerModLists=pml||{}; else if(!playerModLists) playerModLists={};
   updatePlayerList(roomPlayers);
-  // Sync my MOD dropdown
-  const myMod=playerMods[socket.id]||'none';
-  const sel=document.getElementById('mod-select');
-  if(sel) sel.value=myMod;
-  const desc=document.getElementById('mod-select-desc');
-  if(desc) desc.textContent=MOD_DESCRIPTIONS[myMod]||'';
+  try{ _syncModSelectUI(); }catch(e){}
 });
 
-socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,roomSettings:rs,hasCustomCode:hcc,playerModes:pm,playerMods:pmod})=>{
+socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,roomSettings:rs,hasCustomCode:hcc,playerModes:pm,playerMods:pmod,playerModLists:pml})=>{
   roomPlayers=players;isHost=(socket.id===host);
   if(pm) playerModes=pm;
   if(pmod){
-    // マージ方式: サーバーのpmodで上書きしつつ、ローカルで設定済みの自分のMOD値を保持
-    const myLocalMod=playerMods[socket.id];
+    const localList = playerModLists && playerModLists[socket.id];
     playerMods={...pmod};
-    if(myLocalMod) playerMods[socket.id]=myLocalMod;
+    if(pml) playerModLists={...playerModLists, ...pml};
+    if(localList && localList.length && !(playerModLists[socket.id] && playerModLists[socket.id].length)) playerModLists[socket.id]=localList;
+  } else if(pml){
+    playerModLists={...playerModLists, ...pml};
   }
   updatePlayerList(players);
-  // Sync my MOD dropdown
-  const myMod=playerMods[socket.id]||'none';
-  const sel=document.getElementById('mod-select');
-  if(sel) sel.value=myMod;
+  try{ _syncModSelectUI(); }catch(e){}
   _hasCustomBotCode=!!hcc;
   if(!started)resetRoomInactivityTimer();
   else{if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);_removeInactivityBtn();}
@@ -1211,6 +1241,13 @@ function _puyoSyncInputs(rs){
   const qpv=document.getElementById('qp-puyo-power-val');
   if(qpi)qpi.value=val;
   if(qpv)qpv.textContent=val.toFixed(2)+'×';
+  // ぷよボットの読みの深さ（何手先まで読むか）
+  const la0=parseInt(rs.puyoLookahead,10);
+  const lav=Number.isFinite(la0)?Math.max(0,Math.min(5,la0)):2;
+  const lai=document.getElementById('puyo-lookahead-input');
+  const lavOut=document.getElementById('puyo-lookahead-val');
+  if(lai)lai.value=lav;
+  if(lavOut)lavOut.textContent=lav+'手';
   const qpt=document.getElementById('qp-puyo-bots-toggle');
   if(qpt)qpt.checked=!!(rs.qpPuyoBots);
 }
@@ -1643,6 +1680,16 @@ function qpPushGain(n){
   setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1150);
   while(cont.childElementCount>4)cont.firstChild.remove();
 }
+// 累計30ラインのmボーナスが出た瞬間に「bonus!」を表示
+function qpPushBonus(){
+  const cont=document.getElementById('qp-hud-gain');if(!cont)return;
+  const el=document.createElement('div');
+  el.className='qp-bonus-pop';
+  el.textContent='bonus!';
+  cont.appendChild(el);
+  setTimeout(()=>{if(el.parentNode)el.parentNode.removeChild(el);},1500);
+  while(cont.childElementCount>4)cont.firstChild.remove();
+}
 // ライン消去した瞬間に星の流れを加速（消去→m上昇の遅延をなくすためクライアント側で即時発火）
 function qpLocalClearBoost(n){
   _qpLastLocalClearMs=performance.now();
@@ -1738,10 +1785,8 @@ function openQuickPlay(){
   _lastUsedRoomId=null;
   showScreen('quickplay');
   const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
-  const modSel=document.getElementById('qp-mod-select');
-  if(modSel)modSel.value=playerMods[socket.id]||'none';
-  const modDesc=document.getElementById('qp-mod-desc');
-  if(modDesc)modDesc.textContent=MOD_DESCRIPTIONS[playerMods[socket.id]||'none']||'';
+  // QP MOD UI is checkbox-based now
+  try{ _syncModSelectUI(); }catch(e){}
   _qpSyncModeButtons();
   qpEnsureStarfield();
   document.getElementById('qp-play-btn').style.display='none';
@@ -1872,8 +1917,7 @@ socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   else if(started&&!isHost){}
   document.getElementById('qp-room-id').textContent=rid||'------';
   const layout=document.getElementById('qp-layout');if(layout)layout.className='showing-both';
-  const modSel=document.getElementById('qp-mod-select');
-  if(modSel)modSel.value=playerMods[socket.id]||'none';
+  try{ _syncModSelectUI(); }catch(e){}
   const pt=document.getElementById('qp-play-btn');
   if(pt)pt.style.display=isHost&&!started?'block':'none';
   _qpSyncModeButtons();
@@ -1939,6 +1983,9 @@ socket.on('qp_garbage_warning',({lines})=>{
   qpWarnUntil=performance.now()+3000;
   qpWarnLines=lines||0;
 });
+
+// 累計30ラインのmボーナス → 「bonus!」表示
+socket.on('qp_line_bonus',()=>{ try{qpPushBonus();}catch(e){} });
 
 // 試合終了 → 全員生き返り（プレビューをクリアして試合前に戻る）
 socket.on('qp_reset',()=>{
@@ -2042,10 +2089,11 @@ function updateRoomSettingsUI(rs){
   const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
   const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
   const bl=document.getElementById('bot-level-input');if(bl){const bv=Math.max(1,Math.min(5,parseInt(rs.botLevel)||5));bl.value=bv;document.getElementById('bot-level-val').textContent=getBotLevelLabel(bv);}
-  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear'||rs.botType==='puyo')?rs.botType:'normal';
+  const btSel=document.getElementById('bot-type-select');if(btSel)btSel.value=(rs.botType==='allspin'||rs.botType==='coldclear'||rs.botType==='puyo'||rs.botType==='puyo_old')?rs.botType:'normal';
   const tmSel=document.getElementById('target-mode-select');if(tmSel)tmSel.value=(rs.targetMode==='spread')?'spread':'random';
   const bps=document.getElementById('bot-pps-input');if(bps){bps.value=rs.botPps??2.5;document.getElementById('bot-pps-val').textContent=(parseFloat(rs.botPps)||2.5).toFixed(1)+' PPS';}
   _cc2SyncInputs(rs);
+  _puyoSyncInputs(rs);
   // duo設定はクイックプレイ専用: 通常ルームでは同期しない
   if(quickPlayMode)qpSyncDuoPanel(true);
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
@@ -2107,7 +2155,7 @@ function getBotLevelLabel(lvl){
   return ['','BEGINNER','EASY','STRONG','EXPERT','GOD'][lvl]||'STRONG';
 }
 function botTypeLabel(bt,lvl){
-  return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':bt==='puyo'?'PUYO PUYO':'Lv.'+(lvl||'?');
+  return bt==='allspin'?'ALLSPIN':bt==='coldclear'?'COLD CLEAR':bt==='puyo'?'PUYO PUYO':bt==='puyo_old'?'PUYO PUYO (旧AI)':'Lv.'+(lvl||'?');
 }
 function _saveRoomSettings(){
   // duo系キーはクイックプレイ専用: 通常モードの保存には含めない
@@ -2136,7 +2184,9 @@ function addBot(){
   const lvl=parseInt(document.getElementById('bot-level-input')?.value)||roomSettings.botLevel||5;
   const type=document.getElementById('bot-type-select')?.value||roomSettings.botType||'normal';
   const pps=parseFloat(document.getElementById('bot-pps-input')?.value)||roomSettings.botPps||2.5;
-  const botMod=document.getElementById('bot-mod-select')?.value||'none';
+  const botModWrap=document.getElementById('bot-mod-select');
+  const botMods = botModWrap ? Array.from(botModWrap.querySelectorAll('input[type=checkbox][data-mod]:checked')).map(cb=>cb.dataset.mod).filter(Boolean) : [];
+  const botMod = botMods[0] || 'none';
   const fi=document.getElementById('bot-code-input');
   const file=fi&&fi.files[0]?fi.files[0]:null;
   const fname=file?file.name.replace(/\.[^.]+$/, ''):null;
@@ -2148,17 +2198,19 @@ function addBot(){
       document.getElementById('bot-code-status').textContent='✅ Uploaded: '+file.name;
       _hasCustomBotCode=true;
       if(typeof updateBotList==='function')updateBotList(roomPlayers);
-      socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botCode:code,botMod});
+      socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botMod,botMods});
     };
     reader.readAsText(file);
   } else {
-    socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botMod:botMod});
+    socket.emit('add_bot',{botLevel:lvl,botType:type,botPps:pps,botFileName:fname,botMod,botMods});
   }
 }
 
 function setBotMod(botId, mod){
-  socket.emit('set_bot_mod',{botId,mod});
-  if(playerMods)playerMods[botId]=mod;
+  const botModWrap=document.getElementById('bot-mod-select');
+  const botMods = botModWrap ? Array.from(botModWrap.querySelectorAll('input[type=checkbox][data-mod]:checked')).map(cb=>cb.dataset.mod).filter(Boolean) : [];
+  socket.emit('set_bot_mod',{botId,mod:botMods[0]||mod,mods:botMods});
+  if(playerMods)playerMods[botId]=botMods[0]||'none';
 }
 
 let _hasCustomBotCode=false;
@@ -2192,13 +2244,16 @@ function updateBotList(players){
   const bots=players.filter(p=>p.isBot);
   const el=document.getElementById('bot-list');
   if(!el)return;
-  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', solid:'SL'};
-  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', solid:'#a78bfa'};
+  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF'};
+  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8'};
   el.innerHTML=bots.map(b=>{
-    const mod=(playerMods&&playerMods[b.id])||b.mod||'none';
-    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','solid'];
+    const list = playerModLists && playerModLists[b.id] ? playerModLists[b.id].filter(m=>m&&m!=='none') : (playerMods && playerMods[b.id] ? [playerMods[b.id]] : [b.mod||'none']);
+    const activeMods = list.filter(m=>m&&m!=='none');
+    const mod = activeMods.length ? activeMods : (playerMods&&playerMods[b.id]||b.mod||'none');
+    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','dice','freefall'];
     const modSel=isHost?`<select onchange="setBotMod('${b.id}',this.value)" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:4px;padding:0.1rem 0.3rem;font-size:0.65rem;margin-left:0.3rem">${modOpts.map(o=>`<option value="${o}" ${o===mod?'selected':''}>${o==='none'?'なし':(modLabels[o]||o)}</option>`).join('')}</select>`:`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`;
-    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${botTypeLabel(b.botType,b.botLevel)}</span>${mod!=='none'&&!isHost?'<span style="font-size:0.6rem;color:'+modColors[mod]+';background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">'+modLabels[mod]+'</span>':''}${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><span style="display:flex;align-items:center">${modSel}<button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem;margin-left:0.3rem">KICK</button></span></div>`;
+    const modBadge = activeMods.length ? activeMods.map(m=>`<span style="font-size:0.55rem;color:${modColors[m]||'#fff'};background:rgba(255,255,255,0.1);border-radius:2px;padding:0 3px;margin:0 2px;font-weight:700">${modLabels[m]||m}</span>`).join(' / ') : (mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'');
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${botTypeLabel(b.botType,b.botLevel)}</span>${mod!=='none'&&!isHost?'<span style="font-size:0.6rem;color:'+modColors[mod]+';background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">'+modLabels[mod]+'</span>':''}${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><span style="display:flex;align-items:center">${modBadge}${modSel}<button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem;margin-left:0.3rem">KICK</button></span></div>`;
   }).join('');
 }
 
@@ -2207,8 +2262,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', solid:'SL'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', solid:'#a78bfa'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -2219,7 +2274,7 @@ function updatePlayerList(players){
       ${i===0&&!p.isBot?'<span class="host-badge">HOST</span>':''}
     </div>`;
   }).join('');
-  if(isHost)updateBotList(players);
+  updateBotList(players);
 }
 
 // ---- Countdown then start ----
@@ -2424,6 +2479,8 @@ const SFX={
   countdownBeep:(n)=>playTone(n===1?880:440,'square',0.14,0.55),
   countdownGo:()=>{[440,660,880,1100].forEach((f,i)=>setTimeout(()=>playTone(f,'square',0.12,0.7),i*70));},
   attack:()=>{playTone(220,'sawtooth',0.08,0.45);setTimeout(()=>playTone(330,'square',0.06,0.3),60);},
+  // サイコロMOD: ライン消去エフェクト音（ダイスを振るような短い下降+上昇ジングル）
+  dice:()=>{[880,740,880,1175].forEach((f,i)=>setTimeout(()=>playTone(f,'triangle',0.09,0.5),i*70));playNoise(0.12,0.3,900);},
 };
 
 // ---- Constants ----
@@ -2502,6 +2559,8 @@ class TetrisGame{
     this.alive=true;this.locking=false;
     this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
+    this._lastClearShown=undefined;
+    this._lastClearPiece=undefined;
     this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=0;
     this.garbageQueue=[];
     this._deferredGarbage=[];
@@ -2555,14 +2614,14 @@ class TetrisGame{
 
     this.spawnPiece();
 
-    if((playerMods[socket.id]||'none')==='tower') this._initTower();
-    if((playerMods[socket.id]||'none')==='badhole') this._initBadholeIdle();
-    if((playerMods[socket.id]||'none')==='badhole'){
+    if(myHasMod('tower')) this._initTower();
+    if(myHasMod('badhole')) this._initBadholeIdle();
+    if(myHasMod('badhole')){
       // Bad Hole: 開始時に穴5~7個のゴミ4ラインをキューに溜める
       const rt=performance.now()+1200;
       this.garbageQueue.push({lines:4,fromId:socket.id,readyAt:rt,holeCol:0,holes3:0,badHole:true});
     }
-    if((playerMods[socket.id]||'none')==='warlock'){
+    if(myHasMod('warlock')){
       // Warlock: 開始時に穴バラのガベージを5ラインキューに溜める
       const cols=getGameCols();
       const rt=performance.now()+1200;
@@ -2571,7 +2630,7 @@ class TetrisGame{
         this.garbageQueue.push({lines:1,fromId:socket.id,readyAt:rt,holeCol:hc,holes3:0,scatteredHole:true});
       }
     }
-    if((playerMods[socket.id]||'none')==='helmet'){
+    if(myHasMod('helmet')){
       // Helmet: ストreakをリセット。
       this._helmetStreak = 0;
     }
@@ -2586,7 +2645,7 @@ class TetrisGame{
 
   // 次のミノ種別を取得（Helmet MOD の場合は偏り乱数）
   _nextType(){
-    if((playerMods[socket.id]||'none')==='helmet') return this._helmetNextType();
+    if(myHasMod('helmet')) return this._helmetNextType();
     return this.bag.next();
   }
 
@@ -2632,11 +2691,21 @@ class TetrisGame{
     this._garbagePushY=0;
     this.current={type,rotation:0,x:_spX,y:_spawnY,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
+    
+    // ── フリーフォールで28個以上に達している場合はスポーン直後に即座に最下部（ghostY）へスナップ ──
+    if(myHasMod('freefall') && (this._freefallPieces||0)>=28){
+      const gy=this.ghostY();
+      this.current.y=gy;
+    }
+
     if(renderer)renderer._wallBumpActive=false;
     // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら
     // すぐには終わらず、一度設置させてから判定する
     if(!this.isValid(this.current)){
       this._pendingGameOver=true;
+    } else if(myHasMod('freefall') && (this._freefallPieces||0)>=28 && !this.isValid(this.current,0,1)){
+      // スポーンして1フレーム後（即座に下についた状態）にロックタイマー起動
+      this.startLockTimer();
     }
   }
 
@@ -2674,6 +2743,7 @@ class TetrisGame{
   }
 
   rotate(dir){
+    if(this._diceFrozen()) return false;
     const oldRot=this.current.rotation;
     const newRot=((oldRot+(dir>0?1:3))%4+4)%4;
     // スピン前の状態を保存（残像用）
@@ -2730,7 +2800,7 @@ class TetrisGame{
         const ff=front.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=getGameCols()||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
         this.lastSpin='T';this.lastSpinType=ff.length>=2?'TSPIN':'MINI_TSPIN';
         // AllSpin MOD: MINI→TSPIN
-        if(playerMods[socket.id]==='allspin'&&this.lastSpinType==='MINI_TSPIN') this.lastSpinType='TSPIN';
+        if(myHasMod('allspin')&&this.lastSpinType==='MINI_TSPIN') this.lastSpinType='TSPIN';
       }
     }
     if(['S','Z','L','J'].includes(type)){
@@ -2760,6 +2830,7 @@ class TetrisGame{
   // 180°回転（Aキー）: kick付きで試行、スピン判定はlockPiece時に行う
   rotate180(){
     if(!this.current)return false;
+    if(this._diceFrozen()) return false;
     const prePiece={...this.current};
     const preShape=this._getShapeForPiece(this.current).map(r=>[...r]);
     const oldRot=this.current.rotation;
@@ -2808,8 +2879,20 @@ class TetrisGame{
     }
   }
 
+  // ── MOD: サイコロ ── ライン消去時に1.2秒のエフェクト+操作硬直 ──
+  _diceFreeze(ms, effectBlocks){
+    this._diceFreezeUntil=performance.now()+ms;
+    this._diceFreezeStart=performance.now();
+    this._diceEffectBlocks = effectBlocks || [];
+    try{SFX.dice&&SFX.dice();}catch(e){}
+  }
+  _diceFrozen(){
+    return (this._diceFreezeUntil||0)>performance.now();
+  }
+
   move(dx){
     if(!this.current) return false;
+    if(this._diceFrozen()) return false;
     if(this.isValid(this.current,dx,0)){
       this.current.x+=dx;this.lastSpin=null;this._wasKicked=false;this._updateLockAfterMove();SFX.move();
       return true;
@@ -2823,17 +2906,21 @@ class TetrisGame{
     if(this.lockTimer){
       // リセットごとにロック遅延を-40ms減らす（ミノごとに0からカウント）
       this._lockResetCount=(this._lockResetCount||0)+1;
+      // 15回リセットしたら強制ロック
+      if(this._lockResetCount>=15){this.cancelLock();this.lockPiece();return;}
       clearTimeout(this.lockTimer);this.lockTimer=null;this._lockHalf=false;this.startLockTimer();
     }
   }
 
   softDrop(){
     if(!this.current) return false;
+    if(this._diceFrozen()) return false;
     if(this.isValid(this.current,0,1)){this.current.y++;this.score+=1;return true;}
     else{this._lockHalf=true;this.startLockTimer();return false;}
   }
 
   hardDrop(){
+    if(this._diceFrozen()) return;
     let d=0;while(this.isValid(this.current,0,1)){this.current.y++;d++;}
     this.score+=d*2;SFX.hardDrop();
     renderer&&renderer.onHardDrop(d);
@@ -2843,14 +2930,30 @@ class TetrisGame{
 
   ghostY(){let gy=this.current.y;while(this.isValid({...this.current,y:gy+1}))gy++;return gy;}
 
-  startLockTimer(){if(this.lockTimer)return;this.lockStartTime=performance.now();const base=this._lockHalf?this.lockDelay*0.75:this.lockDelay;const delay=Math.max(40,base-40*(this._lockResetCount||0));this._lockDelayActual=delay;this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},delay);}
+  startLockTimer(){
+    if(this.lockTimer)return;
+    this.lockStartTime=performance.now();
+    let base;
+    if(myHasMod('freefall')){
+      const pieces=this._freefallPieces||0;
+      base=Math.max(250, 500 - pieces * 0.5);
+    } else {
+      base=this._lockHalf?Math.min(this.lockDelay,500):this.lockDelay;
+    }
+    const ffRed=0;
+    const delay=Math.max(40,base-40*(this._lockResetCount||0)-ffRed);
+    this._lockDelayActual=delay;
+    this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},delay);
+  }
   cancelLock(){if(this.lockTimer){clearTimeout(this.lockTimer);this.lockTimer=null;this.lockStartTime=null;}}
 
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
     // ── MOD: Gravity (自プレイヤー) ── 1ブロック置くごとに落下速度を1.1倍する
-    if((playerMods[socket.id]||'none')==='gravity')this._gravityMult=(this._gravityMult||1)*1.1;
+    if(myHasMod('gravity'))this._gravityMult=(this._gravityMult||1)*1.1;
+    // ── MOD: フリーフォール ── 1ピース置くごとに落下速度1.5倍（上限なし）・固定時間-1ms（最低0.3秒）
+    if(myHasMod('freefall')){this._freefallMult=(this._freefallMult||1)*1.5;this._freefallPieces=(this._freefallPieces||0)+1;}
     // ── Solo MOD: アンドゥ用に配置前の状態を保存 ──
     if(isOfflineSolo||isSoloGame){
       if(!this._undoStack)this._undoStack=[];
@@ -3036,14 +3139,47 @@ class TetrisGame{
     }
 
     if(count>0){
-      // *** FIX: Remove cleared lines FIRST before adding garbage ***
-      // This prevents index shifting bugs when garbage is added simultaneously
-      const desc=[...cleared].sort((a,b)=>b-a);
-      for(const idx of desc)this.board.splice(idx,1);
-      for(let i=0;i<count;i++)this.board.unshift(Array(getGameCols()).fill(0));
+      // ── MOD: サイコロ ── ラインを消すたびにエフェクト+操作硬直。上のラインはすぐには降りてこない
+      if(myHasMod('dice')){
+        const effectBlocks = [];
+        for(const r of cleared) {
+          for(let c=0; c<getGameCols(); c++) {
+            if(this.board[r][c] !== 0) {
+              const alphaBase = 0.2 + Math.random() * 0.5;
+              // 同じ場所に2つの重なった正方形を生成し、それぞれ異なるランダム速度で飛び散らせる
+              for(let k=0; k<2; k++){
+                effectBlocks.push({
+                  r, c,
+                  alpha: alphaBase,
+                  vx: (Math.random() - 0.5) * 6,     // 飛び散る横速度
+                  vy: -2 - Math.random() * 4         // 飛び散る縦速度（上方へ）
+                });
+              }
+            }
+            this.board[r][c] = 0; // 行の内容は消すが、行自体は残す（上のラインを浮かせたままにする）
+          }
+        }
+        this._diceFreeze(1150, effectBlocks);
+        
+        // 1.15秒後にボードを崩落させる
+        setTimeout(() => {
+          if(!this.alive) return;
+          const desc=[...cleared].sort((a,b)=>b-a);
+          for(const idx of desc)this.board.splice(idx,1);
+          for(let i=0;i<count;i++)this.board.unshift(Array(getGameCols()).fill(0));
+          while(this.board.length>ROWS+HIDDEN&&this.board[0].every(c=>c===0))this.board.shift();
+          renderer&&renderer.drawBoard();
+        }, 1150);
+      } else {
+        // *** FIX: Remove cleared lines FIRST before adding garbage ***
+        // This prevents index shifting bugs when garbage is added simultaneously
+        const desc=[...cleared].sort((a,b)=>b-a);
+        for(const idx of desc)this.board.splice(idx,1);
+        for(let i=0;i<count;i++)this.board.unshift(Array(getGameCols()).fill(0));
 
-      // 空行のみトリム、ロック済みセルは保持
-      while(this.board.length>ROWS+HIDDEN&&this.board[0].every(c=>c===0))this.board.shift();
+        // 空行のみトリム、ロック済みセルは保持
+        while(this.board.length>ROWS+HIDDEN&&this.board[0].every(c=>c===0))this.board.shift();
+      }
 
       // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
       if(is180Spin&&count>=1){isSpin=true;}
@@ -3051,7 +3187,6 @@ class TetrisGame{
       if(this.ren>1)SFX.ren(this.ren);
 
       // ── Attack Calculation (TETR.IO Standard) ───────────────────
-      const myMod = playerMods[socket.id] || 'none';
       const isPenta=count===5;
       const isB2Bable = season1Mode ? (isTSpin || count===4 || isPenta || allClear) : (count===4 || isPenta || (isSpin) || allClear);
       const wasB2B = this.b2b;
@@ -3063,7 +3198,7 @@ class TetrisGame{
       }
       else{
         const isNonTSpin=isSpin&&!isTSpin&&count>0;
-        const allspinActive=playerMods[socket.id]==='allspin';
+        const allspinActive=myHasMod('allspin')||myHasMod('warlock');
         if(isTSpin&&!isMini) attack={1:2,2:3,3:5}[count]||0;
         else if(isTSpin&&isMini) attack={1:1,2:1}[count]||0;
         else if(isNonTSpin&&allspinActive) attack=count*2;
@@ -3074,6 +3209,7 @@ class TetrisGame{
       }
 
       // B2B bonus
+      let warlockB2bProtected=0; // Warlock: B2B+2 は後段の半減で目減りしないよう保護
       if(season1Mode){
         this._b2bBreakHoles3 = 0;
         if(isB2Bable) attack += this.getSeason1B2BBonus(this.b2bCount);
@@ -3081,9 +3217,10 @@ class TetrisGame{
         if(isB2B && attack > 0) attack += 1;
       } else {
         // Warlock MOD: B2Bボーナスは+2（通常は+1）
-        const b2bBonus=(playerMods[socket.id]==='warlock')?2:1;
+        const b2bBonus=myHasMod('warlock')?2:1;
         if(isB2B && attack > 0) {
           attack += b2bBonus;
+          if(myHasMod('warlock')) warlockB2bProtected=b2bBonus;
         }
         // B2B Break: accumulated b2bCount sent as lines
         if (wasB2B && !isB2Bable && count > 0 && this.b2bCount >= 4) {
@@ -3126,7 +3263,7 @@ class TetrisGame{
 
       // ── Bad Hole MOD: blight ──
       // ゴミを含む消去で起動。次のライン消し(スピン問わず)で火力2倍になり、その時点で解除。
-      if(myMod==='badhole'){
+      if(myHasMod('badhole')){
         if(_badholeNextAtk2x && attack>0){
           attack*=2;
           _badholeNextAtk2x=false;
@@ -3140,10 +3277,10 @@ class TetrisGame{
       if(garbageCountInClear > 0) attack += 1;
 
       // ── Helmet MOD: ゴミを含めて消したら更に+1(合計+2) ──
-      if(myMod==='helmet' && garbageCountInClear > 0) attack += 1;
+      if(myHasMod('helmet') && garbageCountInClear > 0) attack += 1;
 
       // ── Rock MOD: 受けた穴なしゴミ(R)をシールドとして消費 ──
-      if(myMod==='rock'){
+      if(myHasMod('rock')){
         // 盤面上の穴なしゴミ(R)行数を底から連続カウント
         let rockRows=0;
         for(let r=this.board.length-1;r>=0;r--){
@@ -3232,25 +3369,26 @@ class TetrisGame{
       const cancelledByGarbage = attack - cancelPower;
       this._lastCancelledByGarbage = cancelledByGarbage;
       // ── Expert MOD: 相殺した半分を蓄積（次にゴミが出現する時に一緒に出す） ──
-      if(myMod==='expert' && cancelledByGarbage>0){
+      if(myHasMod('expert') && cancelledByGarbage>0){
         this._expertStored += Math.floor(cancelledByGarbage/2);
       }
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
-      // ── MOD: Warlock ── 送る攻撃は半分(B2B解除時以外)
-      if(myMod==='warlock' && !(wasB2B && !isB2Bable && count>0)){
-        attack=Math.ceil(attack/2);
+      // ── MOD: Warlock ── 送る攻撃は半分(B2B解除時以外)。B2B+2ボーナスは半減から保護する
+      if(myHasMod('warlock') && !(wasB2B && !isB2Bable && count>0)){
+        const _protect=Math.min(warlockB2bProtected, attack);
+        attack=Math.ceil((attack-_protect)/2)+_protect;
       }
 
       // ── Tower MOD: 階層上昇は「攻撃したミノライン分」をそのまま加算 ──
-      if(myMod==='tower' && attack>0){
+      if(myHasMod('tower') && attack>0){
         this._towerLevel=Math.min(9,Math.max(0, this._towerLevel + attack));
         this._updateTowerPermanent();
         this._updateTowerHUD(attack);
       }
       // ── Tower MOD: 実際に送信する攻撃だけを (階層+5)/10 倍にする（相殺・階層には影響させない） ──
-      if(myMod==='tower' && attack>0){
+      if(myHasMod('tower') && attack>0){
         const towerFactor=(this._towerLevel+5)/10;
         attack=Math.max(0,Math.round(attack*towerFactor));
       }
@@ -3273,7 +3411,7 @@ class TetrisGame{
       if(attack>0&&renderer&&renderer.onLinesSent)renderer.onLinesSent(attack,this._lockX,this._lockY,this._lockType,this._lockRot);
 
       // ── Rebound MOD: 送った攻撃の半分を即座に自分の盤面下にゴミとして出す ──
-      if(myMod==='rebound' && attack>0){
+      if(myHasMod('rebound') && attack>0){
         const reb=Math.floor(attack/2);
         if(reb>0){
           const cols=getGameCols();
@@ -3408,48 +3546,30 @@ class TetrisGame{
     // ── Durable Garbage: 耐久値减少 → 通常ゴミに変換 ──
     if(count>0){
       const cols=getGameCols();
-      const _isSolid=(playerMods[socket.id]||'none')==='solid';
-      let solidHole=-1; // Solid: 一度に変化したゴミは全て直列（同じ穴列）
-      let solidConv=0;  // Solid: 変化した行数（1行ごとに相手へ1ライン送信）
       for(let r=0;r<this.board.length;r++){
         for(let c=0;c<cols;c++){
           const v=this.board[r][c];
           if(typeof v==='number'&&v>=1&&v<=10){
             if(v-1<=0){
-              if(_isSolid){
-                // Solid: 同じライン消しで変化した行は全行直列（1つの穴列）
-                if(solidHole<0)solidHole=Math.floor(Math.random()*cols);
-                this.board[r]=Array(cols).fill('G');
-                this.board[r][solidHole]=0;
-                solidConv++;
-              }else{
-                // 耐久消滅: 通常ゴミ行に変換（穴はランダム）
-                const holeCol=Math.floor(Math.random()*cols);
-                this.board[r]=Array(cols).fill('G');
-                this.board[r][holeCol]=0;
-              }
+              // 耐久消滅: 通常ゴミ行に変換（穴はランダム）
+              const holeCol=Math.floor(Math.random()*cols);
+              this.board[r]=Array(cols).fill('G');
+              this.board[r][holeCol]=0;
             } else {
               this.board[r][c]=v-1;
             }
           }
         }
       }
-      // ── Solid MOD: 耐久→ゴミに変化した1行ごとに相手へ1ライン送信 ──
-      if(_isSolid&&solidConv>0){
-        this.totalAttackSent+=solidConv;
-        socket.emit('lines_cleared',{attack:solidConv,allClear:false,spinType:null,clearRows:[],totalLines:this.lines,ren:this.ren,holes3:0});
-        if(renderer&&renderer.onLinesSent)renderer.onLinesSent(solidConv,this._lockX||0,this._lockY||0,this._lockType||'',this._lockRot||0);
-      }
     }
 
     // ── AllSpin / Warlock Penalty: 同数連続ライン消去でペナルティ ──
-    const myMod = playerMods[socket.id] || 'none';
-    if(count>0 && (myMod==='allspin'||myMod==='warlock')){
+    if(count>0 && (myHasMod('allspin')||myHasMod('warlock'))){
       // 連続判定キー。
       // AllSpin: (スピン種別+消去行数)。sspin double ≠ tspin double
       // Warlock: スピン消去は行数で分類(sspin double と tspin double は同じ)。スピン以外は全て同一カテゴリ
       let curKey;
-      if(myMod==='warlock'){
+      if(myHasMod('warlock')){
         if(spinType && count>=1 && count<=3) curKey='spin-'+count;
         else curKey='other';
       }else{
@@ -3463,7 +3583,7 @@ class TetrisGame{
         _allspinConsecType=curKey;
       }
       if(_allspinConsecCount>=2){
-        if(myMod==='warlock'){
+        if(myHasMod('warlock')){
           // Warlock: 同数連続消去ペナルティ → 耐久ゴミ2段（解除まで10ライン必要）
           const cols=getGameCols();
           const WL_RELEASE=10;
@@ -3486,14 +3606,31 @@ class TetrisGame{
       }
     } else if(count===0){
       // ── Warlock: スピン消去なし → 2行送信 + B2B+1 ──
-      if(myMod==='warlock' && this.lastSpin && this.lastSpin!=='180'){
-        socket.emit('warlock_spin');
+      if(myHasMod('warlock') && this.lastSpin && this.lastSpin!=='180'){
+        socket.emit('warlock_spin',{lockX:this._lockX||0,lockY:this._lockY||0,lockType:this._lockType||'',lockRot:this._lockRot||0});
         this.b2bCount++;
         this.b2b=true;
         SFX.spinLock();
+        // HUD: ライン消しなしでもB2Bを即時反映（従来は次のライン消しまで更新されなかった）
+        if(renderer){
+          renderer._b2bCount=this.b2bCount;
+          renderer._triggerLightning(this.b2bCount);
+          renderer._punchB2bBadge();
+          renderer.updateB2bBadge();
+        }
+        // ライン消しなしスピンは連続ライン消去ストリークを切る。
+        // これにより次のライン消しスピンにペナルティ（耐久ゴミ）を与えない。
+        _allspinConsecType=null;
+        _allspinConsecCount=0;
       }
-      // ペナルティ判定: 消去なしの設置ではストリークを維持する
+      // ペナルティ判定: ライン消しなしスピン以外の消去なし設置ではストリークを維持する
       // （違う種類のライン消しを挟んだ場合のみリセットされる）
+    }
+
+    // ── AllSpin / Warlock MOD: 「前回消去ライン数」をHUDへ常時反映 ──
+    if(renderer && renderer.updateLastClear && renderer._lastClearMod){
+      if(count>0){ this._lastClearShown=count; this._lastClearPiece=this._lockType; }
+      renderer.updateLastClear(this._lastClearShown!==undefined?this._lastClearShown:-1, this._lastClearPiece);
     }
 
     this.lastSpin=null;this.lastSpinType=null;
@@ -3592,31 +3729,33 @@ class TetrisGame{
       for(const g of groups){
         if(g.col===col){g.count+=chunk.lines;merged=true;break;}
       }
-      if(!merged)groups.push({col,count:chunk.lines,fromPuyo:!!chunk.fromPuyo,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
+      if(!merged)groups.push({col,count:chunk.lines,fromPuyo:!!chunk.fromPuyo,dice:!!chunk.dice,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
     }
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
       const rows=[];
       for(let i=0;i<g.count;i++){
         const cols=getGameCols();
-        // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
-        let holeCol;
-        if(g.fromPuyo){
-          // ぷよからのゴミ: 基本は固定列、行ごとに15%でずれる
-          holeCol=this._puyoHoleCol(g.col, cols);
-        }else if(this._lastGarbageHoleCol>=0&&Math.random()<g.seriality){
-          holeCol=this._lastGarbageHoleCol;
-        }else{
-          holeCol=g.col;
-        }
         const row=Array(cols).fill('G');
-        row[holeCol]=0;
-        // ── Solid MOD: 受けたゴミをAllSpinと同じ耐久ペナルティライン5段にする ──
-        if((playerMods[socket.id]||'none')==='solid'){
-          for(let c=0;c<cols;c++) row[c]=5;
+        if(g.dice){
+          // ── サイコロ: ゴミブロックは1つだけ穴を開ける（1つ以上開かないように） ──
+          const holeCol=Math.floor(Math.random()*cols);
+          row[holeCol]=0;
+        }else{
+          // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
+          let holeCol;
+          if(g.fromPuyo){
+            // ぷよからのゴミ: 基本は固定列、行ごとに15%でずれる
+            holeCol=this._puyoHoleCol(g.col, cols);
+          }else if(this._lastGarbageHoleCol>=0&&Math.random()<g.seriality){
+            holeCol=this._lastGarbageHoleCol;
+          }else{
+            holeCol=g.col;
+          }
+          row[holeCol]=0;
+          this._lastGarbageHoleCol=holeCol;
         }
         rows.push(row);
-        this._lastGarbageHoleCol=holeCol;
       }
       return rows;
     });
@@ -3642,12 +3781,10 @@ class TetrisGame{
     if(lines<=0)return;
     const cols=getGameCols();
     const ch=(holeCol!==undefined&&holeCol!==null)?holeCol:Math.floor(Math.random()*cols);
-    const solid=(playerMods[socket.id]||'none')==='solid';
     const rows=[];
     for(let i=0;i<lines;i++){
       const row=Array(cols).fill('G');
       row[ch]=0;
-      if(solid){for(let c=0;c<cols;c++)row[c]=5;}
       rows.push(row);
     }
     for(const row of rows){
@@ -3740,32 +3877,26 @@ class TetrisGame{
             holeCol = (baseCol + phase) % cols;
           }
           const row=Array(cols).fill('G');
-          // ── Bad Hole: 穴を5~7個ランダムに開ける ──
+          // ── Bad Hole: 穴を1個だけ開ける（1つ以上開かないように） ──
           if(g.badHole){
-            const numHoles=5+Math.floor(Math.random()*3);
-            for(let h=0;h<numHoles;h++){
-              const hc=Math.floor(Math.random()*cols);
-              row[hc]=0;
-            }
+            const hc=Math.floor(Math.random()*cols);
+            row[hc]=0;
           }else if(g.messy){
-            // ── Messiness: 穴が乱雑(アナバラ、1行に1個ランダム) ──
             const hc=Math.floor(Math.random()*cols);
             row[hc]=0;
           }else if(g.helmet){
-            // 2つ隣り合わせの穴
             const base=g.holeBase!==undefined?g.holeBase:0;
             row[base]=0;
-            if(base+1<cols)row[base+1]=0;
+          }else if(g.dice){
+            // ── サイコロ: 穴は1つだけ開ける ──
+            const hc=Math.floor(Math.random()*cols);
+            row[hc]=0;
           }else{
             row[holeCol]=0;
           }
           // ── Rock MOD: 受けたゴミを穴なし(R)にする ──
-          if((playerMods[socket.id]||'none')==='rock'){
+          if(myHasMod('rock')){
             for(let c=0;c<cols;c++) row[c]='R';
-          }
-          // ── Solid MOD: 受けたゴミをAllSpinと同じ耐久ペナルティライン5段にする ──
-          if((playerMods[socket.id]||'none')==='solid'){
-            for(let c=0;c<cols;c++) row[c]=5;
           }
           // ── Last Stand / Quick Play: 0.2秒ごとに1段ずつ出現 ──
           if(g.laststandConsecutive){
@@ -3969,7 +4100,7 @@ class TetrisGame{
     // ── Tower MOD: 0.1秒ごとに階層 -0.02（時間経過でゴミが増える。減少は以前の2倍） ──
     this._towerDecayTimer=setInterval(()=>{
       if(!this.alive){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
-      if((playerMods[socket.id]||'none')!=='tower'){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
+      if(!myHasMod('tower')){clearInterval(this._towerDecayTimer);this._towerDecayTimer=null;return;}
       this._towerLevel=Math.max(0,Math.min(9,this._towerLevel-0.02));
       this._updateTowerPermanent();
       this._updateTowerHUD(-0.02);
@@ -4098,9 +4229,10 @@ class TetrisGame{
     },500);
   }
 
-  queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality,fromPuyo){
-    const myMod = playerMods[socket.id] || 'none';
-    const mod = targetMod || myMod;
+  queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality,fromPuyo,modList){
+    // 受信側MOD判定: サーバーから来たMOD配列（複数可）を優先し、無ければ先頭MOD文字列のみ
+    const _ml=Array.isArray(modList)?modList.filter(m=>m&&m!=='none'):((targetMod&&targetMod!=='none')?[targetMod]:[]);
+    const has=m=>_ml.includes(m);
     // バッチコンボ: 蓄積バッファからゴミを相殺
     if(batchComboMode && this.batchComboBuffer > 0){
       const canCancel=Math.min(lines,this.batchComboBuffer);
@@ -4116,7 +4248,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Tower (受ける側) ── 受けるゴミ量を階層で乗算
-    if(mod==='tower'){
+    if(has('tower')){
       const lv=this._towerLevel||0;
       lines=Math.max(0,Math.round(lines*(lv+5)/10));
       const readyAt=performance.now()+qpGarbageReady(1000);
@@ -4125,7 +4257,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Last Stand (受ける側) ── 10秒間ためる。7秒時点で10ライン以上なら拡張(再構成+マーク) ──
-    if(mod==='laststand'){
+    if(has('laststand')){
       if(this._lsAccWinStart==null){
         this._lsAccWinStart=performance.now();
         this._lsAccLines=0;
@@ -4143,7 +4275,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Bad Hole (受ける側) ── 攻撃半減(サーバー側)・一度に最大2段・穴5~7個・出現2秒
-    if(mod==='badhole'){
+    if(has('badhole')){
       lines=Math.min(lines,2);
       const readyAt=performance.now()+2000;
       const holeCol=Math.floor(Math.random()*getGameCols());
@@ -4151,7 +4283,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Warlock (受ける側) ── 半減・3秒準備・穴がバラバラ
-    if(mod==='warlock'){
+    if(has('warlock')){
       const readyAt=performance.now()+3000;
       for(let i=0;i<lines;i++){
         const hc=Math.floor(Math.random()*getGameCols());
@@ -4160,14 +4292,22 @@ class TetrisGame{
       return;
     }
     // ── MOD: Messiness (受ける側) ── 受けるゴミの穴が乱雑(アナバラ)・出現まで3秒
-    if(mod==='messiness'){
+    if(has('messiness')){
       const readyAt=performance.now()+3000;
       const holeCol=Math.floor(Math.random()*getGameCols());
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,messy:true});
       return;
     }
+    // ── MOD: サイコロ (受ける側) ── 受信×0.8(サーバー適用)・穴がすごくバラバラ
+    if(has('dice')){
+      const readyAt=performance.now()+qpGarbageReady(1000);
+      if(!puyotetMode&&lines>10){
+        while(lines>0){const chunk=Math.min(lines,10);this.garbageQueue.push({lines:chunk,fromId,readyAt,holes3:0,dice:true});lines-=chunk;}
+      }else{this.garbageQueue.push({lines,fromId,readyAt,holes3:0,dice:true});}
+      return;
+    }
     // ── MOD: Helmet (受ける側) ── 2つ隣り合わせの穴・直列・次キューごとに±1列ずつ蛇行
-    if(mod==='helmet'){
+    if(has('helmet')){
       if(this._helmetHoleBase===undefined){
         this._helmetHoleBase=Math.floor(Math.random()*(getGameCols()-1));
       }
@@ -4182,7 +4322,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Rock (受ける側) ── 穴なしゴミ(R)化は _applyReadyGarbage で行う。ここでは通常エントリを積む
-    if(mod==='rock'){
+    if(has('rock')){
       const readyAt=performance.now()+qpGarbageReady(1000);
       if(!puyotetMode&&lines>10){
         while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
@@ -4190,7 +4330,7 @@ class TetrisGame{
       return;
     }
     // ── MOD: Expert (受ける側) ── ゴミ1.0倍・2秒準備完了・直列穴
-    if(mod==='expert'){
+    if(has('expert')){
       const readyAt=performance.now()+2000;
       const holeCol=Math.floor(Math.random()*getGameCols());
       this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,laststandConsecutive:true});
@@ -4225,6 +4365,7 @@ class TetrisGame{
   }
 
   hold(){
+    if(this._diceFrozen()) return;
     if(this.holdUsed)return;
     this.holdUsed=true;
     const type=this.current.type;
@@ -4270,10 +4411,40 @@ class TetrisGame{
     const dec=roomSettings.gravityDec||80;
     const min=roomSettings.gravityMin||50;
     // ── MOD: Warlock ── 重力はレベルで増えない
-    const lvDrop=(playerMods[socket.id]==='warlock')?0:(this.level-1)*dec;
+    const lvDrop=myHasMod('warlock')?0:(this.level-1)*dec;
     let msPerDrop=Math.max(min,base-lvDrop);
+
+    // ── Altitude acceleration for non-freefall/non-gravity/non-dice modes (every 300m, up to 1.5x at 1500m) ──
+    if(!myHasMod('freefall')&&!myHasMod('gravity')&&!myHasMod('dice')&&quickPlayMode){
+      const alt=(_qpMyAlt||0);
+      const steps=Math.min(5, Math.floor(alt / 300)); // 300mごとに1ステップ (1500mで5ステップ)
+      // 1500mで1.5倍になるよう、1ステップあたり (1 + steps * 0.1) で割る (=速度が1.5倍になる)
+      const altMult=1 + steps * 0.1;
+      msPerDrop/=altMult;
+    }
+
     // ── MOD: Gravity (自プレイヤー) ── 置いたブロック数ぶん1.1倍ずつ落下速度アップ
-    if((playerMods[socket.id]||'none')==='gravity')msPerDrop/=Math.max(1,this._gravityMult||1);
+    if(myHasMod('gravity'))msPerDrop/=Math.max(1,this._gravityMult||1);
+    
+    // ── MOD: サイコロ ── 重力はデフォルトのまま（レベルや高度で速くならない）
+    if(myHasMod('dice')){
+      // サイコロ時は高度やレベルによる加速を適用しない（初期gravityBaseを使用）
+      msPerDrop=Math.max(min, base);
+    }
+    
+    // ── MOD: フリーフォール ── 1ミノ置くごとに速くなり、28個でインスタント（無制限）に到達
+    if(myHasMod('freefall')){
+      const pieces=Math.min(28, this._freefallPieces||0);
+      if(pieces>=28){
+        msPerDrop=0.0001;
+      } else {
+        // 0個から28個にかけて、base から 0.0001 へ少しずつ速くする
+        const t=pieces/28; // 0.0 -> 1.0
+        // 線形またはべき乗で補間
+        msPerDrop=msPerDrop * (1 - t) + 0.0001 * t;
+      }
+    }
+
     this.gravityMs+=dt;
     if(this.gravityMs>=msPerDrop){
       this.gravityMs=0;
@@ -7124,6 +7295,19 @@ class GameRenderer{
     this._b2bBadgeDotRot=0;
     this._b2bBreakPop=null;
     this.b2bBadgeCont.visible=false;
+    // 前回消去ライン数 (AllSpin / Warlock MOD使用時のみ常時表示)
+    this.lastClearCont=new PIXI.Container();
+    this.lastClearCont.x=this.mainBX-90;
+    this.lastClearCont.y=this.mainBY+sOffY+152;
+    this.root.addChild(this.lastClearCont);
+    this.lastClearLbl=new PIXI.Text('前回',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:9,fill:0x8899aa,letterSpacing:2}));
+    this.lastClearLbl.y=0;this.lastClearCont.addChild(this.lastClearLbl);
+    this.lastClearNum=new PIXI.Text('-',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:22,fill:0xffffff,fontWeight:'700'}));
+    this.lastClearNum.y=12;this.lastClearCont.addChild(this.lastClearNum);
+    let _lcMod='none';
+    try{ _lcMod=(typeof playerMods!=='undefined'&&playerMods[myId])||'none'; }catch(e){}
+    this._lastClearMod=(_lcMod==='allspin'||_lcMod==='warlock');
+    this.lastClearCont.visible=this._lastClearMod;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
     this.elapsedText=Object.assign(new PIXI.Text('0:00',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(11*fsc),fill:0x888888,letterSpacing:2})),{x:this.mainBX+BOARD_W*sc+4,y:this.mainBY-22});
@@ -7199,7 +7383,7 @@ class GameRenderer{
       const rr=this.gs.board[r];
       if(rr&&rr.some(c=>c==='G'||c==='R')){_topGarbageRow=r;break;}
     }
-    const _gbRebound=(playerMods[socket.id]||'none')==='rebound';
+    const _gbRebound=myHasMod('rebound');
     const garbAlpha=(rr)=>{
       if(!_gbRebound) return 1;
       if(_topGarbageRow<0) return 1;
@@ -7254,6 +7438,35 @@ class GameRenderer{
         }
       }
     }
+
+    // ── MOD: サイコロ ── 消去されたブロックの残像（ランダムな透明度、左から順に飛び散りながら消去）
+    if(this.gs._diceEffectBlocks && this.gs._diceEffectBlocks.length > 0){
+      const startTime = this.gs._diceFreezeStart;
+      const duration = 1150;
+      const now = performance.now();
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const cols = getGameCols();
+      
+      for(const b of this.gs._diceEffectBlocks){
+        const colThreshold = b.c / cols;
+        if(progress < colThreshold) {
+          // 経過時間に応じた飛び散りオフセット
+          const tFrac = progress / Math.max(0.01, colThreshold);
+          const offsetX = (b.vx || 0) * (tFrac * 15);
+          const offsetY = (b.vy || 0) * (tFrac * 15) + (tFrac * tFrac * 4); // 軽い重力落下
+          const currentAlpha = (b.alpha !== undefined ? b.alpha : 0.4) * (1 - progress);
+          
+          const dx = b.c * CELL + offsetX;
+          const dy = (b.r - HIDDEN) * CELL + offsetY;
+          g.beginFill(0xffffff, Math.max(0, currentAlpha));
+          g.drawRect(dx + 1, dy + 1, CELL - 2, CELL - 2);
+          g.endFill();
+        }
+      }
+      if(progress >= 1) this.gs._diceEffectBlocks = [];
+    }
+
     // 耐久ゴミカウンター表示（各行の中央ブロックだけに表示）
     {
       const _dl=this._durableLayer;if(!_dl)return;
@@ -7291,7 +7504,7 @@ class GameRenderer{
     // Danger Warning: 10ライン以上でおじゃまが迫っている場合
     const totalLines = (this.gs.garbageQueue || []).reduce((s, g2) => s + g2.lines, 0);
     // Bad Hole MOD: blightモード（ゴミ消去後の次の攻撃2倍）→ 白枠で通知
-    if(playerMods[socket.id]==='badhole'&&_badholeNextAtk2x){
+    if(myHasMod('badhole')&&_badholeNextAtk2x){
       const wpulse=0.6+0.4*Math.abs(Math.sin(now*0.008));
       this.boardBorder.clear();
       this.boardBorder.lineStyle(3,0xffffff,wpulse);
@@ -8090,12 +8303,25 @@ class GameRenderer{
     const col=cnt>=8?0x0088ff:cnt>=5?0x00ccff:cnt>=3?0x00ff88:0xffbe0b;
     this.b2bBadgeNum.style.fill=col;
     this.b2bBadgeNum.text='x'+cnt;
-    // B2Bが高いほどバッジも大きく、10・20…と10の倍数ごとに1.2倍
-    const badgeScale=(1+Math.min(cnt*0.06,0.5))*Math.pow(1.2,Math.floor(cnt/10));
+    // B2Bが高いほどバッジも大きく、10・20…と10の倍数ごとに1.2倍。サイズ（スケール）は20で頭打ち
+    const cEff=Math.min(cnt,20);
+    const badgeScale=(1+Math.min(cEff*0.06,0.5))*Math.pow(1.2,Math.floor(cEff/10));
     this.b2bBadgeCont.scale.set(badgeScale);
     this._b2bBadgeColor=col;
     this._drawB2bBadgeBg(col,0);
     this.b2bBadgeLbl.style.fill=cnt>=8?0x88ccff:cnt>=5?0x88eeff:cnt>=3?0x88ffcc:0xffdd88;
+  }
+
+  // 前回消去ライン数 (AllSpin / Warlock MOD時のみ)。count<0 は「まだ消していない」= '-'
+  updateLastClear(count, pieceType){
+    if(!this.lastClearCont)return;
+    if(!this._lastClearMod){this.lastClearCont.visible=false;return;}
+    this.lastClearCont.visible=true;
+    if(count===null||count===undefined||count<0){this.lastClearNum.text='-';this.lastClearNum.style.fill=0x8899aa;return;}
+    this.lastClearNum.text='×'+count;
+    // 文字色はそのスピンで使ったミノの色にする（不明な場合は消去数に応じた色）
+    const pc=(pieceType!==undefined&&pieceType!==null&&PIECE_COLORS[pieceType]!=null)?PIECE_COLORS[pieceType]:null;
+    this.lastClearNum.style.fill=pc!=null?pc:(count>=4?0x00ff88:count===3?0x88ffcc:count===2?0xffdd88:0xffbe0b);
   }
 
   _drawB2bBadgeBg(col,glitchAmt){
@@ -11046,7 +11272,7 @@ class GameRenderer{
     if(!isQP){
       const _mode=(typeof roomSettings!=='undefined'&&roomSettings&&roomSettings.targetMode)||'random';
       if(_mode==='spread'&&targets.length>1){
-        const _sent=(typeof myMod!=='undefined'&&myMod==='doubleGarbage')?attack*2:attack;
+        const _sent = attack; // ダブルガベージは受信側×2（サーバーで処理）
         const _per=Math.floor(_sent/targets.length);
         if(_per>1) perTarget=_per;
       }
@@ -11947,9 +12173,7 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
   d.currentPiece=currentPiece;
 });
 
-socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoHardDirect,seriality,fromPuyo})=>{
-  // バッドホールMOD使用時限定: 受ける側がbadholeのときのみ50%はキューに一切入らない
-  if(targetMod==='badhole'&&Math.random()<0.5)return;
+socket.on('receive_garbage',({lines,fromId,holes3,targetMod,targetMods,holeCol,duoHard,duoHardDirect,seriality,fromPuyo})=>{
   const h3 = holes3 || 0;
   const dhrd = duoHardDirect || duoHard; // duo hard: サーバーは duoHardDirect=true で送る（旧duoHard互換）
   console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState} duoHard=${!!dhrd} holeCol=${holeCol}`);
@@ -11970,7 +12194,7 @@ socket.on('receive_garbage',({lines,fromId,holes3,targetMod,holeCol,duoHard,duoH
     return;
   }
   console.log(`[RCV GARBAGE] -> queueGarbage(${lines}) holes3=${h3} duoHard=${!!duoHard} holeCol=${holeCol} fromPuyo=${!!fromPuyo}`);
-  gameState.queueGarbage(lines,fromId,h3,targetMod,holeCol,dhrd,seriality,fromPuyo);
+  gameState.queueGarbage(lines,fromId,h3,targetMod,holeCol,dhrd,seriality,fromPuyo,targetMods);
 });
 
 // バッチコンボ: 相手の蓄積量を受信
@@ -13442,7 +13666,7 @@ class PuyoRenderer {
         // p.isBot だけで判定すると puyo bot を tetris と誤認し、
         // ぷよ側が puyo bot の盤面を 20x10 の tetris 盤として構築してしまう。
         const mode = (playerModes && playerModes[p.id]) || p._gameMode
-          || (p.botType === 'puyo' ? 'puyo' : 'tetris');
+          || ((p.botType === 'puyo' || p.botType === 'puyo_old') ? 'puyo' : 'tetris');
         console.log(`[PuyoRenderer] Player ${p.name} (${p.id}) mode: ${mode}`);
         this.opPuyoData[p.id]={
           board:null,current:null,nextQueue:[],ojamaQueue:0,name:p.name,chain:0,
@@ -15124,6 +15348,7 @@ class PuyoRenderer {
   const seen=new Map();
   const show=(msg,src,line)=>{
     try{
+      if(typeof settings!=='undefined'&&(settings.errorBanner==='off'||settings.errorBanner===false)) return;
       const key=msg+'@'+src+':'+line;
       if(seen.has(key)){ (seen.get(key).n)++; return; }
       const el=document.createElement('div');
@@ -15392,6 +15617,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('quality-val').textContent=settings.quality==='minimum'?'MINIMUM':settings.quality==='ultra'?'ULTRA':settings.quality.toUpperCase();
   document.getElementById('particles-select').value=settings.particles;
   document.getElementById('shake-select').value=settings.shake;
+  const ebEl=document.getElementById('error-banner-select');
+  if(ebEl) ebEl.value=settings.errorBanner!==undefined?settings.errorBanner:'on';
   const siEl=document.getElementById('shake-intensity');
   const siValEl=document.getElementById('shake-intensity-val');
   if(siEl)siEl.value=settings.shakeIntensity??100;
