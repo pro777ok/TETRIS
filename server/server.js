@@ -712,10 +712,13 @@ function qpTick(room) {
       if (seenGauge.has(st)) continue; // duo: 同一共有ゲージを2回減衰させない
       seenGauge.add(st);
     }
-    // XP減衰: 実経過時間ベース（約18秒で12XPが尽きる）。0になったら即レベルダウンしてバーを満タンに戻す
+    // XP減衰: 実経過時間ベース。デフォルト減衰速度 = 0.5XP/秒 × (level/15 + 1)
+    // qp expert mode ではさらに1.5倍。0になったら即レベルダウンしてバーを満タンに戻す
     // ただしレベル1と、そのレベルでまだXPを稼いでいない時は減衰させない
     if (st.climbLevel > 1 && st.xpEarnedThisLevel) {
-      st.climbXp -= 0.5 * dtMs / 1000;
+      let decayRate = 0.5 * (st.climbLevel / 15 + 1);
+      if (room && room.roomSettings && room.roomSettings.expertMode) decayRate *= 1.5;
+      st.climbXp -= decayRate * dtMs / 1000;
       if (st.climbXp <= 0) {
         st.climbLevel--;
         st.climbXp = QP_XP_PER_LEVEL;
@@ -942,6 +945,8 @@ function applyDoubleGarbage(room, senderId, lines) { return lines; }
 function receiveGarbageMultiplier(room, targetId) {
   let m = 1;
   if (hasMod(room, targetId, 'doubleGarbage')) m *= 2;
+  // End MOD: 受けるゴミ量を半分にする（穴だけのゴミになる代わり）
+  if (hasMod(room, targetId, 'end')) m *= 0.5;
   return m;
 }
 
@@ -965,7 +970,7 @@ function adjustForTargetMod(room, targetId, lines) {
 }
 
 // プレイヤー/ボット共通の付与可能MOD一覧（複数同時付与可）
-const VALID_MODS = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','dice','freefall'];
+const VALID_MODS = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','dice','freefall','snow','end'];
 function sanitizeMod(mod) { return VALID_MODS.includes(mod) ? mod : 'none'; }
 function normalizeModList(mods) {
   const arr = Array.isArray(mods) ? mods : (mods ? [mods] : []);
@@ -3810,7 +3815,7 @@ class BotPlayer {
         }
         for (let i=0;i<g.lines;i++){
           if (linesToAdd >= CAP) {
-            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0, holes3: g.holes3, serial: g.serial, seriality: g.seriality});
+            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: this._lastGarbageHoleCol>=0?this._lastGarbageHoleCol:0, holes3: g.holes3, serial: g.serial, end: g.end, seriality: g.seriality});
             break;
           }
           // 直列穴指定(duo hard)は全行同じ列。それ以外は seriality（mに応じた直列度）%で上の穴と同じ列、あとはランダム
@@ -3830,7 +3835,8 @@ class BotPlayer {
           }
           // 4wide の bot に 10wide 由来の穴が届きうるので、行に書く前に収める
           hc = Math.max(0, Math.min(this.cols - 1, hc | 0));
-          const row=Array(this.cols).fill('G');row[hc]=0;
+          const row=Array(this.cols).fill(g.end?0:'G');
+          if(!g.end)row[hc]=0;
           this.board.push(row);this.board.shift();
           linesToAdd++;this.totalGarbageReceived++;
           this._lastGarbageHoleCol=hc;
@@ -3956,6 +3962,8 @@ class BotPlayer {
 
   queueGarbage(lines, fromId, holes3, holeCol, serial, seriality) {
     const room = rooms[this.roomId];
+    // ── End MOD: 受けるゴミ量は receiveGarbageMultiplier で半減済み。3秒準備・穴だけの行（盤面全体がせり上がる）
+    const _end = !!(room && hasMod(room, this.id, 'end'));
     // バッチコンボ: 蓄積バッファからゴミを相殺
     if (room && room.roomSettings && room.roomSettings.batchComboMode && this.batchComboBuffer > 0) {
       const canCancel = Math.min(lines, this.batchComboBuffer);
@@ -3967,8 +3975,8 @@ class BotPlayer {
     // 範囲外の穴で row[hc] に書くと行幅が崩れて isValid/描画が壊れるので必ず収める。
     const hcRaw = (holeCol === undefined || holeCol === null) ? Math.floor(Math.random()*this.cols) : holeCol;
     const hc = Math.max(0, Math.min(this.cols - 1, hcRaw | 0));
-    const delay = serial ? 0 : ((room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000);
-    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0, serial: !!serial, seriality: (seriality===undefined||seriality===null)?0.3:seriality });
+    const delay = _end ? 3000 : (serial ? 0 : ((room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000));
+    this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0, serial: !!serial, end: _end, seriality: (seriality===undefined||seriality===null)?0.3:seriality });
   }
 
   startAutonomous(extraDelay = 0) {
@@ -4106,7 +4114,7 @@ function createRoom(roomId) {
       season1Mode: false,        // シーズン1モード（B2Bカウント制ボーナス）
       batchComboMode: false,     // バッチコンボモード（コンボ中に攻撃を蓄積、終了時に一括送信）
       targetMode: 'random',      // 攻撃対象の決め方: 'random'=ランダムな1人へ全火力 / 'spread'=生存者全員へ分散
-      expertMode: false,         // QPエキスパート: ゴミ準備0.5秒・相殺分はm/climb上昇なし（非エキスパートはXPのみ寄与）・穴ズレ+10%・即時出現
+      expertMode: false,         // QPエキスパート: ゴミ準備3秒・XP減衰1.5倍・相殺分はm/climb上昇なし（非エキスパートはXPのみ寄与）・穴ズレ+10%・即時出現
       boardRows: 20,             // 盤面の高さ（20以外はBot不可）
       puyoLookahead: 2,          // ぷよボットの読みの深さ（何手先まで読むか / 0-5）
       garbageMultiplier: 2,      // ぷよ↔テトリス変換倍率 (ojama=lines*n / lines=ojama/n)
@@ -5265,11 +5273,11 @@ io.on('connection', (socket) => {
     const others=allPlayers(room).filter(p=>p.id!==socket.id&&p.alive);
     const hc=Math.floor(Math.random()*10);
     others.forEach(p=>{
-      const recv = Math.max(1, Math.round(adjustForTargetMod(room, p.id, 20) * (hasMod(room, p.id, 'doubleGarbage') ? 2 : 1)));
+      const recv = Math.max(1, Math.round(adjustForTargetMod(room, p.id, 20) * receiveGarbageMultiplier(room, p.id)));
       if(p.isBot && p.queueGarbage){
         p.queueGarbage(recv, socket.id);
       } else {
-        io.to(p.id).emit('receive_garbage',{lines:recv,fromId:socket.id,holeCol:hc});
+        io.to(p.id).emit('receive_garbage',{lines:recv,fromId:socket.id,holeCol:hc,targetMods:getModList(room,p.id),targetMod:(getModList(room,p.id)[0]||'none')});
       }
     });
     addChatSys(socket.roomId,`💣 Admin sent 20 lines to everyone!`);

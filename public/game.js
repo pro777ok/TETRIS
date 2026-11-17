@@ -326,6 +326,7 @@ function startSoloOffline(){
   allspinMode=false;
   fortyLineMode=false;
   blitzMode=false;
+  snowCols=0; ROWS=20;
 
   document.getElementById('name-modal').classList.add('hidden');
   showScreen('game');
@@ -899,14 +900,15 @@ const MOD_DESCRIPTIONS = {
   laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
   badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
   tower: '永久ゴミ段数=10-レベル(最初10ライン、常に最下段)。レベルは攻撃したミノライン分で上昇、時間経過で減少(0.02/0.1秒)。受けるゴミ量×(Lv+5)/10',
-  helmet: '受けるゴミは2つ隣り合わせの穴・直列(同じ位置)・次キューごとに±1列ずつ蛇行。完全ランダムだが各ミノに30%の確率で1〜3回連続して出る',
+  helmet: '受けるゴミは横に連続した2穴。NEXTに30%の確率で偽のミノが表示され、盤面出現時に本物へ変化。各ミノに30%の確率で1〜3回連続して出る',
   rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
   rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
-  expert: '受けるゴミ1.0倍・2秒遅延・直列穴。相殺時に相殺した半分を蓄積し、次にゴミが出現する時に蓄積分も直列穴で同時に出現',
   messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
   gravity: '1ブロック置くごとに落下速度が1.1倍になる',
-  dice: 'ラインを消すたびに1.15秒間のエフェクトが入り操作が硬直する。穴がすごくバラバラ',
-  freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。50m上がるごとに-10ms、最低0.3秒'
+  dice: 'ラインを消すたびに1.15秒間のエフェクトが入り操作が硬直する。穴がすごくバラバラ。開始時に10ライン分（各行7穴）のゴミがキューに入る',
+  freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。50m上がるごとに-10ms、最低0.3秒',
+  snow: '4×4の盤面で開始。ラインを10送るごとに縦と横が交互に+1され、最大20×20まで広がる',
+  end: '受けるゴミの量が半分になる代わりに、穴だけのゴミ（全マス空白）が出現して盤面全体がせり上がる。準備完了まで3秒'
 };
 
 function glBackToTitle(){
@@ -1199,13 +1201,12 @@ const _QPGARBAGE_PUYO_HOLE_SHIFT=0.15;
 // キューに積まれたゴミが「準備完了」になるまでの時間
 //  ・ぷよvsテトリスでぷよから来た火力: 攻撃力/3秒（比率適用後の受信行数。多いほど長い）
 //  ・それ以外のぷよvsテトリス: 0（即時、他モードに合わせる）
-//  ・Quick Play: 3秒 / 通常ルーム: 引数の既定値
+//  ・Quick Play: 3秒（expert mode も3秒）/ 通常ルーム: 引数の既定値
 function qpGarbageReady(ms, fromPuyo, lines){
   if(puyotetMode){
     if(fromPuyo) return Math.round(Math.max(0,lines||0)*1000/_QPGARBAGE_READY_DIVISOR);
     return 0;
   }
-  if(quickPlayMode&&roomSettings&&roomSettings.expertMode) return 500;
   return quickPlayMode?3000:ms;
 }
 
@@ -2242,13 +2243,13 @@ function updateBotList(players){
   const bots=players.filter(p=>p.isBot);
   const el=document.getElementById('bot-list');
   if(!el)return;
-  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF'};
-  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8'};
+  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF', snow:'SN', end:'EN'};
+  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa'};
   el.innerHTML=bots.map(b=>{
     const list = playerModLists && playerModLists[b.id] ? playerModLists[b.id].filter(m=>m&&m!=='none') : (playerMods && playerMods[b.id] ? [playerMods[b.id]] : [b.mod||'none']);
     const activeMods = list.filter(m=>m&&m!=='none');
     const mod = activeMods.length ? activeMods : (playerMods&&playerMods[b.id]||b.mod||'none');
-    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','expert','messiness','gravity','dice','freefall'];
+    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','dice','freefall','snow','end'];
     const modSel=isHost?`<select onchange="setBotMod('${b.id}',this.value)" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:4px;padding:0.1rem 0.3rem;font-size:0.65rem;margin-left:0.3rem">${modOpts.map(o=>`<option value="${o}" ${o===mod?'selected':''}>${o==='none'?'なし':(modLabels[o]||o)}</option>`).join('')}</select>`:`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`;
     const modBadge = activeMods.length ? activeMods.map(m=>`<span style="font-size:0.55rem;color:${modColors[m]||'#fff'};background:rgba(255,255,255,0.1);border-radius:2px;padding:0 3px;margin:0 2px;font-weight:700">${modLabels[m]||m}</span>`).join(' / ') : (mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'');
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${botTypeLabel(b.botType,b.botLevel)}</span>${mod!=='none'&&!isHost?'<span style="font-size:0.6rem;color:'+modColors[mod]+';background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">'+modLabels[mod]+'</span>':''}${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><span style="display:flex;align-items:center">${modBadge}${modSel}<button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem;margin-left:0.3rem">KICK</button></span></div>`;
@@ -2260,8 +2261,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', expert:'EX', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', expert:'#ffd400', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF', snow:'SN', end:'EN'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -2303,7 +2304,11 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(rs)roomSettings={...roomSettings,...rs};
   quickPlayMode=!!(qpm||(rs&&rs.quickPlayMode));
   if(quickPlayMode){qpMatchReset();qpMatchEnded=false;_qpMatchStartMs=performance.now();qpDestroyStarfield();}
-  ROWS=Math.max(20,Math.min(100,parseInt(br)||20));
+  // ── MOD: Snow ── 4x4から開始し、送ったラインに応じて盤面が広がる（ぷよ側では無効）
+  const _isPuyoSelf = (pm&&pm[myId]==='puyo')||(playerModes&&playerModes[myId]==='puyo')||myGameMode==='puyo';
+  const _snowOn = !_isPuyoSelf && (myHasMod('snow') || !!(pmod && pmod[socket.id]==='snow'));
+  snowCols = _snowOn ? 4 : 0;
+  ROWS = _snowOn ? 4 : Math.max(20,Math.min(100,parseInt(br)||20));
   _pieceCounter=0;
   // リプレイ記録開始（クイックプレイもローカル保存できるように記録する）
   if(!fortyLineMode&&!cheeseMode&&!blitzMode){
@@ -2486,8 +2491,10 @@ const COLS=10,HIDDEN=7;let ROWS=20;
 const COLS_4WIDE=4;
 // ── MOD: サイコロ ── 硬直（エフェクト+操作不能+盤面崩落）時間 = 1.15秒
 const DICE_FREEZE_MS=1150;
-// ゲーム中の実効列数（4wideモードで切り替わる）
-function getGameCols(){return fourWideMode?COLS_4WIDE:COLS;}
+// ── MOD: Snow ── 動的盤面幅（0=非アクティブ。Snow中は4から最大20まで広がる）
+let snowCols=0;
+// ゲーム中の実効列数（4wide / Snowで切り替わる）
+function getGameCols(){return snowCols>0?snowCols:(fourWideMode?COLS_4WIDE:COLS);}
 // Sミノを黄緑(0x8BC34A)に変更
 const PIECE_COLORS={I:0x00f5ff,O:0xffbe0b,T:0xcc00ff,S:0x8BC34A,Z:0xff006e,J:0x4361ee,L:0xff8500,G:0x445566,X:0x101014};
 const PIECE_SHAPES={
@@ -2587,6 +2594,10 @@ class TetrisGame{
     this._bombCells = null;
     this.batchComboBuffer = 0; // バッチコンボ: 蓄積攻撃量
 
+    // ── Snow MOD state ──
+    this._snowGrowStep = 0;      // 完了済みの成長ステップ数（10ライン送信ごとに+1）
+    this._snowGrowPending = false;
+
     // ── Tower MOD state ──
     this._towerLevel = 0.0;      // 階層（初期0）
     this._towerDisplay = 0.0;    // HUD表示用（アニメーション中の現在値）
@@ -2609,7 +2620,6 @@ class TetrisGame{
     // 注意: _helmetBiased は constructor冒頭で決定済み（ここで上書きしない）
     this._helmetStreak = 0;           // Helmet: 偏りミノの連続残り（冒頭で0初期化済み）
     this._reboundHoleCol = undefined; // Rebound: 自分に返るゴミの穴位置（前回を引き継ぐ）
-    this._expertStored = 0;         // Expert: 相殺で半分カウントされたゴミ行数
     this._badholeIdleSince = performance.now();
 
     this.spawnPiece();
@@ -2630,6 +2640,11 @@ class TetrisGame{
         this.garbageQueue.push({lines:1,fromId:socket.id,readyAt:rt,holeCol:hc,holes3:0,scatteredHole:true});
       }
     }
+    if(myHasMod('dice')){
+      // Dice: 開始時に10ライン分のゴミ（各行7穴）をキューに溜める
+      const rt=performance.now()+1200;
+      this.garbageQueue.push({lines:10,fromId:socket.id,readyAt:rt,holes3:0,dice:true,diceHoles:7});
+    }
     if(myHasMod('helmet')){
       // Helmet: ストreakをリセット。
       this._helmetStreak = 0;
@@ -2640,7 +2655,14 @@ class TetrisGame{
   _makeNextEntry(type){
     const baseShape=PIECE_SHAPES[type][0];
     const mutated=applyMutation(type,baseShape);
-    return {type, customShape: mutated||null};
+    const entry={type, customShape: mutated||null};
+    // ── MOD: Helmet ── 30%の確率でNEXT表示だけ別のミノ（デタラメ）にする。盤面に出現する時は本物(type)を使う
+    if(myHasMod('helmet') && PIECE_TYPES.length>1 && Math.random()<0.3){
+      let fake;
+      do{ fake=PIECE_TYPES[Math.floor(Math.random()*PIECE_TYPES.length)]; }while(fake===type);
+      entry.fakeType=fake;
+    }
+    return entry;
   }
 
   // 次のミノ種別を取得（Helmet MOD の場合は偏り乱数）
@@ -2687,6 +2709,8 @@ class TetrisGame{
     }else{
       // 通常: SPAWN_Y基準。クラッチ時のみ上にずらす
       _spawnY=SPAWN_Y - (this._clutchSpawnBoost||0);
+      // ── MOD: Snow ── スポーン地点を1マス上に上げる
+      if(myHasMod('snow')) _spawnY-=1;
     }
     this._garbagePushY=0;
     this.current={type,rotation:0,x:_spX,y:_spawnY,customShape};
@@ -3281,9 +3305,6 @@ class TetrisGame{
       // ── 全モード共通: ゴミを消したら1ラインボーナス(相手へ送信) ──
       if(garbageCountInClear > 0) attack += 1;
 
-      // ── Helmet MOD: ゴミを含めて消したら更に+1(合計+2) ──
-      if(myHasMod('helmet') && garbageCountInClear > 0) attack += 1;
-
       // ── Rock MOD: 受けた穴なしゴミ(R)をシールドとして消費 ──
       if(myHasMod('rock')){
         // 盤面上の穴なしゴミ(R)行数を底から連続カウント
@@ -3373,10 +3394,6 @@ class TetrisGame{
       // 相殺に使われたライン数
       const cancelledByGarbage = attack - cancelPower;
       this._lastCancelledByGarbage = cancelledByGarbage;
-      // ── Expert MOD: 相殺した半分を蓄積（次にゴミが出現する時に一緒に出す） ──
-      if(myHasMod('expert') && cancelledByGarbage>0){
-        this._expertStored += Math.floor(cancelledByGarbage/2);
-      }
       // 送信される攻撃は相殺後の残り
       attack=cancelPower;
 
@@ -3465,6 +3482,8 @@ class TetrisGame{
         if(lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
         socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren,lockX:this._lockX,lockY:this._lockY,cancelledByGarbage});
       }
+      // ── MOD: Snow ── 送ったライン数に応じて盤面を広げる（描画の再構築は非同期で行う）
+      this._checkSnowGrow();
       // 相手に視覚エフェクトを送信
       const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear,attack,
         lockX:this._lockX,lockY:this._lockY,lockType:this._lockType,lockRot:this._lockRot};
@@ -3729,12 +3748,12 @@ class TetrisGame{
     // 穴位置でグループ化
     const groups=[];
     for(const chunk of armed){
-      const col=chunk.holeCol!==undefined?chunk.holeCol:Math.floor(Math.random()*getGameCols());
+      const col=(chunk.helmet&&chunk.holeBase!==undefined)?chunk.holeBase:(chunk.holeCol!==undefined?chunk.holeCol:Math.floor(Math.random()*getGameCols()));
       let merged=false;
       for(const g of groups){
         if(g.col===col){g.count+=chunk.lines;merged=true;break;}
       }
-      if(!merged)groups.push({col,count:chunk.lines,fromPuyo:!!chunk.fromPuyo,dice:!!chunk.dice,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
+      if(!merged)groups.push({col,count:chunk.lines,fromPuyo:!!chunk.fromPuyo,dice:!!chunk.dice,diceHoles:chunk.diceHoles,helmet:!!chunk.helmet,holeBase:chunk.holeBase,end:!!chunk.end,seriality:(chunk.seriality!==undefined&&chunk.seriality!==null)?chunk.seriality:0.3});
     }
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
@@ -3742,10 +3761,20 @@ class TetrisGame{
       for(let i=0;i<g.count;i++){
         const cols=getGameCols();
         const row=Array(cols).fill('G');
-        if(g.dice){
-          // ── サイコロ: ゴミブロックは1つだけ穴を開ける（1つ以上開かないように） ──
-          const holeCol=Math.floor(Math.random()*cols);
-          row[holeCol]=0;
+        if(g.end){
+          // ── End: 穴だけのゴミ（全マス空白） ──
+          row.fill(0);
+        }else if(g.dice){
+          // ── サイコロ: 穴を開ける（開始時ゴミは diceHoles 個、通常は1個） ──
+          const nh=Math.min(cols-1, Math.max(1, (g.diceHoles|0)||1));
+          const cells=[...Array(cols).keys()];
+          for(let k=cells.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=cells[k];cells[k]=cells[j];cells[j]=t;}
+          for(let k=0;k<nh;k++)row[cells[k]]=0;
+        }else if(g.helmet){
+          // ── Helmet: 横に連続した2穴 ──
+          const base=Math.max(0,Math.min(cols-2, g.holeBase!==undefined?g.holeBase:0));
+          row[base]=0;
+          row[base+1]=0;
         }else{
           // 30%で上の穴と同じ列に（直列）、それ以外はグループの既定列
           let holeCol;
@@ -3882,25 +3911,33 @@ class TetrisGame{
             holeCol = (baseCol + phase) % cols;
           }
           const row=Array(cols).fill('G');
+          // ── End: 穴だけのゴミ（全マス空白。盤面全体が1段せり上がる） ──
+          if(g.end){
+            row.fill(0);
+          }
           // ── Bad Hole: 穴を1個だけ開ける（1つ以上開かないように） ──
-          if(g.badHole){
+          else if(g.badHole){
             const hc=Math.floor(Math.random()*cols);
             row[hc]=0;
           }else if(g.messy){
             const hc=Math.floor(Math.random()*cols);
             row[hc]=0;
           }else if(g.helmet){
-            const base=g.holeBase!==undefined?g.holeBase:0;
+            // ── Helmet: 横に連続した2穴 ──
+            const base=Math.max(0,Math.min(cols-2, g.holeBase!==undefined?g.holeBase:0));
             row[base]=0;
+            row[base+1]=0;
           }else if(g.dice){
-            // ── サイコロ: 穴は1つだけ開ける ──
-            const hc=Math.floor(Math.random()*cols);
-            row[hc]=0;
+            // ── サイコロ: 穴を開ける（開始時ゴミは diceHoles 個、通常は1個） ──
+            const nh=Math.min(cols-1, Math.max(1, (g.diceHoles|0)||1));
+            const cells=[...Array(cols).keys()];
+            for(let k=cells.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=cells[k];cells[k]=cells[j];cells[j]=t;}
+            for(let k=0;k<nh;k++)row[cells[k]]=0;
           }else{
             row[holeCol]=0;
           }
           // ── Rock MOD: 受けたゴミを穴なし(R)にする ──
-          if(myHasMod('rock')){
+          if(myHasMod('rock') && !g.end){
             for(let c=0;c<cols;c++) row[c]='R';
           }
           // ── Last Stand / Quick Play: 0.2秒ごとに1段ずつ出現 ──
@@ -3920,19 +3957,6 @@ class TetrisGame{
       if(canAdd<g.lines)backToQueue.push({...g,lines:g.lines-canAdd,readyAt:now+qpGarbageReady(300,g.fromPuyo,g.lines-canAdd)});
     }
     for(const g of backToQueue)this.garbageQueue.unshift(g);
-    // ── Expert MOD: 蓄積ゴミを通常ゴミと一緒に即座に盤面に出現（直列穴） ──
-    if(this._expertStored>0 && linesToAdd>0){
-      const eHole=Math.floor(Math.random()*getGameCols());
-      for(let i=0;i<this._expertStored;i++){
-        const row=Array(getGameCols()).fill('G');
-        row[eHole]=0;
-        this._pushRow(row);this.board.shift();
-        this.totalGarbageReceived++;
-        if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
-        linesToAdd++;
-      }
-      this._expertStored=0;
-    }
     if(linesToAdd>0){
       this.cancelLock();
       SFX.garbage();
@@ -4326,19 +4350,18 @@ class TetrisGame{
       this._helmetHoleBase=Math.max(0,Math.min(getGameCols()-2, base+d));
       return;
     }
+    // ── MOD: End (受ける側) ── 受信量はサーバー側で半減・3秒準備・穴だけ(全マス空白)のゴミで盤面全体がせり上がる
+    if(has('end')){
+      const readyAt=performance.now()+3000;
+      this.garbageQueue.push({lines,fromId,readyAt,holes3:0,end:true});
+      return;
+    }
     // ── MOD: Rock (受ける側) ── 穴なしゴミ(R)化は _applyReadyGarbage で行う。ここでは通常エントリを積む
     if(has('rock')){
       const readyAt=performance.now()+qpGarbageReady(1000);
       if(!puyotetMode&&lines>10){
         while(lines>0){const chunk=Math.min(lines,10);const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines:chunk,fromId,readyAt,holeCol,holes3:holes3||0});lines-=chunk;}
       }else{const holeCol=Math.floor(Math.random()*getGameCols());this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0});}
-      return;
-    }
-    // ── MOD: Expert (受ける側) ── ゴミ1.0倍・2秒準備完了・直列穴
-    if(has('expert')){
-      const readyAt=performance.now()+2000;
-      const holeCol=Math.floor(Math.random()*getGameCols());
-      this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:0,laststandConsecutive:true});
       return;
     }
     // ── 通常処理 ──
@@ -4369,6 +4392,50 @@ class TetrisGame{
     return pts;
   }
 
+  // ── MOD: Snow ── 送ったライン10ごとに盤面を1段/1列ずつ交互に広げる（最大20x20）
+  // 10ラインごとのステップ: 奇数=縦+1, 偶数=横+1
+  _checkSnowGrow(){
+    if(!myHasMod('snow'))return;
+    if(!this.alive)return;
+    const target=Math.floor((this.totalAttackSent||0)/10);
+    if(target<=(this._snowGrowStep||0))return;
+    if(this._snowGrowPending)return;
+    const step=Math.min(target,32); // 4x4→20x20 は32ステップ
+    if(step<=(this._snowGrowStep||0))return;
+    this._snowGrowPending=true;
+    // ライン消去処理・描画コールの終了後に盤面サイズを反映する
+    setTimeout(()=>{
+      this._snowGrowPending=false;
+      if(!this.alive||gameState!==this)return;
+      if(!(snowCols>0))return;
+      const t2=Math.min(Math.floor((this.totalAttackSent||0)/10),32);
+      if(t2<=(this._snowGrowStep||0))return;
+      this._applySnowGrowth(t2);
+    },0);
+  }
+
+  _applySnowGrowth(step){
+    if(!myHasMod('snow'))return;
+    if(!(snowCols>0))return;
+    const targetH=Math.min(20,4+Math.ceil(step/2));
+    const targetW=Math.min(20,4+Math.floor(step/2));
+    // 幅を右側へ追加（既存ブロック位置は保持）
+    while(getGameCols()<targetW){
+      for(const row of this.board)row.push(0);
+      snowCols=getGameCols()+1;
+    }
+    // 高さを可視領域の上側へ追加（底に寄せたまま上に余白を増やす）
+    while(ROWS<targetH){
+      this.board.splice(HIDDEN,0,new Array(getGameCols()).fill(0));
+      ROWS++;
+    }
+    this._snowGrowStep=step;
+    _snowRebuildRenderer();
+    try{
+      if(typeof addChatSystem==='function'&&document.getElementById('chat-messages'))addChatSystem(`❄ SNOW — 盤面が ${getGameCols()}×${ROWS} に広がった`);
+    }catch(e){}
+  }
+
   hold(){
     if(this._diceFrozen()) return;
     if(this.holdUsed)return;
@@ -4381,15 +4448,17 @@ class TetrisGame{
       this.holdPiece=type;
       this.holdCustomShape=customShape;
       const _spX2=Math.floor((getGameCols()-4)/2);
-      this.current={type:nextType,rotation:0,x:_spX2,y:SPAWN_Y,customShape:nextCustomShape};
+      // ── MOD: Snow ── スポーン地点を1マス上に上げる
+      const _spawnBaseY=SPAWN_Y-(myHasMod('snow')?1:0);
+      this.current={type:nextType,rotation:0,x:_spX2,y:_spawnBaseY,customShape:nextCustomShape};
       this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
       // スポーン位置が埋まっている場合、10マス上まで探す
       if(!this.isValid(this.current)){
         let found=false;
         for(let yOff=-1;yOff>=-10;yOff--){
-          const t={...this.current,y:SPAWN_Y+yOff};
-          if(this.isValid(t)){this.current.y=SPAWN_Y+yOff;found=true;break;}
+          const t={...this.current,y:_spawnBaseY+yOff};
+          if(this.isValid(t)){this.current.y=_spawnBaseY+yOff;found=true;break;}
         }
         if(!found){
           this.alive=false;if(!isOfflineSolo){socket.emit("game_over",{totalAttackSent:this.totalAttackSent,totalGarbageReceived:this.totalGarbageReceived});_enterSpectateOnDeath();}renderer&&renderer.onGameOver();_offlineSoloGameOverAutoReturn();
@@ -4494,6 +4563,26 @@ const CELL=28;
 // BOARD_W/Hはゲーム開始時に動的に計算（4wideモード対応）
 let BOARD_W=COLS*CELL,BOARD_H=ROWS*CELL;
 function _recalcBoardSize(){BOARD_W=getGameCols()*CELL;BOARD_H=ROWS*CELL;}
+
+// ── MOD: Snow ── 盤面サイズ変更後にレンダラを作り直す（ゲーム状態は保持）
+function _snowRebuildRenderer(){
+  if(!gameApp||!gameState)return;
+  if(renderer){
+    try{
+      if(renderer.root){if(renderer.root.parent)renderer.root.parent.removeChild(renderer.root);renderer.root.destroy({children:true});}
+    }catch(e){}
+    try{
+      if(renderer.effectsLayer){if(renderer.effectsLayer.parent)renderer.effectsLayer.parent.removeChild(renderer.effectsLayer);renderer.effectsLayer.destroy({children:true});}
+    }catch(e){}
+    renderer=null;
+  }
+  _recalcBoardSize();
+  try{
+    renderer=new GameRenderer(gameApp,roomPlayers,gameState);
+    renderer.drawBoard();renderer.drawGhost();renderer.drawCurrent();
+    renderer.drawNextPieces();renderer.drawHold();renderer.updateScoreUI();
+  }catch(e){ console.error('[Snow] renderer rebuild failed',e); }
+}
 const ABOVE_BOARD=CELL*2; // 枠は可視エリア上2マス分
 
 function initGame(players,bagSeed){
@@ -5892,6 +5981,7 @@ function openReplayViewer(replayData, mode) {
   _applyBgImage();
 
   // ダミーのゲーム状態（レンダラー用）
+  snowCols=0; // Snow MODの動的幅をリセット（リプレイは固定サイズで表示）
   gameState = new TetrisGame(bagSeed);
   gameState.alive = false; // 重力など無効化
   // クイックプレイのリプレイ判定（レンダラー生成前に必要）
@@ -7698,8 +7788,8 @@ class GameRenderer{
     this.nextGfx.forEach((gfx,i)=>{
       gfx.clear();
       const entry=this.gs.nextQueue[i];if(!entry)return;
-      const type=entry.type||entry; // support old string format
-      const customShape=entry.customShape||null;
+      const type=entry.fakeType||entry.type||entry; // Helmet: 偽表示 / support old string format
+      const customShape=entry.fakeType?null:(entry.customShape||null);
       const shape=customShape||PIECE_SHAPES[type][0];
       const a=i===0?1:Math.max(0.3,0.85-i*0.15);
       for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++)if(shape[r][c])this.drawCell(gfx,c*mc,r*mc,mc,type,a);
@@ -8244,16 +8334,6 @@ class GameRenderer{
     
     // ゲージのライン数表示
     if(this.gMeterTxt) this.gMeterTxt.text=totalLines.toString();
-    // ── Expert MOD: 蓄積ゴミ量を黄色バーで表示（キューの右隣） ──
-    if(this.gs._expertStored>0){
-      const eH=Math.min(this.gs._expertStored,MAX_VISIBLE)*CELL;
-      this.gMeterGfx.beginFill(0xffd400,0.9);
-      this.gMeterGfx.drawRect(8,BOARD_H-eH,6,eH);
-      this.gMeterGfx.endFill();
-      this.gMeterGfx.lineStyle(1,0xffffff,0.4);
-      this.gMeterGfx.drawRect(8,BOARD_H-eH,6,eH);
-      this.gMeterGfx.lineStyle(0);
-    }
   }
 
   // バッチコンボメーター描画
@@ -12186,6 +12266,20 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
 socket.on('receive_garbage',({lines,fromId,holes3,targetMod,targetMods,holeCol,duoHard,duoHardDirect,seriality,fromPuyo})=>{
   const h3 = holes3 || 0;
   const dhrd = duoHardDirect || duoHard; // duo hard: サーバーは duoHardDirect=true で送る（旧duoHard互換）
+  // ── Quick Play: 貯めたB2B数ぶん(最大60%)の受信ゴミをキューに入れず「無かったこと」にする ──
+  // 例: B2B x6 → 6% 軽減、B2B x60以上 → 60% 軽減。軽減分は矢印・保留・リプレイにも残さない
+  if(quickPlayMode && gameState && !(puyoGameState&&puyoGameState.alive) && gameState.b2bCount > 0){
+    const pct = Math.min(60, gameState.b2bCount);
+    const cut = Math.floor(lines * pct / 100);
+    if(cut > 0){
+      lines -= cut;
+      console.log(`[QP B2B CUT] b2b=${gameState.b2bCount} pct=${pct}% cut=${cut} remaining=${lines}`);
+    }
+    if(lines <= 0){
+      console.log('[RCV GARBAGE] -> fully nullified by QP B2B, not queued');
+      return;
+    }
+  }
   console.log(`[RCV GARBAGE] lines=${lines} fromId=${fromId} holes3=${h3} mod=${targetMod} hasPuyo=${!!puyoGameState} puyoAlive=${puyoGameState?.alive} hasTetris=${!!gameState} duoHard=${!!dhrd} holeCol=${holeCol}`);
   ReplayRecorder.record('receive_garbage',{lines,fromId,holes3:h3});
   if(puyoGameState&&puyoGameState.alive){
