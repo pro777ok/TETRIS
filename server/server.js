@@ -278,7 +278,7 @@ function qpLoadPlays(playerName) {
 }
 
 // ── クライム状態 ─────────────────────────────────────────────────
-function qpInitState(){ return { m: 0, climbLevel: 1, climbXp: 0, targetId: null, mFromLines: 0, mLinesTotal: 0, lastXpGain: 0, xpEarnedThisLevel: false }; }
+function qpInitState(){ return { m: 0, climbLevel: 1, climbXp: 0, targetId: null, mFromLines: 0, mLinesTotal: 0, lastXpGain: 0, xpEarnedThisLevel: false, xpDecayPauseUntil: 0, dropPenalty: 0 }; }
 
 // duo: チーム共有のクライムゲージ（人間＋companionが同一ゲージにXP/mを蓄積）
 // note: 通常者は自分の qp.players[pid]、duoメンバーはチーム共有ゲージを指す
@@ -332,6 +332,7 @@ function qpGetRankList(room) {
       xp: Math.round(st.climbXp * 10) / 10,
       clearGain: Math.round((st.mFromLines || 0) * 10) / 10,
       fallRate: Math.round(qpDropFall(st.m) * 100) / 100,
+      penaltyMult: Math.round(qpDropPenaltyMult(room, p) * 100) / 100,
       dropMode: !!(room.roomSettings && room.roomSettings.dropMode),
       color: qpLevelColor(st.climbLevel),
       targetedBy,
@@ -366,6 +367,7 @@ function qpAddXpAndLevel(room, pid, gain) {
   while (st.climbXp >= QP_XP_PER_LEVEL && st.climbLevel < 11) {
     st.climbLevel = Math.min(11, st.climbLevel + 1);
     st.climbXp -= QP_XP_PER_LEVEL;
+    st.xpDecayPauseUntil = Date.now() + 5000; // レベルアップでXP減衰を5秒間停止
   }
   if (st.climbLevel >= 11) st.climbXp = Math.min(st.climbXp, QP_XP_PER_LEVEL);
 }
@@ -393,6 +395,7 @@ function qpGainLines(room, pid, lines, xpLines) {
   const cs = st.climbLevel;
   if (xpGainLines > 0) qpAddXpAndLevel(room, pid, xpGainLines);
   const mGain = mGainLines * (cs + 2) / 3;
+  const mBefore = st.m;
   st.m += mGain;
   st.mFromLines = (st.mFromLines || 0) + mGain;
   // 累計ライン送信ボーナス: 通常は30ラインごと、expert modeでは15ラインごとに (climb speed+2)/3*10 をmに加算（人間・bot共通）。
@@ -407,6 +410,11 @@ function qpGainLines(room, pid, lines, xpLines) {
     st.mFromLines = (st.mFromLines || 0) + bonus;
     // 画面に「bonus!」を表示するためクライアントへ通知（人間のみ。botはsocketが無く無害）
     try { io.to(pid).emit('qp_line_bonus', { m: bonus }); } catch(e){}
+  }
+  // drop mode: 上昇 m/10 だけペナルティ倍率を下げる（最小0）
+  if (qpDropActive(room, p)) {
+    const gained = st.m - mBefore;
+    if (gained > 0) st.dropPenalty = Math.max(0, (st.dropPenalty || 0) - gained / 30);
   }
 }
 
@@ -500,9 +508,11 @@ function qpSendLines(room, fromId, target, lines, clearRows, lockX, lockY) {
   // duo: 攻撃側・受信側とも「実効100%」で、各メンバーがフルで受け取る → チーム合計=2xではなく、受信は1人1人に対し100%
   // 受けるゴミ量の倍率: 1mで0.5倍、100m登るごとに現状の1.1倍（qpClimbGarbageMult）
   // QP: 受け取る火力は全体的に半分（QP_RECEIVE_DMG_MULT）
-  // expert mode: 受けるゴミブロックの倍率1.2倍 / ダブルガベージ×2は受信側MOD（receiveGarbageMultiplier）
-  const expertRecv = (room.roomSettings && room.roomSettings.expertMode) ? 1.2 : 1;
-  const receiveMult = receiveGarbageMultiplier(room, target.id) * qpClimbGarbageMult(room, target) * QP_RECEIVE_DMG_MULT * expertRecv;
+  // expert mode: 受けるゴミブロックの倍率1.3倍 / ダブルガベージ×2は受信側MOD（receiveGarbageMultiplier）
+  const expertRecv = (room.roomSettings && room.roomSettings.expertMode) ? 1.3 : 1;
+  // drop mode: 高度mではなく降下ペナルティからの倍率を使う
+  const climbMult = qpDropActive(room, target) ? qpDropPenaltyMult(room, target) : qpClimbGarbageMult(room, target);
+  const receiveMult = receiveGarbageMultiplier(room, target.id) * climbMult * QP_RECEIVE_DMG_MULT * expertRecv;
   const received = Math.max(1, Math.round(Math.max(1, adj) * receiveMult));
   // ぷよ参加者（bot/人間）には ojama として届ける
   const targetPuyo = (room.playerModes && room.playerModes[target.id] === 'puyo')
@@ -645,7 +655,7 @@ const QP_GARBAGE_BATCH_SEC = 1;   // 1秒窓: この窓で10行以上なら警�
 const QP_GARBAGE_WARN_MS = 3000;  // 10行以上のときの警告時間
 const QP_GARBAGE_WARN_MIN = 10;
 const QP_CLIMB_MULT_STEP = 100;         // 100m登るごとに
-const QP_CLIMB_MULT_BASE = 1.05;        // 受けるゴミの倍率を1.05倍していく
+const QP_CLIMB_MULT_BASE = 1.03;        // 受けるゴミの倍率を1.03倍していく
 const QP_CLIMB_MULT_AT_1M = 0.5;        // 1mのときの受けるゴミは0.5倍
 const QP_XP_PER_LEVEL = 12;             // XP12でclimbLevel+1（純粋な貢献12ライン相当）
 const QP_TIME_DMG_MAX_MIN = 13;         // QP: この試合経過時間(分)で受信ダメージ倍率が最大(2.0)に達する
@@ -675,6 +685,16 @@ function qpEffM(room, target){
   const qp = qpEnsureState(room);
   const st = qp.useGauge ? qpUseGauge(room, target) : (qp.players[target.id] || null);
   return st ? (st.m || 0) : 0;
+}
+
+// drop mode: 降下している秒数/10 をそのままペナルティ倍率にする
+// 上昇 m/30 でペナルティ倍率を下げる（最小0）
+function qpDropPenaltyMult(room, target){
+  if (!qpDropActive(room, target)) return 1;
+  const qp = qpEnsureState(room);
+  const st = qp.useGauge ? qpUseGauge(room, target) : qp.players[target.id];
+  const penalty = st ? (st.dropPenalty || 0) : 0;
+  return Math.max(0, penalty);
 }
 
 // 受けるゴミの倍率: 1mで0.5倍から始まり、100m登るごとに現状の1.1倍になっていく
@@ -715,7 +735,8 @@ function qpTick(room) {
     // XP減衰: 実経過時間ベース。デフォルト減衰速度 = 0.5XP/秒 × (level/15 + 1)
     // qp expert mode ではさらに1.5倍。0になったら即レベルダウンしてバーを満タンに戻す
     // ただしレベル1と、そのレベルでまだXPを稼いでいない時は減衰させない
-    if (st.climbLevel > 1 && st.xpEarnedThisLevel) {
+    // レベルアップ直後は5秒間減衰を停止
+    if (st.climbLevel > 1 && st.xpEarnedThisLevel && now >= (st.xpDecayPauseUntil || 0)) {
       let decayRate = 0.5 * (st.climbLevel / 15 + 1);
       if (room && room.roomSettings && room.roomSettings.expertMode) decayRate *= 1.5;
       st.climbXp -= decayRate * dtMs / 1000;
@@ -732,6 +753,8 @@ if (qpDropActive(room, p)) {
       const dtSec = dtMs / 1000;
       const fr = qpDropFall(st.m);
       st.m = Math.max(0, st.m - fr * dtSec);
+      // 降下している秒数/10 をペナルティ倍率に加算
+      st.dropPenalty = (st.dropPenalty || 0) + dtSec / 10;
     } else if (now - (room._qpClimbAccum || 0) >= 1000) {
       st.m += 0.25 * st.climbLevel;
     }
@@ -743,8 +766,21 @@ if (qpDropActive(room, p)) {
     qpAssignTargets(room);
   }
 
-  // ── 保留ゴミの処理 ──────────────────────────────────────────
+  // 定期的なライブ状態更新（ピース位置・回転などを高頻度で同期）
   const all = allPlayers(room);
+  const live = all.filter(p => p.alive).map(p => ({
+    id: p.id,
+    currentPiece: p.currentPiece ? { type: p.currentPiece.type, rotation: p.currentPiece.rotation, x: p.currentPiece.x, y: p.currentPiece.y } : null,
+    board: p.board ? p.board.map(r => r.map(c => c || 0)) : null,
+    nextPieces: p.nextQueue ? p.nextQueue.slice(0, 5) : null,
+    holdPiece: p.holdPiece,
+    garbageLines: p.garbageQueue ? p.garbageQueue.reduce((s, g) => s + g.lines, 0) : 0,
+    b2bCount: p.b2bCount || 0,
+    combo: p.combo || -1,
+  }));
+  io.to(room._rid).emit('qp_live_update', { players: live, timestamp: now });
+
+  // ── 保留ゴミの処理 ──────────────────────────────────────────
   // 警告終了（3秒経過）→ 保留分をそのまま投入
   for (const [tid, warn] of Object.entries(room._qpWarn || {})) {
     if (now < warn.until) continue;
@@ -773,8 +809,9 @@ if (qpDropActive(room, p)) {
     }
     win.count += pendingLines;
     if (win.count >= QP_GARBAGE_WARN_MIN) {
-      room._qpWarn[tid] = { until: now + QP_GARBAGE_WARN_MS, lines: win.count };
-      io.to(tid).emit('qp_garbage_warning', { lines: win.count });
+      const _warnMs = (room.roomSettings && room.roomSettings.expertMode) ? 2000 : QP_GARBAGE_WARN_MS;
+      room._qpWarn[tid] = { until: now + _warnMs, lines: win.count };
+      io.to(tid).emit('qp_garbage_warning', { lines: win.count, warnMs: _warnMs });
     } else if (pendingLines > 0) {
       for (const b of blks) if (b.lines > 0) qpFlushGarbage(room, tid, b.lines, b.holeCol, b.seriality, b.puyo);
       delete room._qpPending[tid];
@@ -791,7 +828,7 @@ if (qpDropActive(room, p)) {
     if (bot.stop) bot.stop();
     qpResetBot(bot);
     const bst = qp.players[bot.id];
-    if (bst) { bst.m = 0; bst.climbLevel = 1; bst.climbXp = 0; bst.mFromLines = 0; bst.mLinesTotal = 0; bst.targetId = null; bst.xpEarnedThisLevel = false; }
+    if (bst) { bst.m = 0; bst.climbLevel = 1; bst.climbXp = 0; bst.mFromLines = 0; bst.mLinesTotal = 0; bst.targetId = null; bst.xpEarnedThisLevel = false; bst.xpDecayPauseUntil = 0; }
     if (bot.resetReplay) bot.resetReplay();
     bot._diedAt = null;
     bot.startAutonomous(400);
@@ -840,7 +877,7 @@ function qpStopTicker(room) {
 }
 
 // ── ボットプール ─────────────────────────────────────────────────
-// 9体のAPM合わせボット（リプレイ記録 or 通常AI）+ 1体のColdClear 2.5pps
+// 9体のAPM合わせボット（リプレイ記録 or 通常AI）+ 1体のColdClear 3.0pps
 const QP_APM_TARGETS = [40,45,50,55,60,65,70,75,80];
 const QP_MAX_BOTS = QP_APM_TARGETS.length + 1;
 
@@ -865,8 +902,8 @@ function qpBuildBotPool(room) {
       pool.push({ kind: 'ai', name: `🤖NOVA-${label}`, botPps: Math.max(0.6, Math.min(2.5, apm / 40)), level: 5 });
     }
   });
-  // duoでは 🧊CC-2.5 はプールから外しcompanion枠として追加する
-  if (!qpIsDuo(room)) pool.push({ kind: 'coldclear', name: '🧊CC-2.5', botPps: 2.5, level: 5 });
+  // duoでは 🧊CC-3.0 はプールから外しcompanion枠として追加する
+  if (!qpIsDuo(room)) pool.push({ kind: 'coldclear', name: '🧊CC-3.0', botPps: 3.0, level: 5 });
   return pool;
 }
 
@@ -885,13 +922,29 @@ function qpInstantiateBots(room) {
     bot._qpSpec = spec;
     room.bots.push(bot);
   }
-  // duo: 人間の相方companion botを1体追加（🧊CC-2.5、PPSはルーム設定）
+  // duo: 人間の相方companion botを1体追加（🧊CC-3.0、PPSはルーム設定）
   if (qpIsDuo(room) && !room.bots.find(b => b._qpCompanion)) {
     const bag = new Bag(room.bagSeed);
-    const pps = Math.max(0.5, Math.min(6, parseFloat((room.roomSettings && room.roomSettings.companionPps) || 2.5)));
-    const comp = new BotPlayer(makeBotId(), '🧊CC-2.5', 5, room._rid, bag, null, 'coldclear', pps);
+    const pps = Math.max(0.5, Math.min(6, parseFloat((room.roomSettings && room.roomSettings.companionPps) || 3.0)));
+    const comp = new BotPlayer(makeBotId(), '🧊CC-3.0', 5, room._rid, bag, null, 'coldclear', pps);
     comp._qpCompanion = true;
     room.bots.push(comp);
+  }
+  // ボットの初期高度(m)を強さ(botPps)に応じて 0-1000m に分散配置
+  // プールは弱い順に並んでいるため、弱いボットを低高度、強いボットを高高度に
+  const qp = qpEnsureState(room);
+  const botsByStrength = [...room.bots].filter(b => !b._qpCompanion).sort((a, b) => (a.botPps || 0) - (b.botPps || 0));
+  botsByStrength.forEach((bot, i) => {
+    const t = botsByStrength.length > 1 ? i / (botsByStrength.length - 1) : 0.5;
+    const m = Math.round(t * 1000); // 0 〜 1000m
+    const st = qp.players[bot.id];
+    if (st) st.m = m;
+  });
+  // companion は人間と同じゲージを共有するため初期 m は 0
+  const comp = room.bots.find(b => b._qpCompanion);
+  if (comp) {
+    const cst = qp.players[comp.id];
+    if (cst) cst.m = 0;
   }
   // 再生成直後のボットを稼働させる（クイックプレイのスタンバイ/試合中に設定変更された場合）
   if (room.quickPlayMode && (room.started || room._qpStandby)) {
@@ -919,7 +972,7 @@ function qpResetClimb(room) {
   for (const p of allPlayers(room)) {
     if (p.isBot) continue;
     const st = qp.players[p.id];
-    if (st) { st.m = 0; st.climbLevel = 1; st.climbXp = 0; st.mFromLines = 0; st.mLinesTotal = 0; st.xpEarnedThisLevel = false; }
+    if (st) { st.m = 0; st.climbLevel = 1; st.climbXp = 0; st.mFromLines = 0; st.mLinesTotal = 0; st.xpEarnedThisLevel = false; st.xpDecayPauseUntil = 0; st.dropPenalty = 0; }
   }
   room._qpPending = {};
   room._qpWarn = {};
@@ -970,7 +1023,7 @@ function adjustForTargetMod(room, targetId, lines) {
 }
 
 // プレイヤー/ボット共通の付与可能MOD一覧（複数同時付与可）
-const VALID_MODS = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','dice','freefall','snow','end'];
+const VALID_MODS = ['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','magic','dice','freefall','snow','end','block'];
 function sanitizeMod(mod) { return VALID_MODS.includes(mod) ? mod : 'none'; }
 function normalizeModList(mods) {
   const arr = Array.isArray(mods) ? mods : (mods ? [mods] : []);
@@ -3335,8 +3388,9 @@ class BotPlayer {
     const final = {
       id: this.id, currentPiece: { type, rotation: rot, x, y: targetY, customShape: null }
     };
-    if (room && this.botType === 'coldclear' && this.cols === COLS) {
-      const path = this._buildCC2VisualPath(type, rot, x, targetY);
+    // すべてのボットでピースの移動パスを送信（クライアント側でスムーズにアニメーション）
+    if (room && this.cols === COLS) {
+      const path = this._buildVisualPath(type, rot, x, targetY);
       const STEP_MS = 42;
       const dur = Math.max(120, Math.min(900, Math.max(1, path.length - 1) * STEP_MS));
       io.to(this.roomId).emit('bot_piece_path', { id: this.id, type, path, stepMs: STEP_MS, dur });
@@ -3352,12 +3406,8 @@ class BotPlayer {
     if (done) done();
   }
 
-  // CC2 の配置を「プレイヤーの操作」風のパスに変換する:
-  //   1. スポーン位置で目標回転まで回転（SRS+キック）
-  //   2. 着地付近まで一気に降下（画面内で見える高さ）
-  //   3. 目標列まで横スライド（突っかかったら1段下げる）
-  //   4. 最終落下 → 正確な最終配置を末尾に付加
-  _buildCC2VisualPath(type, rot, x, targetY) {
+  // 共通の視覚的パス生成（coldclear用 _buildCC2VisualPath を簡略化・汎用化）
+  _buildVisualPath(type, rot, x, targetY) {
     const board = this.board;
     const spawnX = Math.floor((this.cols - 4) / 2);
     const steps = [];
@@ -3367,7 +3417,7 @@ class BotPlayer {
     };
     push(0, spawnX, -2);
 
-    // 1) 回転（現在高さ → ダメなら y=0 で回転）
+    // 1) スポーン位置で目標回転まで回転（SRSキック）
     let cr = 0, cx = spawnX, cy = -2;
     const cw = ((rot % 4) + 4) % 4;
     const ccw = (4 - cw) % 4;
@@ -3396,17 +3446,18 @@ class BotPlayer {
       if (isValid(board, type, cr, cx + dx, cy)) {
         cx += dx; push(cr, cx, cy);
       } else if (isValid(board, type, cr, cx, cy + 1)) {
-        cy += 1; push(cr, cx, cy);
+        cy++; push(cr, cx, cy);
+        if (isValid(board, type, cr, cx + dx, cy)) {
+          cx += dx; push(cr, cx, cy);
+        }
       } else {
         break;
       }
     }
 
-    // 4) 最終落下（可能な限り）して正確な配置を末尾に付加
-    let fy = cy;
-    while (fy < targetY && isValid(board, type, cr, cx, fy + 1)) fy++;
-    push(cr, cx, fy);
-    push(rot, x, targetY);
+    // 4) 最終落下
+    while (cy < targetY && isValid(board, type, cr, cx, cy + 1)) cy++;
+    push(cr, cx, cy);
     return steps;
   }
 
@@ -3684,6 +3735,7 @@ class BotPlayer {
     }
 
     this.board = clearedBoard;
+    if (lines > 0 && hasMod(room, this.id, 'magic')) this._randomizeGarbageHoles();
     this.lines += lines;
     this.lvl = Math.floor(this.lines/10)+1;
     this.score += lines*100*this.lvl + (isTSpin?lines*200:0);
@@ -3739,10 +3791,11 @@ class BotPlayer {
       attack = attack + Math.min(this.ren, 10);
     } else {
       // ── Quad/TSD: adds ren directly (replaces combo bonus) ───
+      const _magicRen = hasMod(room, this.id, 'magic');
       if (lines === 4 || (isTSpin && lines === 2)) {
-        attack += this.ren;
+        attack += _magicRen ? Math.max(0, this.ren - 1) : this.ren;
       } else {
-        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
+        const comboBonus = _magicRen ? Math.max(0, this.ren - 1) : Math.floor(Math.max(0, this.ren + 2) / 4);
         attack = attack + comboBonus;
       }
     }
@@ -3807,6 +3860,7 @@ class BotPlayer {
       let linesToAdd = 0;
       const _slowMode = room && room.roomSettings && room.roomSettings.slowMode;
       const CAP = _slowMode ? 1 : 8;
+      const _botBadhole = !!(room && hasMod(room, this.id, 'badhole'));
       
       for (const g of remaining) {
         if (linesToAdd >= CAP) {
@@ -3836,7 +3890,16 @@ class BotPlayer {
           // 4wide の bot に 10wide 由来の穴が届きうるので、行に書く前に収める
           hc = Math.max(0, Math.min(this.cols - 1, hc | 0));
           const row=Array(this.cols).fill(g.end?0:'G');
-          if(!g.end)row[hc]=0;
+          if(!g.end){
+            if(_botBadhole){
+              const nh=Math.min(this.cols-1, 4+Math.floor(Math.random()*3));
+              const cells=[...Array(this.cols).keys()];
+              for(let k=cells.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=cells[k];cells[k]=cells[j];cells[j]=t;}
+              for(let k=0;k<nh;k++)row[cells[k]]=0;
+            }else{
+              row[hc]=0;
+            }
+          }
           this.board.push(row);this.board.shift();
           linesToAdd++;this.totalGarbageReceived++;
           this._lastGarbageHoleCol=hc;
@@ -3960,10 +4023,28 @@ class BotPlayer {
     this.locking = false;
   }
 
+  // ── MOD: Magic ── 盤面上のゴミ行の穴位置をランダムに再配置
+  _randomizeGarbageHoles(){
+    for (const row of this.board){
+      if(!row||!row.some(c=>c==='G'))continue;
+      const positions=[];let holes=0;
+      for(let i=0;i<row.length;i++){
+        if(row[i]==='G'||row[i]===0){positions.push(i);if(row[i]===0)holes++;}
+      }
+      if(positions.length<2)continue;
+      if(holes<=0)holes=1;
+      if(holes>positions.length-1)holes=positions.length-1;
+      for(let k=positions.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=positions[k];positions[k]=positions[j];positions[j]=t;}
+      const newHoles=new Set(positions.slice(0,holes));
+      for(const i of positions)row[i]=newHoles.has(i)?0:'G';
+    }
+  }
+
   queueGarbage(lines, fromId, holes3, holeCol, serial, seriality) {
     const room = rooms[this.roomId];
     // ── End MOD: 受けるゴミ量は receiveGarbageMultiplier で半減済み。3秒準備・穴だけの行（盤面全体がせり上がる）
     const _end = !!(room && hasMod(room, this.id, 'end'));
+    const _block = !!(room && hasMod(room, this.id, 'block'));
     // バッチコンボ: 蓄積バッファからゴミを相殺
     if (room && room.roomSettings && room.roomSettings.batchComboMode && this.batchComboBuffer > 0) {
       const canCancel = Math.min(lines, this.batchComboBuffer);
@@ -3975,7 +4056,7 @@ class BotPlayer {
     // 範囲外の穴で row[hc] に書くと行幅が崩れて isValid/描画が壊れるので必ず収める。
     const hcRaw = (holeCol === undefined || holeCol === null) ? Math.floor(Math.random()*this.cols) : holeCol;
     const hc = Math.max(0, Math.min(this.cols - 1, hcRaw | 0));
-    const delay = _end ? 3000 : (serial ? 0 : ((room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000));
+    const delay = _block ? 3000 : (_end ? 3000 : (serial ? 0 : ((room && room.roomSettings && room.roomSettings.puyotetMode) ? 0 : 1000)));
     this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+delay, holeCol: hc, holes3: holes3 || 0, serial: !!serial, end: _end, seriality: (seriality===undefined||seriality===null)?0.3:seriality });
   }
 
@@ -4123,7 +4204,7 @@ function createRoom(roomId) {
       multiplierRate: 0.03,      // 火力倍率の増加量(1間隔あたり)
       duoOn: false,              // duoモード（人間+companion botのチーム登頂）
       duoHard: false,            // duo難易度 hard（直列穴・即時投入）
-      companionPps: 2.5,         // companion bot のPPS
+      companionPps: 3.0,         // companion bot のPPS
       // Cold Clear 2 bot の評価 weights 倍率（1.0=既定。0〜5）
       cc2B2b: 1,                 // B2B の維持・B2B消去ボーナスの重要さ
       cc2Combo: 1,               // コンボ攻撃の重要さ
@@ -4596,7 +4677,7 @@ io.on('connection', (socket) => {
     if (qpIsQuickRoom(room)) {
       if (ns.duoOn!==undefined) rs.duoOn=!!ns.duoOn;
       if (ns.duoHard!==undefined) rs.duoHard=!!ns.duoHard;
-      if (ns.companionPps!==undefined) rs.companionPps=Math.max(0.5,Math.min(6,parseFloat(ns.companionPps)||2.5));
+      if (ns.companionPps!==undefined) rs.companionPps=Math.max(0.5,Math.min(6,parseFloat(ns.companionPps)||3.0));
       // クイックプレイのスタンバイ中に duo/companionPps が変わったらボット構成を作り直す
       if (!room.started) {
         const changedDuo = ns.duoOn !== undefined || ns.companionPps !== undefined;
@@ -4661,7 +4742,7 @@ io.on('connection', (socket) => {
     room._qpClimbAccum = Date.now();
     if (qpRoom) { room._qpStandby = false; }
     // duoはクイックプレイ専用: 通常ルームでは開始時に必ず無効化（duoオフ相当）
-    if (!qpRoom) { rs.duoOn = false; rs.duoHard = false; rs.companionPps = 2.5; }
+    if (!qpRoom) { rs.duoOn = false; rs.duoHard = false; rs.companionPps = 3.0; }
     room.bagSeed=Math.floor(Math.random()*1000000);
     if (room.mutationMode&&!room.mutationSeed) room.mutationSeed=Math.floor(Math.random()*1000000);
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});

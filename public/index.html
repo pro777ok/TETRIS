@@ -1340,6 +1340,18 @@
     color: rgba(255,255,255,0.75);
     min-width: 2.2em;
   }
+  #qp-hud-penalty {
+    display: none;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.2rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: rgba(255,46,99,0.85);
+  }
+  #qp-hud-penalty-val { font-variant-numeric: tabular-nums; color: #ff2e63; }
   #qp-hud-row2 {
     display: flex;
     align-items: center;
@@ -1591,10 +1603,12 @@
           <label><input type="checkbox" data-mod="rebound" onchange="setPlayerModToggle('rebound',this.checked)"> リバウンド</label>
           <label><input type="checkbox" data-mod="messiness" onchange="setPlayerModToggle('messiness',this.checked)"> メッシネス</label>
           <label><input type="checkbox" data-mod="gravity" onchange="setPlayerModToggle('gravity',this.checked)"> グラビティ</label>
+          <label><input type="checkbox" data-mod="magic" onchange="setPlayerModToggle('magic',this.checked)"> マジック</label>
           <label><input type="checkbox" data-mod="dice" onchange="setPlayerModToggle('dice',this.checked)"> サイコロ</label>
           <label><input type="checkbox" data-mod="freefall" onchange="setPlayerModToggle('freefall',this.checked)"> フリーフォール</label>
           <label><input type="checkbox" data-mod="snow" onchange="setPlayerModToggle('snow',this.checked)"> スノー</label>
           <label><input type="checkbox" data-mod="end" onchange="setPlayerModToggle('end',this.checked)"> エンド</label>
+          <label><input type="checkbox" data-mod="block" onchange="setPlayerModToggle('block',this.checked)"> ブロック</label>
         </div>
         <span id="qp-mod-desc"></span>
       </div>
@@ -1699,9 +1713,9 @@
         </div>
         <div class="hs-row" id="companion-pps-row">
           <label>🤝 Companion PPS</label>
-          <input type="range" id="companion-pps-input" min="0.5" max="6" step="0.5" value="2.5"
+          <input type="range" id="companion-pps-input" min="0.5" max="6" step="0.5" value="3.0"
             oninput="document.getElementById('companion-pps-val').textContent=parseFloat(this.value).toFixed(1)+' PPS';updateRoomSetting('companionPps',this.value)">
-          <span class="hs-val" id="companion-pps-val">2.5 PPS</span>
+          <span class="hs-val" id="companion-pps-val">3.0 PPS</span>
         </div>
         <div class="hs-row" id="duo-hard-row">
           <label>🔥 DUO HARD <span class="qp-duo-sub">相方と相互フレンドリーファイア（直列穴）</span></label>
@@ -1824,10 +1838,12 @@
               <label><input type="checkbox" data-mod="rebound"> リバウンド</label>
               <label><input type="checkbox" data-mod="messiness"> メッシネス</label>
               <label><input type="checkbox" data-mod="gravity"> グラビティ</label>
+              <label><input type="checkbox" data-mod="magic"> マジック</label>
               <label><input type="checkbox" data-mod="dice"> サイコロ</label>
               <label><input type="checkbox" data-mod="freefall"> フリーフォール</label>
               <label><input type="checkbox" data-mod="snow"> スノー</label>
               <label><input type="checkbox" data-mod="end"> エンド</label>
+              <label><input type="checkbox" data-mod="block"> ブロック</label>
               </div>
           </div>
 
@@ -2102,10 +2118,12 @@
           <label><input type="checkbox" data-mod="rebound" onchange="setPlayerModToggle('rebound',this.checked)"> リバウンド</label>
           <label><input type="checkbox" data-mod="messiness" onchange="setPlayerModToggle('messiness',this.checked)"> メッシネス</label>
           <label><input type="checkbox" data-mod="gravity" onchange="setPlayerModToggle('gravity',this.checked)"> グラビティ</label>
+          <label><input type="checkbox" data-mod="magic" onchange="setPlayerModToggle('magic',this.checked)"> マジック</label>
           <label><input type="checkbox" data-mod="dice" onchange="setPlayerModToggle('dice',this.checked)"> サイコロ</label>
           <label><input type="checkbox" data-mod="freefall" onchange="setPlayerModToggle('freefall',this.checked)"> フリーフォール</label>
           <label><input type="checkbox" data-mod="snow" onchange="setPlayerModToggle('snow',this.checked)"> スノー</label>
           <label><input type="checkbox" data-mod="end" onchange="setPlayerModToggle('end',this.checked)"> エンド</label>
+          <label><input type="checkbox" data-mod="block" onchange="setPlayerModToggle('block',this.checked)"> ブロック</label>
         </div>
         <div id="mod-select-desc" style="font-size:0.6rem;color:rgba(255,255,255,0.35);margin-top:0.3rem"></div>
       </div>
@@ -2129,6 +2147,7 @@
       </div>
       <div id="qp-hud-m">0.0</div>
       <div id="qp-hud-accel" style="display:none"><span id="qp-hud-accel-bar"><i id="qp-hud-accel-fill"></i></span><span id="qp-hud-accel-val">-0.25</span></div>
+      <div id="qp-hud-penalty" style="display:none"><span>PENALTY</span><span id="qp-hud-penalty-val">×0.00</span></div>
       <div id="qp-hud-targets" class="zero">targeted ×0</div>
     </div>
 

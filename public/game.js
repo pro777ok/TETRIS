@@ -898,17 +898,19 @@ const MOD_DESCRIPTIONS = {
   allspin: 'MINI→TSPIN + 連続同種消除で耐久ゴミ出現',
   warlock: 'スピン消去なしで2行送信+その瞬間にB2B+1、連続同数消去で耐久ゴミ4段、B2Bボーナス2、受けるゴミは穴バラバラ・半減・3秒準備、送る攻撃もB2B解除時以外は半減、重力がレベルで増えない',
   laststand: '受けるゴミ2倍・10秒ためて一括投入。7秒時点で10ライン以上は「!」で再構成(4+4+余り)、20以上は「!!」でさらに遅延',
-  badhole: '受ける攻撃半減・一度に最大2段・穴5~7個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面空で5秒放置で穴5~7ライン出現',
+  badhole: '受ける攻撃半減・一度に最大2段・穴4~6個・出現2秒遅延・ゴミ消去で白枠(次の消去の攻撃2倍)・盤面のゴミ行が3行未満になると0.5秒ごとに補充',
   tower: '永久ゴミ段数=10-レベル(最初10ライン、常に最下段)。レベルは攻撃したミノライン分で上昇、時間経過で減少(0.02/0.1秒)。受けるゴミ量×(Lv+5)/10',
   helmet: '受けるゴミは横に連続した2穴。NEXTに30%の確率で偽のミノが表示され、盤面出現時に本物へ変化。各ミノに30%の確率で1〜3回連続して出る',
   rock: '受けるゴミは全て穴なし(藍→紺のグラデーション)。盤面にゴミが残る間は攻撃が吸収され、その分の穴なしゴミが消える(消費=攻撃値/2+1)。全消去時のみ本来の攻撃を送信',
   rebound: '送った攻撃の半分が即座に自分の盤面下へゴミとして返る。穴位置は前回の穴を引き継ぎ(初回はランダム)',
   messiness: '受けるゴミの穴が乱雑(アナバラ。1行に1個の穴がバラバラ)。出現まで3秒かかる',
   gravity: '1ブロック置くごとに落下速度が1.1倍になる',
+  magic: 'ラインを消すたびに、盤面上のゴミラインの穴位置がランダムに変わる。RENボーナスは(ren-1)になる',
   dice: 'ラインを消すたびに1.15秒間のエフェクトが入り操作が硬直する。穴がすごくバラバラ。開始時に10ライン分（各行7穴）のゴミがキューに入る',
   freefall: '1ピース置くごとに落下速度が1.5倍になる（上限なし）。50m上がるごとに-10ms、最低0.3秒',
   snow: '4×4の盤面で開始。ラインを10送るごとに縦と横が交互に+1され、最大20×20まで広がる',
-  end: '受けるゴミの量が半分になる代わりに、穴だけのゴミ（全マス空白）が出現して盤面全体がせり上がる。準備完了まで3秒'
+  end: '受けるゴミの量が半分になる代わりに、穴だけのゴミ（全マス空白）が出現して盤面全体がせり上がる。準備完了まで3秒',
+  block: '受けるゴミは3秒の準備時間の後、アニメーションなしで一度にせり上がる（警告なし）'
 };
 
 function glBackToTitle(){
@@ -1098,6 +1100,7 @@ let qpMyXp=0;
 let qpMyTargetedBy=0;
 let qpLastGainSeen=0;
 let qpLastClearGain=0;
+let qpMyPenaltyMult=0; // drop mode: 降下ペナルティ倍率（サーバー権威）
 let qpStarSpeed=0.05;
 let _qpStarSpeedTgt=0.05;
 let qpStarDrop=0;
@@ -1279,7 +1282,7 @@ function qpSyncDuoPanel(show){
   const duoHard=document.getElementById('duo-hard-toggle');if(duoHard)duoHard.checked=!!(roomSettings&&roomSettings.duoHard);
   const cpps=document.getElementById('companion-pps-input');
   const cpv=document.getElementById('companion-pps-val');
-  const pps=(roomSettings&&roomSettings.companionPps!=null)?roomSettings.companionPps:2.5;
+  const pps=(roomSettings&&roomSettings.companionPps!=null)?roomSettings.companionPps:3.0;
   if(cpps)cpps.value=pps;
   if(cpv)cpv.textContent=parseFloat(pps).toFixed(1)+' PPS';
 }
@@ -1368,12 +1371,12 @@ function qpSteamTextureMake(){
   const cv=document.createElement('canvas');cv.width=S;cv.height=S;
   const ctx=cv.getContext('2d');
   ctx.clearRect(0,0,S,S);
-  const count=settings.quality==='minimum'?30:48;
+  const count=settings.quality==='minimum'?100:160;
   for(let i=0;i<count;i++){
     const ang=Math.random()*Math.PI*2;
     const r=Math.pow(Math.random(),0.6)*S*0.44;
     const x=S/2+Math.cos(ang)*r, y=S/2+Math.sin(ang)*r;
-    const rad=0.9+Math.random()*1.6;
+    const rad=0.45+Math.random()*0.6;
     ctx.beginPath();ctx.arc(x,y,rad,0,Math.PI*2);
     ctx.fillStyle=`rgba(255,255,255,${(0.35+Math.random()*0.65).toFixed(2)})`;
     ctx.fill();
@@ -1438,7 +1441,6 @@ function qpRiseUpdateFor(host,dt){
   if(!host._qpSteamTex)return;
   const bw=_qpMainBW(host), bh=_qpMainBH(host);
   const cx=host.mainBX+bw/2;
-  const top=host.mainBY;
   const below=host.mainBY+bh;
   host._qpRiseAcc=(host._qpRiseAcc||0)+dt;
   const halfW=bw/2;
@@ -1448,56 +1450,100 @@ function qpRiseUpdateFor(host,dt){
   // 湯気も背景（星）と同じ向きへ流す: 降下(flow<0)→上へ, 上昇(flow>0)/通常→下へ
   const sflow=dropOn?_qpStarFlow:0;
   const dir=dropOn?(sflow>0.02?1:(sflow<-0.02?-1:_qpFlowDir)):1;
-  const cs=dropOn?Math.abs(sflow):(Math.max(0,Math.min(1,qpStarSpeed||0)));
+  const cs=Math.min(1, dropOn?Math.abs(sflow):(Math.max(0,qpStarSpeed||0)));
   if(_qpSteamBoost>0.001)_qpSteamBoost*=Math.exp(-dt/900);
   else _qpSteamBoost=0;
   const sb=_qpSteamBoost||0;
-  const spawnMs=(26-cs*14)/(1+sb*0.35);
+  const spawnMs=400-cs*380;
   const _qlv=(typeof qpMyLevel!=='undefined')?qpMyLevel:1;
   if(_qlv!==_qpSteamColLv){_qpSteamColLv=_qlv;_qpSteamColVal=parseInt(((typeof qpLevelColor2==='function'&&qpLevelColor2(_qlv))||'#06d6a0').slice(1),16)||0x06d6a0;}
   const col=_qpSteamColVal;
+  // 現在の流れが上向き（降下中）か。既存の粒子もこの向きに追従させる
+  const rising=dropOn&&dir<0;
+  const upSpeed=0.12+cs*0.45;
   if(host._qpRiseAcc>spawnMs){
     host._qpRiseAcc=0;
-    const n=settings.quality==='minimum'?1:2;
+    const baseN=2;
+    // climb speed が速いほど一度に湧く量も増やす（最小速度では 0.4秒に2個ほど）
+    const n=baseN+Math.round(cs*(settings.quality==='minimum'?6:12));
     for(let k=0;k<n;k++){
       let sp=host._qpSteamPool&&host._qpSteamPool.pop();
       if(!sp){sp=new PIXI.Sprite(host._qpSteamTex);sp.anchor.set(0.5);}
       host.bgLayer.addChild(sp);
-      const spd=(0.06+Math.random()*0.09)*(0.55+cs*1.25)*(1+sb*0.7);
+      const spd=(0.06+Math.random()*0.09)*(0.5+cs*1.7)*(1+sb*0.9);
+      const jet=0.03+Math.random()*0.04;
       host._qpRiseParticles.push({
         sp,
-        x:cx+(Math.random()*2-1)*halfW*0.95*(0.85+cs*0.3),
-        // 流れの上流側から出て、登っている向き（dir: +1=下, -1=上）へ流れる
-        y:dir>0?(top-1-Math.random()*6):(below+1+Math.random()*6),
+        x:cx+(Math.random()*2-1)*halfW*0.95*0.85*1.5,
+        // 盤面の下（下端）から出し、流れの向き（dir: +1=下, -1=上）へ流す
+        y:below+1+Math.random()*6,
         vx:(Math.random()*2-1)*0.03*(0.8+cs*0.6),
-        vy:spd*dir,
+        vy:rising?jet:spd*dir,
+        downV:spd,
+        rising, jetAge:0, jet, upSpeed,
+        riseA:rising?((jet+upSpeed)/380):0,
         life:1,
         rot:Math.random()*Math.PI*2,
         rotV:(Math.random()*2-1)*0.00025,
-        base:16+Math.random()*12+cs*9,
-        grow:1.4+Math.random()*1.0+cs*0.5
+        base:32+Math.random()*24
       });
     }
   }
   const parts=host._qpRiseParticles;
+  // 流れの向きが変わったら既存の湯気も即座に追従させる
+  //  - 上昇→降下: 下向きに流れていた湯気も上昇に転じる
+  //  - 降下→上昇: 上昇中の湯気も即座に下向きへ（ライン送信時の遅延をなくす）
+  for(let i=0;i<parts.length;i++){
+    const p=parts[i];
+    if(rising&&!p.rising){
+      p.rising=true;
+      p.jet=Math.max(0.02,p.vy);
+      p.jetAge=120;
+      p.upSpeed=upSpeed;
+      p.riseA=(p.jet+upSpeed)/380;
+      p.life=1;
+    }else if(!rising&&p.rising){
+      p.rising=false;
+      p.life=1;
+      p.vy=p.downV||0.1;
+    }
+  }
   for(let i=parts.length-1;i>=0;i--){
     const p=parts[i];
+    if(p.rising){
+      p.jetAge+=dt;
+      // 最初は下向き噴射、少し経つと上向きへ加速して上昇に転じる
+      if(p.jetAge>120)p.vy=Math.max(-p.upSpeed,p.jet-p.riseA*(p.jetAge-120));
+    }
     p.y+=p.vy*dt;
     p.x+=p.vx*dt;
-    p.life-=dt*0.00055;
-    if(p.life<=0||p.y<-26||p.y>host.H+26){qpRecycleSteamFor(host,p);parts.splice(i,1);continue;}
-    const lf=Math.min(1,p.life);
+    if(p.rising){
+      // 上昇中は途中で消えず、画面外に出てから消える
+      if(p.y<-26||p.y>host.H+26){qpRecycleSteamFor(host,p);parts.splice(i,1);continue;}
+    }else{
+      p.life-=dt*0.00055;
+      if(p.life<=0||p.y<-26||p.y>host.H+26){qpRecycleSteamFor(host,p);parts.splice(i,1);continue;}
+    }
     p.rot+=p.rotV*dt;
     p.sp.x=p.x;p.sp.y=p.y;
     p.sp.tint=col;
-    p.sp.alpha=Math.min(1,p.life)*0.6;
+    let a=p.rising?0.6:Math.min(1,p.life)*0.6;
+    if(p.rising){
+      // 画面上端に近づいたらフェード
+      const fd=Math.min(160,host.H*0.15);
+      if(p.y<fd)a*=Math.max(0,p.y/fd);
+    }
+    p.sp.alpha=a;
     p.sp.rotation=p.rot;
-    const s=p.base*(1+(1-lf)*p.grow);
-    p.sp.scale.set(s/32);
+    p.sp.scale.set(p.base/32);
   }
-  if(parts.length>140){
-    const ex=parts.splice(0,parts.length-140);
-    for(const p of ex)qpRecycleSteamFor(host,p);
+  if(parts.length>560){
+    // 上昇中の湯気は画面外に出るまで消さない。それ以外の古いものから間引く
+    for(let i=0;i<parts.length&&parts.length>560;){
+      const p=parts[i];
+      if(p.rising&&p.y>-26&&p.y<host.H+26){i++;continue;}
+      qpRecycleSteamFor(host,p);parts.splice(i,1);
+    }
   }
 }
 
@@ -1655,7 +1701,7 @@ function qpSelectCurrentPlayer(){
 
 // ── HUD（試合中のクライム表示） ──────────────────────────────────
 function qpMatchReset(){
-  qpMyDisplayM=0;qpMyLastServerM=0;qpMyLevel=1;qpMyXp=0;qpMyTargetedBy=0;qpLastGainSeen=0;qpLastClearGain=0;
+  qpMyDisplayM=0;qpMyLastServerM=0;qpMyLevel=1;qpMyXp=0;qpMyTargetedBy=0;qpLastGainSeen=0;qpLastClearGain=0;qpMyPenaltyMult=0;
   qpStarSpeed=0.05;
   _qpStarSpeedTgt=0.05;
   _qpStarFlow=0;
@@ -1694,8 +1740,16 @@ function qpLocalClearBoost(n){
   _qpLastLocalClearMs=performance.now();
   _qpStarSpeedTgt=Math.max(_qpStarSpeedTgt,Math.min(1,0.3+n*0.10));
   qpStarDrop+=Math.min(240,Math.max(30,n*14));
-  // 盤面下部の湯気も一瞬湧いて速く流す
-  _qpSteamBoost=Math.min(2.2,_qpSteamBoost+0.5+Math.min(0.2,n*0.06));
+  // drop mode: ライン送信＝上昇。サーバー応答を待たず星と湯気の流れを即座に反転させる
+  if(_qpDropMode){
+    _qpDropRiseUntil=Math.max(_qpDropRiseUntil,performance.now()+700);
+    _qpStarFlow=_qpDropBaseRise()/_QPDROP_FALL_A;
+  }
+}
+// ラインを送った瞬間に湯気の速度だけを一瞬上げる（量は増やさない）
+function qpSteamSendBoost(n){
+  if(!(n>0))return;
+  _qpSteamBoost=Math.min(2.6,_qpSteamBoost+0.3+Math.min(0.3,n*0.05));
 }
 function qpMatchHudSync(){
   if(!quickPlayMode||qpMatchEnded)return;
@@ -1765,6 +1819,19 @@ function qpMatchHudSync(){
       }
       const at0=alt<=_QPDROP_FALL_EVERY*0.001;   // 0m に落ちると降下が最速になる（赤くする）
       if(!!ab.__d!==at0){ab.__d=at0;ab.classList.toggle('dry',at0);}
+    }
+  }
+  // drop mode のときだけペナルティ倍率を表示
+  const pb=document.getElementById('qp-hud-penalty');
+  if(pb){
+    if(!_qpDropMode){ if(pb.style.display!=='none')pb.style.display='none'; }
+    else{
+      if(pb.style.display!=='flex')pb.style.display='flex';
+      const pv=document.getElementById('qp-hud-penalty-val');
+      if(pv){
+        const s='×'+(qpMyPenaltyMult||0).toFixed(2);
+        if(pv.__t!==s){pv.__t=s;pv.textContent=s;}
+      }
     }
   }
   qpRenderMatchRank();
@@ -1930,7 +1997,7 @@ socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   qpRenderLeaderboard();
   qpEnsureStarfield();
   const me=qpPlayerMap[socket.id];
-  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;_qpDropSetMode(!!me.dropMode,me.m);}
+  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;qpMyPenaltyMult=me.penaltyMult||0;_qpDropSetMode(!!me.dropMode,me.m);}
   if(!qpSelectedId)qpSelectCurrentPlayer();
 });
 
@@ -1948,6 +2015,7 @@ socket.on('qp_update',({players,started})=>{
     qpMyLevel=me.level||1;
     qpMyXp=me.xp||0;
     qpMyTargetedBy=me.targetedBy||0;
+    qpMyPenaltyMult=me.penaltyMult||0;
     // 白い+Nは「ライン消去でmが上がった時だけ」（受動的な上昇では出さない）
     const cg=me.clearGain||0;
     if(cg-qpLastClearGain>0.4){
@@ -1978,8 +2046,8 @@ socket.on('qp_update',({players,started})=>{
 });
 
 // 10行以上のゴミ投入前の警告（12角星・赤枠・黄色「!」・回転）
-socket.on('qp_garbage_warning',({lines})=>{
-  qpWarnUntil=performance.now()+3000;
+socket.on('qp_garbage_warning',({lines,warnMs})=>{
+  qpWarnUntil=performance.now()+(warnMs||3000);
   qpWarnLines=lines||0;
 });
 
@@ -2243,13 +2311,13 @@ function updateBotList(players){
   const bots=players.filter(p=>p.isBot);
   const el=document.getElementById('bot-list');
   if(!el)return;
-  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF', snow:'SN', end:'EN'};
-  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa'};
+  const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', magic:'MG', dice:'DI', freefall:'FF', snow:'SN', end:'EN', block:'BK'};
+  const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', magic:'#d946ef', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa', block:'#ff3333'};
   el.innerHTML=bots.map(b=>{
     const list = playerModLists && playerModLists[b.id] ? playerModLists[b.id].filter(m=>m&&m!=='none') : (playerMods && playerMods[b.id] ? [playerMods[b.id]] : [b.mod||'none']);
     const activeMods = list.filter(m=>m&&m!=='none');
     const mod = activeMods.length ? activeMods : (playerMods&&playerMods[b.id]||b.mod||'none');
-    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','dice','freefall','snow','end'];
+    const modOpts=['none','doubleGarbage','allspin','warlock','laststand','badhole','tower','helmet','rock','rebound','messiness','gravity','magic','dice','freefall','snow','end','block'];
     const modSel=isHost?`<select onchange="setBotMod('${b.id}',this.value)" style="background:rgba(0,20,30,0.9);color:#00f5ff;border:1px solid rgba(0,245,255,0.25);border-radius:4px;padding:0.1rem 0.3rem;font-size:0.65rem;margin-left:0.3rem">${modOpts.map(o=>`<option value="${o}" ${o===mod?'selected':''}>${o==='none'?'なし':(modLabels[o]||o)}</option>`).join('')}</select>`:`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`;
     const modBadge = activeMods.length ? activeMods.map(m=>`<span style="font-size:0.55rem;color:${modColors[m]||'#fff'};background:rgba(255,255,255,0.1);border-radius:2px;padding:0 3px;margin:0 2px;font-weight:700">${modLabels[m]||m}</span>`).join(' / ') : (mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'');
     return `<div style="display:flex;align-items:center;justify-content:space-between;padding:0.3rem 0;border-bottom:1px solid rgba(255,255,255,0.05)"><span style="color:rgba(255,255,255,0.7);font-size:0.75rem">${esc(b.name)} <span style="color:var(--neon-yellow)">${botTypeLabel(b.botType,b.botLevel)}</span>${mod!=='none'&&!isHost?'<span style="font-size:0.6rem;color:'+modColors[mod]+';background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">'+modLabels[mod]+'</span>':''}${_hasCustomBotCode?'<span style="color:#00f5ff;font-size:0.6rem;margin-left:0.3rem">[CUSTOM]</span>':''}</span><span style="display:flex;align-items:center">${modBadge}${modSel}<button onclick="kickBot('${b.id}')" style="background:rgba(255,0,110,0.2);border:1px solid rgba(255,0,110,0.4);color:#ff006e;border-radius:4px;padding:0.15rem 0.5rem;cursor:pointer;font-size:0.7rem;margin-left:0.3rem">KICK</button></span></div>`;
@@ -2261,8 +2329,8 @@ function updatePlayerList(players){
     const mode = (playerModes[p.id] || 'tetris').toUpperCase();
     const modeColor = mode==='TETRIS'?'var(--neon-cyan)':'var(--neon-pink)';
     const mod = playerMods[p.id] || 'none';
-    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', dice:'DI', freefall:'FF', snow:'SN', end:'EN'};
-    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa'};
+    const modLabels = {doubleGarbage:'DG', allspin:'AS', warlock:'WL', laststand:'LS', badhole:'BH', tower:'TW', helmet:'HM', rock:'RK', rebound:'RB', messiness:'MS', gravity:'GR', magic:'MG', dice:'DI', freefall:'FF', snow:'SN', end:'EN', block:'BK'};
+    const modColors = {doubleGarbage:'#ffbe0b', allspin:'#cc00ff', warlock:'#7700ff', laststand:'#ff5500', badhole:'#00ffaa', tower:'#ff9a00', helmet:'#ff4488', rock:'#3b82f6', rebound:'#ff006e', messiness:'#a3e635', gravity:'#22d3ee', magic:'#d946ef', dice:'#f97316', freefall:'#38bdf8', snow:'#7dd3fc', end:'#a78bfa', block:'#ff3333'};
     const modBadge = mod!=='none'?`<span style="font-size:0.6rem;color:${modColors[mod]||'#fff'};background:rgba(255,255,255,0.1);border-radius:3px;padding:0 4px;margin-left:4px;font-weight:700">${modLabels[mod]||mod}</span>`:'';
     return `<div class="player-item">
       <div class="player-avatar" style="${p.isBot?'background:rgba(255,190,11,0.2);border-color:rgba(255,190,11,0.5);color:#ffbe0b':''}">${p.name[0].toUpperCase()}</div>
@@ -2507,7 +2575,7 @@ const PIECE_SHAPES={
   L:[[[0,0,1],[1,1,1],[0,0,0]],[[0,1,0],[0,1,0],[0,1,1]],[[0,0,0],[1,1,1],[1,0,0]],[[1,1,0],[0,1,0],[0,1,0]]]
 };
 const KICK_JLSTZ={'0->1':[[-1,0],[-1,1],[0,-2],[-1,-2]],'1->0':[[1,0],[1,-1],[0,2],[1,2]],'1->2':[[1,0],[1,-1],[0,2],[1,2]],'2->1':[[-1,0],[-1,1],[0,-2],[-1,-2]],'2->3':[[1,0],[1,1],[0,-2],[1,-2]],'3->2':[[-1,0],[-1,-1],[0,2],[-1,2]],'3->0':[[-1,0],[-1,-1],[0,2],[-1,2]],'0->3':[[1,0],[1,1],[0,-2],[1,-2]]};
-const KICK_I={'0->1':[[-2,0],[1,0],[-2,-1],[1,2]],'1->0':[[2,0],[-1,0],[2,1],[-1,-2]],'1->2':[[-1,0],[2,0],[-1,2],[2,-1]],'2->1':[[1,0],[-2,0],[1,-2],[-2,1]],'2->3':[[2,0],[-1,0],[2,1],[-1,-2]],'3->2':[[-2,0],[1,0],[-2,-1],[1,2]],'3->0':[[1,0],[-2,0],[1,-2],[-2,1]],'0->3':[[-1,0],[2,0],[-1,2],[2,-1]]};
+const KICK_I={'0->1':[[-2,0],[1,0],[-2,1],[1,-2]],'1->0':[[2,0],[-1,0],[2,-1],[-1,2]],'1->2':[[-1,0],[2,0],[-1,-2],[2,1]],'2->1':[[1,0],[-2,0],[1,2],[-2,-1]],'2->3':[[2,0],[-1,0],[2,-1],[-1,2]],'3->2':[[-2,0],[1,0],[-2,1],[1,-2]],'3->0':[[1,0],[-2,0],[1,2],[-2,-1]],'0->3':[[-1,0],[2,0],[-1,-2],[2,1]]};
 const PIECE_TYPES=['I','O','T','S','Z','J','L'];
 
 // ---- Seeded Bag ----
@@ -2627,7 +2695,7 @@ class TetrisGame{
     if(myHasMod('tower')) this._initTower();
     if(myHasMod('badhole')) this._initBadholeIdle();
     if(myHasMod('badhole')){
-      // Bad Hole: 開始時に穴5~7個のゴミ4ラインをキューに溜める
+      // Bad Hole: 開始時に穴4~6個のゴミ4ラインをキューに溜める
       const rt=performance.now()+1200;
       this.garbageQueue.push({lines:4,fromId:socket.id,readyAt:rt,holeCol:0,holes3:0,badHole:true});
     }
@@ -2816,6 +2884,16 @@ class TetrisGame{
     this.lastSpin=null;this.lastSpinType=null;
     if(this.current.customShape)return; // skip spin detection for mutated pieces
     const type=this.current.type,x=this.current.x,y=this.current.y,rot=this.current.rotation;
+    // ── 汎用スピン: 回転後の位置で左右・上下のいずれにも動けない場合は全ミノをスピン判定 ──
+    const _immL=!this.isValid(this.current,-1,0);
+    const _immR=!this.isValid(this.current,1,0);
+    const _immD=!this.isValid(this.current,0,1);
+    const _immU=!this.isValid(this.current,0,-1);
+    if(_immL&&_immR&&_immD&&_immU){
+      this.lastSpin=type;
+      this.lastSpinType=type==='T'?'TSPIN':type+'SPIN';
+      return;
+    }
     if(type==='T'){
       const corners=[[0,0],[2,0],[0,2],[2,2]];
       const filled=corners.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=getGameCols()||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
@@ -2875,10 +2953,10 @@ class TetrisGame{
       return false;
     }
 
-    // 通常ピース: SRS 180°kick テーブル (Tetrax準拠)
+    // 通常ピース: SRS+ 180°kick テーブル (Iミノは対角も含む)
     const kicks180={
       'O':[[0,0]],
-      'I':[[0,0],[1,0],[-1,0],[2,0],[-2,0],[0,-1],[0,1]],
+      'I':[[0,0],[1,0],[-1,0],[2,0],[-2,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]],
     }[this.current.type]||[[0,0],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
     const base={...this.current,rotation:newRot};
     for(const[kx,ky]of kicks180){
@@ -3210,6 +3288,9 @@ class TetrisGame{
         while(this.board.length>ROWS+HIDDEN&&this.board[0].every(c=>c===0))this.board.shift();
       }
 
+      // ── MOD: Magic ── ライン消去ごとに、盤面上のゴミ行の穴位置をランダム化
+      if(count>0 && myHasMod('magic')) this._randomizeGarbageHoles();
+
       // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
       if(is180Spin&&count>=1){isSpin=true;}
       this.combo++;this.ren++;
@@ -3261,11 +3342,12 @@ class TetrisGame{
       }
 
       // ── Quad/TSD: adds ren directly (replaces combo bonus) ───
+      const _magicRen=myHasMod('magic');
       if (count === 4 || (isTSpin && count === 2)) {
-        attack += this.ren;
+        attack += _magicRen ? Math.max(0, this.ren - 1) : this.ren;
       } else {
-        // ── Ren combo bonus (+1 every 4 ren) ───────────────────
-        const comboBonus = Math.floor(Math.max(0, this.ren + 2) / 4);
+        // ── Ren combo bonus (+1 every 4 ren / Magic時は ren-1) ──
+        const comboBonus = _magicRen ? Math.max(0, this.ren - 1) : Math.floor(Math.max(0, this.ren + 2) / 4);
         attack += comboBonus;
       }
 
@@ -3480,6 +3562,7 @@ class TetrisGame{
       if(attack>0||fortyLineMode||cheeseMode){
         const lineClearAtk = Math.max(0, attack - bombAttack);
         if(lineClearAtk > 0) this.totalAttackSent += lineClearAtk;
+        if(lineClearAtk > 0 && typeof quickPlayMode!=='undefined' && quickPlayMode) qpSteamSendBoost(lineClearAtk);
         socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines,holes3:this._b2bBreakHoles3||undefined,handCount:cheeseMode?cheeseHandCount:undefined,ren:this.ren,lockX:this._lockX,lockY:this._lockY,cancelledByGarbage});
       }
       // ── MOD: Snow ── 送ったライン数に応じて盤面を広げる（描画の再構築は非同期で行う）
@@ -3793,6 +3876,7 @@ class TetrisGame{
       }
       return rows;
     });
+    const instant = armed.some(g=>g.block);
     let idx=0;
     const applyGroup=()=>{
       if(idx>=groupRows.length)return;
@@ -3802,7 +3886,8 @@ class TetrisGame{
       if(renderer){
         renderer.onGarbageRowAdded(rows.length); // まとめて振動
       }
-      if(idx<groupRows.length)setTimeout(applyGroup,100);
+      if(idx<groupRows.length&&!instant)setTimeout(applyGroup,100);
+      else if(idx<groupRows.length)applyGroup();
     };
     SFX.garbageReceive();
     renderer&&renderer.onGarbageApplied(total);
@@ -3915,10 +4000,12 @@ class TetrisGame{
           if(g.end){
             row.fill(0);
           }
-          // ── Bad Hole: 穴を1個だけ開ける（1つ以上開かないように） ──
+          // ── Bad Hole: 4~6個の穴を開ける（最低1マスは埋める） ──
           else if(g.badHole){
-            const hc=Math.floor(Math.random()*cols);
-            row[hc]=0;
+            const nh=Math.min(cols-1, 4+Math.floor(Math.random()*3));
+            const cells=[...Array(cols).keys()];
+            for(let k=cells.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=cells[k];cells[k]=cells[j];cells[j]=t;}
+            for(let k=0;k<nh;k++)row[cells[k]]=0;
           }else if(g.messy){
             const hc=Math.floor(Math.random()*cols);
             row[hc]=0;
@@ -3943,7 +4030,7 @@ class TetrisGame{
           // ── Last Stand / Quick Play: 0.2秒ごとに1段ずつ出現 ──
           if(g.laststandConsecutive){
             lsRows.push(row);
-          }else if(quickPlayMode&&!(roomSettings&&roomSettings.expertMode)){
+          }else if(quickPlayMode&&!(roomSettings&&roomSettings.expertMode)&&!g.block){
             qpRows.push(row);
           }else{
             this._pushRow(row);this.board.shift();
@@ -4232,12 +4319,14 @@ class TetrisGame{
     if(this._towerEl){try{this._towerEl.remove();}catch(e){} this._towerEl=null;}
   }
 
-  // ── Bad Hole: 盤面が空のまま5秒放置で穴5~7のライン出現 ──
+  // ── Bad Hole: 盤面のゴミ行が3行未満のとき、0.5秒ごとに1行ずつ補充 ──
   _spawnBadHoleLine(){
     const cols=getGameCols();
     const row=Array(cols).fill('G');
-    const numHoles=5+Math.floor(Math.random()*3);
-    for(let h=0;h<numHoles;h++){ row[Math.floor(Math.random()*cols)]=0; }
+    const numHoles=Math.min(cols-1, 4+Math.floor(Math.random()*3));
+    const cells=[...Array(cols).keys()];
+    for(let k=cells.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=cells[k];cells[k]=cells[j];cells[j]=t;}
+    for(let h=0;h<numHoles;h++){ row[cells[h]]=0; }
     this._pushRow(row);this.board.shift();
     this.totalGarbageReceived++;
     if(this.current){this.current.y=Math.max(-HIDDEN,this.current.y-1);this._garbagePushY++;}
@@ -4250,12 +4339,29 @@ class TetrisGame{
     this._badholeIdleSince=performance.now();
     this._badholeCheck=setInterval(()=>{
       if(!this.alive||!this.current)return;
-      const empty=this.board.every(r=>r.every(c=>c===0));
-      if(empty && performance.now()-this._badholeIdleSince>=5000){
-        this._spawnBadHoleLine();
-        this._badholeIdleSince=performance.now();
-      }
+      // 初期4ラインなど、badholeの保留ゴミがある間は補充しない（二重出現防止）
+      if(this.garbageQueue.some(g=>g.badHole&&g.lines>0))return;
+      let gRows=0;
+      for(const row of this.board){ if(row&&row.some(c=>c==='G')) gRows++; }
+      if(gRows<3) this._spawnBadHoleLine();
     },500);
+  }
+
+  // ── MOD: Magic ── 盤面上のゴミ行の穴位置をランダムに再配置
+  _randomizeGarbageHoles(){
+    for(const row of this.board){
+      if(!row||!row.some(c=>c==='G'))continue;
+      const positions=[];let holes=0;
+      for(let i=0;i<row.length;i++){
+        if(row[i]==='G'||row[i]===0){positions.push(i);if(row[i]===0)holes++;}
+      }
+      if(positions.length<2)continue;
+      if(holes<=0)holes=1;
+      if(holes>positions.length-1)holes=positions.length-1;
+      for(let k=positions.length-1;k>0;k--){const j=Math.floor(Math.random()*(k+1));const t=positions[k];positions[k]=positions[j];positions[j]=t;}
+      const newHoles=new Set(positions.slice(0,holes));
+      for(const i of positions)row[i]=newHoles.has(i)?0:'G';
+    }
   }
 
   queueGarbage(lines,fromId,holes3,targetMod,holeCol,duoHard,seriality,fromPuyo,modList){
@@ -4318,6 +4424,13 @@ class TetrisGame{
         const hc=Math.floor(Math.random()*getGameCols());
         this.garbageQueue.push({lines:1,fromId,readyAt,holeCol:hc,holes3:0,scatteredHole:true});
       }
+      return;
+    }
+    // ── MOD: Block (受ける側) ── 3秒待ってから一括出現（下から1段ずつせり上がるアニメーションなし）
+    if(has('block')){
+      const readyAt=performance.now()+3000;
+      const holeCol=Math.floor(Math.random()*getGameCols());
+      this.garbageQueue.push({lines,fromId,readyAt,holeCol,holes3:holes3||0,block:true});
       return;
     }
     // ── MOD: Messiness (受ける側) ── 受けるゴミの穴が乱雑(アナバラ)・出現まで3秒
@@ -4484,9 +4597,11 @@ class TetrisGame{
     const base=roomSettings.gravityBase||1000;
     const dec=roomSettings.gravityDec||80;
     const min=roomSettings.gravityMin||50;
+    // ── QP通常モード（drop/expert以外）: 最大重力を半分に（落下間隔の下限を2倍） ──
+    const minMs=(quickPlayMode&&!_qpDropMode&&!roomSettings.expertMode)?min*2:min;
     // ── MOD: Warlock ── 重力はレベルで増えない
     const lvDrop=myHasMod('warlock')?0:(this.level-1)*dec;
-    let msPerDrop=Math.max(min,base-lvDrop);
+    let msPerDrop=Math.max(minMs,base-lvDrop);
 
     // ── Altitude acceleration for non-freefall/non-gravity/non-dice modes (every 300m, up to 1.5x at 1500m) ──
     if(!myHasMod('freefall')&&!myHasMod('gravity')&&!myHasMod('dice')&&quickPlayMode){
@@ -4503,7 +4618,7 @@ class TetrisGame{
     // ── MOD: サイコロ ── 重力はデフォルトのまま（レベルや高度で速くならない）
     if(myHasMod('dice')){
       // サイコロ時は高度やレベルによる加速を適用しない（初期gravityBaseを使用）
-      msPerDrop=Math.max(min, base);
+      msPerDrop=Math.max(minMs, base);
     }
     
     // ── MOD: フリーフォール ── 1ミノ置くごとに速くなり、28個でインスタント（無制限）に到達
@@ -12263,20 +12378,53 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
   d.currentPiece=currentPiece;
 });
 
+// QP: 盤面・ミノ・NEXT/HOLD の高頻度同期（100ms）。パス再生中は現在ミノを上書きしない。
+socket.on('qp_live_update',({players})=>{
+  if(!renderer||!Array.isArray(players))return;
+  for(const p of players){
+    const id=p.id;if(!id)continue;
+    // テトリス側（QPの通常相手）
+    const d=renderer.opBoardData&&renderer.opBoardData[id];
+    if(d&&!d.dead){
+      if(p.board) d.board=p.board;
+      if(p.currentPiece && !_botPathTimers[id]) d.currentPiece=p.currentPiece;
+      if(p.nextPieces) d.nextPieces=p.nextPieces;
+      if(p.holdPiece!==undefined) d.holdPiece=p.holdPiece;
+      if(p.garbageLines!==undefined) d.garbageLines=p.garbageLines;
+      if(p.b2bCount!==undefined) d.b2bCount=p.b2bCount;
+      if(p.combo!==undefined){ d.combo=p.combo; d.ren=p.combo; }
+    }
+    // ぷよ側（QPでぷよボットが混在する場合）
+    const pd=renderer.opPuyoData&&renderer.opPuyoData[id];
+    if(pd){
+      if(p.board && (pd._isTetrisBoard||!pd._cont)) pd.board=p.board;
+      if(p.currentPiece && !_botPathTimers[id]) pd.current=p.currentPiece;
+      if(p.nextPieces && !pd._isTetrisBoard) pd.nextQueue=p.nextPieces;
+      if(p.garbageLines!==undefined && !pd._isTetrisBoard) pd.ojamaQueue=p.garbageLines;
+    }
+  }
+});
+
 socket.on('receive_garbage',({lines,fromId,holes3,targetMod,targetMods,holeCol,duoHard,duoHardDirect,seriality,fromPuyo})=>{
   const h3 = holes3 || 0;
   const dhrd = duoHardDirect || duoHard; // duo hard: サーバーは duoHardDirect=true で送る（旧duoHard互換）
-  // ── Quick Play: 貯めたB2B数ぶん(最大60%)の受信ゴミをキューに入れず「無かったこと」にする ──
-  // 例: B2B x6 → 6% 軽減、B2B x60以上 → 60% 軽減。軽減分は矢印・保留・リプレイにも残さない
-  if(quickPlayMode && gameState && !(puyoGameState&&puyoGameState.alive) && gameState.b2bCount > 0){
-    const pct = Math.min(60, gameState.b2bCount);
-    const cut = Math.floor(lines * pct / 100);
-    if(cut > 0){
-      lines -= cut;
-      console.log(`[QP B2B CUT] b2b=${gameState.b2bCount} pct=${pct}% cut=${cut} remaining=${lines}`);
+  // ── Quick Play: B2B数に応じて受信ゴミ量を減衰（キャンセルではなく量をスケール） ──
+  // 倍率 = max(50, 100 - b2b/1.5) / 100 （b2b=0で100%、b2b=75で50%）
+  // 端数は持ち越して合計が正しくなるようにする
+  if(quickPlayMode && gameState && !(puyoGameState&&puyoGameState.alive)){
+    const b2b=gameState.b2bCount||0;
+    const mult=Math.max(50,100-b2b/1.5)/100;
+    if(mult<1){
+      const scaled=lines*mult+(gameState._qpB2BFrac||0);
+      const whole=Math.floor(scaled);
+      gameState._qpB2BFrac=scaled-whole;
+      console.log(`[QP B2B SCALE] b2b=${b2b} mult=${mult.toFixed(3)} lines=${whole}`);
+      lines=whole;
+    }else{
+      gameState._qpB2BFrac=0;
     }
     if(lines <= 0){
-      console.log('[RCV GARBAGE] -> fully nullified by QP B2B, not queued');
+      console.log('[RCV GARBAGE] -> fully reduced by QP B2B, not queued');
       return;
     }
   }
@@ -13527,6 +13675,7 @@ class PuyoGame {
       }
       if(this._chainAttack>0&&!isOfflineSolo){
         this.totalAttackSent+=this._chainAttack;
+        if(typeof quickPlayMode!=='undefined'&&quickPlayMode) qpSteamSendBoost(this._chainAttack);
         console.log(`[PUYO ATK SEND] chainAttack=${this._chainAttack} isOfflineSolo=${isOfflineSolo}`);
         socket.emit('puyo_attack',{ojama:this._chainAttack});
       } else {
