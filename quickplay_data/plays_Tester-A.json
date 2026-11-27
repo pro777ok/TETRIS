@@ -65,5 +65,16 @@
         "linesCleared": 1
       }
     ]
+  },
+  {
+    "recordedAt": 1795738863236,
+    "seed": 151561,
+    "name": "Tester-A",
+    "durationMs": 11039,
+    "apm": 0,
+    "pps": 0,
+    "lines": 0,
+    "finalM": 0,
+    "frames": []
   }
 ]

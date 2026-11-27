@@ -9,36 +9,102 @@ function _addGameTicker(fn) {
 }
 
 let mobileControlsEnabled = false; // Mobile controls toggle
-let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',shakeIntensity:100,sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,arrowSpeed:100,arrowSize:100,shakeSpeed:100,rippleStrength:100,rippleSpeed:100,
+const DEFAULT_SETTINGS={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',shakeIntensity:100,sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,swipeThreshold:10,maxFPS:144,arrowSpeed:100,arrowSize:100,shakeSpeed:100,rippleStrength:100,rippleSpeed:100,
   overlayOpacity:33,
   errorBanner:'on',
   uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
-  dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false}};
-function loadSettings(){
+  dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false},
+  keys:{left:'ArrowLeft',right:'ArrowRight',rotateCW:'ArrowUp',rotateCCW:'KeyZ',rotate180:'KeyA',softDrop:'ArrowDown',hardDrop:'Space',hold:'KeyC',undo:'KeyU',reset:'KeyR'}};
+const KEY_BINDING_ACTIONS=[
+  {id:'left',label:'LEFT'},{id:'right',label:'RIGHT'},
+  {id:'rotateCW',label:'ROTATE CW'},{id:'rotateCCW',label:'ROTATE CCW'},{id:'rotate180',label:'ROTATE 180'},
+  {id:'softDrop',label:'SOFT DROP'},{id:'hardDrop',label:'HARD DROP'},
+  {id:'hold',label:'HOLD'},{id:'undo',label:'UNDO (SOLO)'},{id:'reset',label:'RESET (SOLO)'}];
+function _cloneDefaultSettings(){return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));}
+let settings=_cloneDefaultSettings();
+// 設定はユーザー名ごとにサーバーへ保存し、ローカルにもキャッシュする（クッキーには保存しない）
+function _settingsStorageKey(name){return 'tetrix_settings_'+(name||'PLAYER');}
+function _currentSettingsName(){
+  let n='';try{n=myName||'';}catch(e){}
+  return n||getSavedName()||'PLAYER';
+}
+function applySavedSettings(saved){
+  const base=_cloneDefaultSettings();
   try{
-    const s=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_settings='));
-    if(s){
-      const saved=JSON.parse(decodeURIComponent(s.split('=')[1]));
-      const savedDpad=saved.dpad;
-      const savedUiLayout=saved.uiLayout;
-      settings={...settings,...saved};
-      if(savedDpad&&savedDpad.cross&&savedDpad.shift&&savedDpad.z){
-        settings.dpad={
-          cross:{...settings.dpad.cross,...savedDpad.cross},
-          shift:{...settings.dpad.shift,...savedDpad.shift},
-          z:{...settings.dpad.z,...savedDpad.z},
-          harddrop:savedDpad.harddrop?{...settings.dpad.harddrop,...savedDpad.harddrop}:{x:20,y:80,size:80,opacity:80},
-          swapCenterDown:savedDpad.swapCenterDown??false
+    if(saved&&typeof saved==='object'){
+      const sd=saved.dpad,su=saved.uiLayout,sk=saved.keys;
+      const obj={...saved};delete obj.dpad;delete obj.uiLayout;delete obj.keys;
+      Object.assign(base,obj);
+      if(sk&&typeof sk==='object')base.keys={...base.keys,...sk};
+      if(sd&&sd.cross&&sd.shift&&sd.z){
+        base.dpad={
+          cross:{...base.dpad.cross,...sd.cross},
+          shift:{...base.dpad.shift,...sd.shift},
+          z:{...base.dpad.z,...sd.z},
+          harddrop:sd.harddrop?{...base.dpad.harddrop,...sd.harddrop}:{x:20,y:80,size:80,opacity:80},
+          swapCenterDown:sd.swapCenterDown??false
         };
-      } else {
-        // 古い形式または不正 → デフォルトを維持
-        settings.dpad={cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false};
       }
-      if(savedUiLayout){settings.uiLayout={...settings.uiLayout,...savedUiLayout};}
+      if(su)base.uiLayout={...base.uiLayout,...su};
     }
   }catch(e){}
+  settings=base;
 }
-function saveSettings(){document.cookie='tetrix_settings='+encodeURIComponent(JSON.stringify(settings))+'; max-age=31536000; path=/';}
+function loadSettings(name){
+  let saved=null;
+  try{const raw=localStorage.getItem(_settingsStorageKey(name||_currentSettingsName()));if(raw)saved=JSON.parse(raw);}catch(e){}
+  applySavedSettings(saved);
+}
+function fetchUserSettings(name, cb){
+  try{
+    if(typeof socket==='undefined'||!socket){cb(null);return;}
+    socket.emit('get_user_settings',{name},saved=>cb(saved||null));
+  }catch(e){cb(null);}
+}
+function saveSettings(){
+  const name=_currentSettingsName();
+  try{localStorage.setItem(_settingsStorageKey(name),JSON.stringify(settings));}catch(e){}
+  try{if(typeof socket!=='undefined'&&socket)socket.emit('save_user_settings',{name,settings});}catch(e){}
+}
+function _keyCodes(){return Object.values(settings.keys||DEFAULT_SETTINGS.keys);}
+function _kb(action){return (settings.keys&&settings.keys[action])||DEFAULT_SETTINGS.keys[action];}
+function _isKey(e,action){return e.code===_kb(action);}
+function keyCodeLabel(code){
+  if(!code)return '—';
+  const m={'ArrowLeft':'←','ArrowRight':'→','ArrowUp':'↑','ArrowDown':'↓','Space':'SPACE',
+    'ShiftLeft':'L-SHIFT','ShiftRight':'R-SHIFT','ControlLeft':'L-CTRL','ControlRight':'R-CTRL',
+    'AltLeft':'L-ALT','AltRight':'R-ALT','Enter':'ENTER','Escape':'ESC','Backspace':'BS','Tab':'TAB',
+    'CapsLock':'CAPS','Delete':'DEL','Home':'HOME','End':'END','PageUp':'PGUP','PageDown':'PGDN'};
+  if(m[code])return m[code];
+  if(code.startsWith('Key'))return code.slice(3);
+  if(code.startsWith('Digit'))return code.slice(5);
+  if(code.startsWith('Numpad'))return 'NUM'+code.slice(6);
+  return code.toUpperCase();
+}
+let _keyCaptureAction=null;
+function startKeyCapture(action){
+  stopKeyCapture();
+  _keyCaptureAction=action;
+  const b=document.getElementById('key-'+action+'-btn');
+  if(b){b.textContent='PRESS KEY...';b.classList.add('capturing');}
+}
+function stopKeyCapture(){
+  if(!_keyCaptureAction)return;
+  const b=document.getElementById('key-'+_keyCaptureAction+'-btn');
+  if(b){b.textContent='CHANGE';b.classList.remove('capturing');}
+  _keyCaptureAction=null;
+}
+document.addEventListener('keydown',e=>{
+  if(!_keyCaptureAction)return;
+  e.preventDefault();e.stopImmediatePropagation();
+  const action=_keyCaptureAction;
+  stopKeyCapture();
+  if(e.code==='Escape')return;
+  const keys={...settings.keys};
+  for(const a of Object.keys(keys)){if(a!==action&&keys[a]===e.code)keys[a]=keys[action];}
+  keys[action]=e.code;
+  updateSetting('keys',keys);
+},true);
 function updateSetting(key,val){
   if(key==='ghost'){settings.ghostOpacity=parseInt(val);document.getElementById('ghost-val').textContent=val+'%';}
   else if(key==='overlayOpacity'){settings.overlayOpacity=parseInt(val);document.getElementById('overlay-opacity-val').textContent=val+'%';}
@@ -62,6 +128,7 @@ function updateSetting(key,val){
   else if(key==='errorBanner')settings.errorBanner=val;
   else if(key==='dpad'){if(val.part){settings.dpad[val.part]={...settings.dpad[val.part],...val.data};}else{settings.dpad={...settings.dpad,...val};}applyDpadLayout();}
   else if(key==='uiLayout'){settings.uiLayout={...settings.uiLayout,...val};applyUiLayout();}
+  else if(key==='keys'){settings.keys={...settings.keys,...val};applySettingsToUI();}
   saveSettings();
 }
 function toggleSettings(){document.getElementById('settings-modal').classList.toggle('open');}
@@ -166,9 +233,11 @@ function resetAllSettings(){
     const key=c.trim().split('=')[0];
     document.cookie=key+'=; max-age=0; path=/';
   });
+  try{Object.keys(localStorage).filter(k=>k.startsWith('tetrix_settings_')).forEach(k=>localStorage.removeItem(k));}catch(e){}
+  try{if(typeof socket!=='undefined'&&socket)socket.emit('save_user_settings',{name:_currentSettingsName(),settings:_cloneDefaultSettings()});}catch(e){}
   location.reload();
 }
-loadSettings();
+loadSettings(getSavedName());
 // マイグレーション: 古いcookieにharddropがない場合はデフォルト値を補完
 if (!settings.dpad.harddrop) {
   settings.dpad.harddrop = {x:20,y:80,size:80,opacity:80};
@@ -311,6 +380,11 @@ function submitNameModal(){
   saveName(name);
   document.getElementById('name-modal').classList.add('hidden');
   socket.emit('set_name',{name});
+  fetchUserSettings(name,saved=>{
+    if(saved&&typeof saved==='object')applySavedSettings(saved);
+    else loadSettings(name);
+    applySettingsToUI();
+  });
   showGameLobby(null);
 }
 
@@ -320,6 +394,11 @@ function startSoloOffline(){
   const name=inp.value.trim()||'PLAYER';
   myName=name;
   saveName(name);
+  fetchUserSettings(name,saved=>{
+    if(saved&&typeof saved==='object')applySavedSettings(saved);
+    else loadSettings(name);
+    applySettingsToUI();
+  });
   isOfflineSolo=true;
   isSoloGame=true;
   fourWideMode=false; puyotetMode=false; slowMode=false;
@@ -779,14 +858,24 @@ socket.on('room_deleted',()=>{
 
 socket.on('online_players',(list)=>{
   const el=document.getElementById('online-players-list');
+  const inviteEl=document.getElementById('qp-invite-list');
   const countEl=document.getElementById('online-count');
-  if(!el)return;
+  const canInvite=!!(quickPlayMode&&isHost);
   if(!list||list.length===0){
-    el.innerHTML='<span class="no-players">None</span>';
+    if(el)el.innerHTML='<span class="no-players">None</span>';
+    if(inviteEl)inviteEl.innerHTML='<span class="no-players">None</span>';
     if(countEl)countEl.textContent='0';
     return;
   }
-  el.innerHTML=list.map(n=>`<span class="online-player-tag">${n}</span>`).join('');
+  const html=list.map(n=>{
+    const pid=(n&&n.id)||'';
+    const name=String((n&&n.name)||n||'');
+    const sameRoom=!!(qpRoomId&&n&&n.roomId===qpRoomId);
+    const invite=(canInvite&&pid&&pid!==socket.id&&!sameRoom)?`<button class="qp-invite-btn" onclick="qpInvitePlayer('${pid}')">duo招待</button>`:'';
+    return `<span class="online-player-tag">${esc(name)}${invite}</span>`;
+  }).join('');
+  if(el)el.innerHTML=html;
+  if(inviteEl)inviteEl.innerHTML=html;
   if(countEl)countEl.textContent=list.length;
 });
 
@@ -1101,6 +1190,11 @@ let qpMyTargetedBy=0;
 let qpLastGainSeen=0;
 let qpLastClearGain=0;
 let qpMyPenaltyMult=0; // drop mode: 降下ペナルティ倍率（サーバー権威）
+let qpMyMission=null;
+let _qpHardDuoEvent=null;
+function qpIsDuoHardMode(){ return !!(roomSettings && roomSettings.duoHard && quickPlayMode); }
+let qpGameStarted=false;
+let qpDuoPartnerId=null;
 let qpStarSpeed=0.05;
 let _qpStarSpeedTgt=0.05;
 let qpStarDrop=0;
@@ -1258,6 +1352,8 @@ function qpSyncDuoPanel(show){
   const vis=(quickPlayMode&&isHost&&show);
   const wrap=document.getElementById('qp-duo-wrap');
   if(wrap)wrap.style.display=vis?'flex':'none';
+  const iw=document.getElementById('qp-invite-wrap');
+  if(iw)iw.style.display=vis?'flex':'none';
   // 4WIDE 選択はホストだけ変更できる（通常の待室と同じ扱い）
   const wwrap=document.getElementById('qp-width-wrap');
   if(wwrap)wwrap.style.display=vis?'flex':'none';
@@ -1548,7 +1644,166 @@ function qpRiseUpdateFor(host,dt){
 }
 
 // ── リーダーボード ──────────────────────────────────────────────
+function qpMissionLabel(st){
+  if(!st||!st.mission)return '';
+  const m=st.mission;
+  return `   |   ミッションLv.${m.level||1} ${m.goal||''} (${m.progress||''})`;
+}
+function qpMissionPanelSync(){
+  let el=document.getElementById('qp-mission-panel');
+  if(!el){
+    el=document.createElement('div');el.id='qp-mission-panel';
+    el.style.cssText='position:fixed;top:76px;right:16px;z-index:70;display:none;flex-direction:column;gap:0.25rem;max-width:min(340px,80vw);padding:0.55rem 0.8rem;border:1px solid rgba(255,46,99,0.55);border-radius:10px;background:rgba(10,12,28,0.88);box-shadow:0 0 24px rgba(255,46,99,0.22);pointer-events:none;font-family:Orbitron,"Share Tech Mono",monospace;';
+    document.body.appendChild(el);
+    const title=document.createElement('div');title.id='qp-mission-panel-title';title.style.cssText='color:#ff2e63;font-size:0.62rem;font-weight:900;letter-spacing:0.16em';title.textContent='🎯 MISSION';el.appendChild(title);
+    const text=document.createElement('div');text.id='qp-mission-panel-text';text.style.cssText='color:#ffd6e9;font-size:0.72rem;white-space:pre-line;line-height:1.45';el.appendChild(text);
+  }
+  const myMission=qpMyMission;
+  const partnerId=qpDuoPartnerId;
+  const partner=partnerId&&qpPlayerMap[partnerId];
+  const partnerMission=partner?partner.mission:null;
+  const isPartnerDead=partner&&!partner.alive;
+  if(!myMission && !partnerMission){el.style.display='none';return;}
+  const text=el.querySelector('#qp-mission-panel-text');
+  const sections=[];
+  if(myMission){
+    const lines=Array.isArray(myMission.slots)
+      ? myMission.slots.map(s=>`${s.done?'✅':'□'} ${s.rank||''} ${s.text||''}`)
+      : [`${myMission.goal||''}`];
+    sections.push(`YOU Lv.${myMission.level||1}  ${myMission.progress||''}${myMission.completed?'  ✅達成':''}\n${lines.join('\n')}`);
+  }
+  // パートナーのミッションは相方が死んでいる時のみ表示（こちらがクリアすべき内容を知るため）
+  if(partnerMission && isPartnerDead){
+    const lines=Array.isArray(partnerMission.slots)
+      ? partnerMission.slots.map(s=>`${s.done?'✅':'□'} ${s.rank||''} ${s.text||''}`)
+      : [`${partnerMission.goal||''}`];
+    sections.push(`PARTNER Lv.${partnerMission.level||1}  ${partnerMission.progress||''}${partnerMission.completed?'  ✅達成':''}\n${lines.join('\n')}`);
+  }
+  if(sections.length===0){el.style.display='none';return;}
+  const value=sections.join('\n---\n');
+  if(text&&text.textContent!==value)text.textContent=value;
+  el.style.display='flex';
+}
+let qpMissionRuntime=null;
+let _qpMissionLastTick=0;
+function qpMissionGetDef(id){
+  if(typeof MISSION_DEFS==='undefined'||!Array.isArray(MISSION_DEFS))return null;
+  return MISSION_DEFS.find(d=>d.id===id)||null;
+}
+function qpMissionRuntimeFor(m){
+  if(!m||!Array.isArray(m.slots)){qpMissionRuntime=null;return null;}
+  const sig=`${m.level}|${m.slots.map(s=>s.id).join(',')}`;
+  if(!qpMissionRuntime||qpMissionRuntime.sig!==sig){
+    qpMissionRuntime={sig,slots:m.slots.map(s=>({n:0,done:!!s.done,set:[],last:null,time:0,flag:false}))};
+  }
+  m.slots.forEach((s,i)=>{if(qpMissionRuntime.slots[i]&&s.done)qpMissionRuntime.slots[i].done=true;});
+  return qpMissionRuntime;
+}
+function qpMissionMarkDone(i,slot){
+  const rt=qpMissionRuntimeFor(qpMyMission);if(!rt)return;
+  const st=rt.slots[i];if(!st||st.done)return;
+  st.done=true;
+  if(qpMyMission&&qpMyMission.slots&&qpMyMission.slots[i])qpMyMission.slots[i].done=true;
+  if(qpMyMission&&qpMyMission.slots){
+    const done=qpMyMission.slots.filter(s=>s.done).length;
+    qpMyMission.progress=`${done}/${qpMyMission.slots.length}`;
+  }
+  qpMissionPanelSync();
+  socket.emit('qp_mission_done',{slot:i,id:slot.id});
+}
+function qpMissionApply(def,s,e){
+  const t=def.target||1;
+  const p=def.pieces||[];
+  const spin=!!(e.spinType&&e.spinType!=='LOCK'&&e.spinType!=='NONE');
+  const clear=e.type==='clear';
+  const place=e.type==='place';
+  const cnt=e.count||0;
+  switch(def.kind){
+    case 'combo': if(clear&&(e.ren||0)>=t)s.n=t; break;
+    case 'clearSize': if(clear&&cnt===def.size)s.n++; break;
+    case 'lines': if(clear)s.n+=cnt; break;
+    case 'clearWithPiece': if(clear&&cnt===def.size&&p.includes(e.pieceType))s.n++; break;
+    case 'linesWithHeldPiece': if(clear&&p.includes(e.holdPiece))s.n+=cnt; break;
+    case 'hold': if(e.type==='hold')s.n++; break;
+    case 'rotate': if(e.type==='rotate')s.n++; break;
+    case 'consecutiveClearSize': if(clear)s.n=(cnt===def.size)?s.n+1:0; break;
+    case 'spin': if(place&&spin)s.n++; break;
+    case 'spinClear': if(clear&&spin&&p.includes(e.pieceType)&&cnt===def.size)s.n++; break;
+    case 'spinClearPieces': if(clear&&spin&&p.includes(e.pieceType))s.n++; break;
+    case 'linesWithPiece': if(clear&&p.includes(e.pieceType)&&(!def.horizontal||(e.rotation||0)%2===0))s.n+=cnt; break;
+    case 'attack': if(clear)s.n+=(e.attack||0); break;
+    case 'place': if(place)s.n++; break;
+    case 'placeConsecutive': if(place)s.n=p.includes(e.pieceType)?s.n+1:0; break;
+    case 'placeCcwOnly': if(place)s.n=e.ccwOnly?s.n+1:0; break;
+    case 'singleNoCombo': if(clear)s.n=(cnt===1&&(e.ren||0)===0)?s.n+1:0; break;
+    case 'placeNoMoveRotate': if(place)s.n=(!e.moved&&!e.rotated)?s.n+1:0; break;
+    case 'placeNoClear': if(place)s.n=(e.linesCleared||0)===0?s.n+1:0; break;
+    case 'clearUpper': if(clear&&cnt===def.size&&(e.lockY||0)<HIDDEN+ROWS/2)s.n++; break;
+    case 'clearSizeCombo': if(clear&&cnt===def.size&&(e.ren||0)>=def.minCombo)s.n++; break;
+    case 'consecutiveClearPiece': if(clear)s.n=(cnt===def.size&&p.includes(e.pieceType))?s.n+1:0; break;
+    case 'comboNoHold': {
+      const ren=(typeof gameState!=='undefined'&&gameState)?gameState.ren:0;
+      if(e.type==='hold'&&ren>0)s.flag=true;
+      if(clear){if((e.ren||0)>=t&&!s.flag)s.n=t;if((e.ren||0)===0)s.flag=false;}
+      break;
+    }
+    case 'spinNoClear': if(place&&spin&&(e.linesCleared||0)===0)s.n++; break;
+    case 'b2b': if(clear&&(e.b2bCount||0)>=t)s.n=t; break;
+    case 'quadDistinctColumns': if(clear&&cnt===4){if(!s.set.includes(e.lockX))s.set.push(e.lockX);s.n=s.set.length;} break;
+    case 'holdConsecutive': if(e.type==='hold')s.n++; else if(place&&!e.holdUsed)s.n=0; break;
+    case 'placeNoHold': if(place)s.n=e.holdUsed?0:s.n+1; break;
+    case 'softDropHeldPlace': if(place)s.n=e.softDropHeld?s.n+1:0; break;
+    case 'stackTopTime': if(e.type==='tick'){s.time=(e.topRow<=HIDDEN+2)?s.time+(e.dt||0):0;s.n=Math.floor(s.time);} break;
+    case 'linesNoPieces': if(clear&&!p.includes(e.pieceType))s.n+=cnt; break;
+    case 'spinMini': if(clear&&spin&&e.isMini)s.n++; break;
+    case 'samePieceDoubles': if(clear){if(cnt===2){if(s.last===e.pieceType)s.n++;else{s.last=e.pieceType;s.n=1;}}else s.n=0;} break;
+    case 'garbageSpin': if(clear&&spin&&p.includes(e.pieceType)&&(e.garbageCleared||0)>0)s.n=t; break;
+    case 'placeColumn': if(place&&p.includes(e.pieceType)&&e.x===def.column)s.n++; break;
+    case 'spinsInCombo': if(clear)s.n=spin?s.n+1:0; break;
+    case 'singleNoMoveRotate': if(clear&&cnt===1&&p.includes(e.pieceType)&&!e.moved&&!e.rotated)s.n=t; break;
+    case 'placeNoDas': if(place)s.n=e.dasHeld?s.n+1:0; break;
+    case 'spinDistinctPieces': if(clear&&spin&&!s.set.includes(e.pieceType)){s.set.push(e.pieceType);s.n=s.set.length;} break;
+    case 'singlePure': if(clear)s.n=(cnt===1&&(e.ren||0)===0)?s.n+1:0; else if(e.type==='hold')s.n=0; break;
+    case 'noGarbageTime': if(e.type==='tick'){s.time=(e.garbageLines||0)===0?s.time+(e.dt||0):0;s.n=Math.floor(s.time);} break;
+    case 'noCancelTime': if(e.type==='tick'){if(e.cancelled)s.time=0;else s.time+=(e.dt||0);s.n=Math.floor(s.time);} break;
+    case 'tSpinUpDouble': if(clear&&spin&&e.pieceType==='T'&&cnt===2&&(e.rotation||0)===0)s.n=t; break;
+    case 'clearNoMoveRotate': if(clear&&cnt===def.size&&p.includes(e.pieceType)&&!e.moved&&!e.rotated)s.n=t; break;
+    case 'placeNoRotate': if(place)s.n=(p.includes(e.pieceType)&&!e.rotated)?s.n+1:0; break;
+    case 'tSpinDoubleCombo': if(clear&&spin&&e.pieceType==='T'&&cnt===2&&(e.ren||0)>=2)s.n=t; break;
+    case 'consecutiveSpinClear': if(clear)s.n=(spin&&p.includes(e.pieceType)&&cnt===def.size)?s.n+1:0; break;
+    case 'colorClear': if(clear&&e.allClear)s.n=t; break;
+    case 'tSpinCentered': if(clear&&spin&&e.pieceType==='T'&&(cnt===2||cnt===3)&&(e.lockX===0||e.lockX===getGameCols()-1))s.n=t; break;
+  }
+  return (def.kind==='stackTopTime'||def.kind==='noGarbageTime'||def.kind==='noCancelTime')?s.time>=t:s.n>=t;
+}
+function qpMissionEvent(ev){
+  if(typeof quickPlayMode==='undefined'||!quickPlayMode)return;
+  const m=qpMyMission;if(!m||!Array.isArray(m.slots))return;
+  const rt=qpMissionRuntimeFor(m);if(!rt)return;
+  for(let i=0;i<m.slots.length;i++){
+    const st=rt.slots[i];if(!st||st.done)continue;
+    const def=qpMissionGetDef(m.slots[i].id);if(!def)continue;
+    if(qpMissionApply(def,st,ev))qpMissionMarkDone(i,m.slots[i]);
+  }
+}
+function _qpMissionTick(){
+  const now=performance.now();
+  const dt=Math.min(0.1,Math.max(0,(_qpMissionLastTick?now-_qpMissionLastTick:0)/1000));
+  _qpMissionLastTick=now;
+  if(!dt||!gameState||!gameState.alive||!qpMyMission||!Array.isArray(qpMyMission.slots))return;
+  const hasTimed=qpMyMission.slots.some(s=>{const d=qpMissionGetDef(s.id);return d&&(d.kind==='stackTopTime'||d.kind==='noGarbageTime'||d.kind==='noCancelTime');});
+  if(!hasTimed)return;
+  const b=gameState.board||[];
+  let topRow=HIDDEN+ROWS,garbageLines=0;
+  for(let r=0;r<b.length;r++){
+    const row=b[r];if(!row)continue;
+    if(row.some(c=>c==='G'||c==='R'))garbageLines++;
+    if(topRow===HIDDEN+ROWS&&row.some(c=>c&&c!==0&&c!=='G'&&c!=='R'))topRow=r;
+  }
+  qpMissionEvent({type:'tick',dt,topRow,garbageLines});
+}
 function qpRenderLeaderboard(){
+  qpMissionPanelSync();
   const el=document.getElementById('qp-leaderboard');if(!el)return;
   const list=qpPlayers||[];
   const countEl=document.getElementById('qp-count');
@@ -1563,6 +1818,7 @@ function qpRenderLeaderboard(){
       <div class="qp-rank">${i+1}</div>
       <div class="qp-m" style="color:${p.color||'#fff'}">${qpFmtM(p.m)}</div>
       <div class="qp-climb" style="color:${p.color||'#fff'}">Lv.${p.level||1}</div>
+      <div class="qp-mission" title="${esc(p.mission?`Lv.${p.mission.level||1} ${p.mission.goal||''} ${p.mission.progress||''}`:'')}">${p.mission?`M${p.mission.level||1}`:''}</div>
       <div class="qp-name">${esc(p.name)}</div>
       ${badge}
     </div>`;
@@ -1575,7 +1831,7 @@ function qpSelect(id){
   qpSelectedId=id;
   const nm=document.getElementById('qp-preview-name');
   const st=qpPlayerMap[id];
-  if(nm)nm.textContent=(st.name||'---')+'   |   m '+qpFmtM(st.m)+'   Lv.'+(st.level||1);
+  if(nm)nm.textContent=(st.name||'---')+'   |   m '+qpFmtM(st.m)+'   Lv.'+(st.level||1)+qpMissionLabel(st);
   qpDrawPreview(id);
 }
 function qpDrawPreview(id){
@@ -1694,7 +1950,7 @@ function qpSelectCurrentPlayer(){
   if(cand){
     qpSelectedId=cand.id;
     const nm=document.getElementById('qp-preview-name');
-    if(nm)nm.textContent=(cand.name||'---')+'   |   m '+qpFmtM(cand.m)+'   Lv.'+(cand.level||1);
+    if(nm)nm.textContent=(cand.name||'---')+'   |   m '+qpFmtM(cand.m)+'   Lv.'+(cand.level||1)+qpMissionLabel(cand);
     qpDrawPreview(cand.id);
   }
 }
@@ -1702,6 +1958,8 @@ function qpSelectCurrentPlayer(){
 // ── HUD（試合中のクライム表示） ──────────────────────────────────
 function qpMatchReset(){
   qpMyDisplayM=0;qpMyLastServerM=0;qpMyLevel=1;qpMyXp=0;qpMyTargetedBy=0;qpLastGainSeen=0;qpLastClearGain=0;qpMyPenaltyMult=0;
+  _qpHardDuoEvent=null;
+  if(gameState)gameState._hardDuoBottomGarbage=null;
   qpStarSpeed=0.05;
   _qpStarSpeedTgt=0.05;
   _qpStarFlow=0;
@@ -1796,6 +2054,36 @@ function qpMatchHudSync(){
     const az=qpMyTargetedBy>0;
     if(!!tb.__z!==az){tb.__z=az;tb.classList.toggle('zero',!az);}
   }
+  const mb=document.getElementById('qp-hud-mission');
+  if(mb){
+    const slots=qpMyMission&&Array.isArray(qpMyMission.slots)?qpMyMission.slots:[];
+    const cur=slots.find(s=>!s.done)||null;
+    const mv=qpMyMission?`ミッションLv.${qpMyMission.level||1} ${qpMyMission.progress||''}${cur?` / ${cur.text||''}`:''}`:'';
+    if(mb.__t!==mv){mb.__t=mv;mb.textContent=mv;}
+  }
+  // Hard Duo イベント表示
+  const hde=document.getElementById('qp-hud-hardduo-event');
+  if(hde && qpIsDuoHardMode()){
+    if(gameState && gameState._hardDuoBottomGarbage && gameState._hardDuoBottomGarbage.until > Date.now()){
+      const rem = Math.ceil((gameState._hardDuoBottomGarbage.until - Date.now())/1000);
+      const txt = `⚡ 底ゴミ2段 残り${rem}s`;
+      if(hde.__t!==txt){hde.__t=txt;hde.textContent=txt;}
+      hde.style.display='block';
+    }else if(_qpHardDuoEvent && _qpHardDuoEvent.until && _qpHardDuoEvent.until > Date.now()){
+      const rem = Math.ceil((_qpHardDuoEvent.until - Date.now())/1000);
+      const name = _qpHardDuoEvent.name || 'イベント';
+      const desc = _qpHardDuoEvent.desc || '';
+      const txt = `⚡ ${name}${desc?` — ${desc}`:''} 残り${rem}s`;
+      if(hde.__t!==txt){hde.__t=txt;hde.textContent=txt;}
+      hde.style.display='block';
+    }else{
+      if(hde.style.display!=='none')hde.style.display='none';
+    }
+  }else if(hde){
+    if(hde.style.display!=='none')hde.style.display='none';
+  }
+  _qpMissionTick();
+  qpMissionPanelSync();
   // drop mode: 降下速度ゲージ（0m で -0.6m/s、100m 登るごとに -0.2 加速）
   const ab=document.getElementById('qp-hud-accel');
   if(ab){
@@ -1842,7 +2130,7 @@ function openQuickPlay(){
   if(!myName)return;
   if(roomId || qpRoomId || quickPlayMode){
     try{ socket.emit('leave_room'); }catch(e){}
-    roomId=null; quickPlayMode=false; qpRoomId=null; qpPlayers=[]; qpPlayerMap={}; qpBoards={}; qpSelectedId=null;
+    roomId=null; quickPlayMode=false; qpRoomId=null; qpPlayers=[]; qpPlayerMap={}; qpBoards={}; qpSelectedId=null; qpDuoPartnerId=null;
     _qpDropMode=false; _qpMyAlt=0; _qpDropLastMs=null; qpMatchEnded=false;
     if(gameApp){try{gameApp.destroy(true);}catch(e){} gameApp=null;}
     gameState=null; renderer=null; qpDestroyStarfield();
@@ -1858,11 +2146,12 @@ function openQuickPlay(){
   document.getElementById('qp-play-btn').style.display='none';
   const el=document.getElementById('qp-leaderboard');if(el)el.innerHTML='<div class="no-rooms" style="padding:1rem">Connecting...</div>';
   socket.emit('quick_play',{name:myName});
+  socket.emit('get_online_players');
 }
 function qpLeave(){
   socket.emit('leave_room');
   roomId=null;roomPlayers=[];roomPlayers.length=0;
-  quickPlayMode=false;qpRoomId=null;qpPlayers=[];qpPlayerMap={};qpBoards={};qpSelectedId=null;
+  quickPlayMode=false;qpRoomId=null;qpPlayers=[];qpPlayerMap={};qpBoards={};qpSelectedId=null;qpDuoPartnerId=null;
   _lastUsedRoomId=null;
   for(const k in _qpBotXMap)delete _qpBotXMap[k];
   _qpBotLaneN=0;
@@ -1880,6 +2169,14 @@ function qpLeave(){
 }
 function qpStart(){
   if(roomId)socket.emit('start_game');
+}
+function qpInvitePlayer(toId){
+  if(!quickPlayMode||!isHost){addChatSystem('duo招待はホストだけできます');return;}
+  socket.emit('qp_invite',{toId});
+}
+function qpRespondInvite(fromId,accept){
+  socket.emit('qp_invite_response',{fromId,accept});
+  if(accept){quickPlayMode=true;showScreen('quickplay');qpEnsureStarfield();}
 }
 // 死亡後: 試合前画面へ戻る（リプレイ保存の選択後に呼ばれる）
 function qpReturnToPrematch(){
@@ -1922,24 +2219,24 @@ function _qpReviveEl(id){
   return el;
 }
 // 自分がダウン → 相方が10回ラインを消すまで全画面で待機
-function qpShowReviveWait(remaining){
+function qpShowReviveWait(remaining,mission){
   remaining=(remaining===undefined||remaining===null)?10:remaining;
   const el=_qpReviveEl('qp-revive-overlay');
   el.style.cssText='position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:90;pointer-events:none;font-family:Orbitron,sans-serif;background:rgba(3,7,18,0.35);';
   el.innerHTML=`<div style="color:#ff2e63;font-size:3rem;font-weight:900;text-shadow:0 0 40px #ff2e63">☠ DOWN</div>
-    <div style="color:#fff;font-size:0.95rem;margin-top:0.6rem;letter-spacing:0.08em">相方がクリアすると復活！</div>
-    <div style="color:#ffbe0b;font-size:1.4rem;margin-top:0.4rem">あと <span id="qp-revive-remaining">${remaining}</span> 回</div>`;
+    <div style="color:#fff;font-size:0.95rem;margin-top:0.6rem;letter-spacing:0.08em">${mission?'相方がミッションを達成すると復活！':'相方がクリアすると復活！'}</div>
+    <div style="color:#ffbe0b;font-size:1.4rem;margin-top:0.4rem">${mission?'MISSION':'あと'} ${mission?'':`<span id="qp-revive-remaining">${remaining}</span> 回`}</div>`;
   el.style.display='flex';
 }
 function _qpHideReviveWait(){
   const el=document.getElementById('qp-revive-overlay');if(el)el.style.display='none';
 }
 // 相方がダウン → 自分が10回ラインを消すまでバナー表示
-function qpShowPartnerDown(remaining){
+function qpShowPartnerDown(remaining,mission){
   remaining=(remaining===undefined||remaining===null)?10:remaining;
   const el=_qpReviveEl('qp-partner-down');
   el.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:90;pointer-events:none;font-family:Orbitron,sans-serif;background:rgba(255,46,99,0.15);border:1px solid rgba(255,46,99,0.6);color:#ff2e63;padding:0.4rem 1.2rem;border-radius:20px;font-size:0.78rem;letter-spacing:0.08em;';
-  el.textContent=`🧊 相方ダウン中 — あと ${remaining} 回ラインを消すと復活`;
+  el.textContent=mission?'🎯 相方ダウン中 — ミッションを達成すると復活':`🧊 相方ダウン中 — あと ${remaining} 回ラインを消すと復活`;
   el.style.display='block';
 }
 function _qpHidePartnerDown(){
@@ -1954,7 +2251,7 @@ function qpRenderMatchRank(){
   if(!quickPlayMode||qpMatchEnded){panel.style.display='none';return;}
   const list=qpPlayers||[];
   if(!list.length)return;
-  const sig=list.map(p=>p.id+':'+Math.round(p.m*2)+':'+(p.level||1)+':'+(p.alive?1:0)).join('|');
+  const sig=list.map(p=>p.id+':'+Math.round(p.m*2)+':'+(p.level||1)+':'+(p.alive?1:0)+':'+(p.mission?p.mission.level+':'+(p.mission.progress||''):'')).join('|');
   if(sig===_qpRankSig)return;
   _qpRankSig=sig;
   const el=document.getElementById('qp-rank-list');if(!el)return;
@@ -1965,6 +2262,7 @@ function qpRenderMatchRank(){
       <span class="qp-rk">${i+1}</span>
       <span class="qp-name">${esc(p.isBot?p.name:(p.name||'YOU'))}</span>
       <span class="qp-rlvl" style="color:${p.color||'#fff'}">Lv.${p.level||1}</span>
+      <span class="qp-rmission" title="${esc(p.mission?`Lv.${p.mission.level||1} ${p.mission.goal||''} ${p.mission.progress||''}`:'')}">${p.mission?`M${p.mission.level||1}`:''}</span>
       <span class="qp-rm" style="color:${p.color||'#fff'}">${qpFmtM(p.m)}</span>
     </div>`;
   }).join('');
@@ -1972,6 +2270,46 @@ function qpRenderMatchRank(){
 }
 
 // ── ソケットイベント ────────────────────────────────────────────
+let _qpPendingInvite=null;
+function _qpInviteOverlay(){
+  let el=document.getElementById('qp-invite-overlay');
+  if(!el){el=document.createElement('div');el.id='qp-invite-overlay';document.body.appendChild(el);}
+  return el;
+}
+function qpShowInvite(fromId,fromName,rid){
+  _qpPendingInvite={fromId,roomId:rid||qpRoomId};
+  const name=fromName||'プレイヤー';
+  const el=_qpInviteOverlay();
+  el.style.cssText='position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:120;font-family:Orbitron,sans-serif;background:rgba(3,7,18,0.78);backdrop-filter:blur(4px);';
+  el.innerHTML=`<div style="background:linear-gradient(160deg,#141b35,#0a1024);border:1px solid rgba(0,206,255,0.55);border-radius:14px;padding:1.4rem 1.8rem;min-width:320px;text-align:center;box-shadow:0 0 40px rgba(0,206,255,0.25)">
+    <div style="color:#00ceff;font-size:1.1rem;font-weight:900;letter-spacing:0.1em">DUO INVITE</div>
+    <div style="color:#fff;font-size:0.9rem;margin:0.9rem 0 1.1rem">${esc(name)} から招待が来ました</div>
+    <div style="display:flex;gap:0.7rem;justify-content:center">
+      <button id="qp-invite-accept" class="btn btn-primary" style="font-size:0.78rem;padding:0.5rem 1.2rem">参加する</button>
+      <button id="qp-invite-decline" class="btn btn-secondary" style="font-size:0.78rem;padding:0.5rem 1.2rem">断る</button>
+    </div>
+  </div>`;
+  const accept=el.querySelector('#qp-invite-accept');
+  const decline=el.querySelector('#qp-invite-decline');
+  if(accept)accept.onclick=()=>{const inv=_qpPendingInvite;_qpPendingInvite=null;el.style.display='none';if(!inv)return;qpRoomId=inv.roomId||qpRoomId;qpRespondInvite(inv.fromId,true);};
+  if(decline)decline.onclick=()=>{const inv=_qpPendingInvite;_qpPendingInvite=null;el.style.display='none';if(inv)qpRespondInvite(inv.fromId,false);};
+  el.style.display='flex';
+}
+function qpHideInvite(){_qpPendingInvite=null;const el=document.getElementById('qp-invite-overlay');if(el)el.style.display='none';}
+socket.on('qp_invite_received',({fromId,fromName,roomId:rid})=>{
+  qpShowInvite(fromId,fromName,rid);
+});
+socket.on('qp_invite_result',({ok,msg})=>{if(msg)addChatSystem(msg);});
+socket.on('qp_duo_partner',({ids,host})=>{
+  if(Array.isArray(ids)&&ids.includes(socket.id)){
+    qpDuoPartnerId=ids.find(id=>id!==socket.id)||null;
+    quickPlayMode=true;
+    isHost=host===socket.id;
+    showScreen('quickplay');
+    qpEnsureStarfield();
+    socket.emit('qp_get_state');
+  }
+});
 socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   qpRoomId=rid;roomId=rid;_lastUsedRoomId=rid;
   qpPlayers=players||[];qpPlayerMap={};
@@ -1997,7 +2335,13 @@ socket.on('qp_state',({roomId:rid,host,started,players,roomSettings:rs})=>{
   qpRenderLeaderboard();
   qpEnsureStarfield();
   const me=qpPlayerMap[socket.id];
-  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;qpMyPenaltyMult=me.penaltyMult||0;_qpDropSetMode(!!me.dropMode,me.m);}
+  if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;qpMyPenaltyMult=me.penaltyMult||0;qpMyMission=me.mission||null;qpDuoPartnerId=me.partnerId||null;_qpDropSetMode(!!me.dropMode,me.m);}
+  if(started && !qpGameStarted){
+    qpMissionRuntime=null;
+    _qpMissionLastTick=0;
+  }
+  qpGameStarted=started;
+  qpMissionPanelSync();
   if(!qpSelectedId)qpSelectCurrentPlayer();
 });
 
@@ -2016,6 +2360,8 @@ socket.on('qp_update',({players,started})=>{
     qpMyXp=me.xp||0;
     qpMyTargetedBy=me.targetedBy||0;
     qpMyPenaltyMult=me.penaltyMult||0;
+    qpMyMission=me.mission||null;
+    qpDuoPartnerId=me.partnerId||null;
     // 白い+Nは「ライン消去でmが上がった時だけ」（受動的な上昇では出さない）
     const cg=me.clearGain||0;
     if(cg-qpLastClearGain>0.4){
@@ -2041,7 +2387,7 @@ socket.on('qp_update',({players,started})=>{
   if(qpSelectedId&&qpPlayerMap[qpSelectedId]){
     const nm=document.getElementById('qp-preview-name');
     const sp=qpPlayerMap[qpSelectedId];
-    if(nm)nm.textContent=(sp.name||'---')+'   |   m '+qpFmtM(sp.m)+'   Lv.'+(sp.level||1);
+    if(nm)nm.textContent=(sp.name||'---')+'   |   m '+qpFmtM(sp.m)+'   Lv.'+(sp.level||1)+qpMissionLabel(sp);
   }
 });
 
@@ -2055,21 +2401,30 @@ socket.on('qp_garbage_warning',({lines,warnMs})=>{
 socket.on('qp_line_bonus',()=>{ try{qpPushBonus();}catch(e){} });
 
 // 試合終了 → 全員生き返り（プレビューをクリアして試合前に戻る）
-socket.on('qp_reset',()=>{
+socket.on('qp_reset',({players})=>{
   qpBoards={};
   qpSelectedId=null;
   qpWarnUntil=0;qpWarnLines=0;
   _qpHideReviveUI();
   qpMatchReset();
   const nm=document.getElementById('qp-preview-name');if(nm)nm.textContent='---';
+  if(Array.isArray(players)){
+    qpPlayers=players;
+    qpPlayerMap={};
+    players.forEach(p=>qpPlayerMap[p.id]=p);
+    const me=qpPlayerMap[socket.id];
+    if(me){qpMyLastServerM=me.m;qpMyLevel=me.level||1;qpMyXp=me.xp||0;qpMyTargetedBy=me.targetedBy||0;qpLastClearGain=me.clearGain||0;qpMyPenaltyMult=me.penaltyMult||0;qpMyMission=me.mission||null;qpDuoPartnerId=me.partnerId||null;}
+  }
+  qpMissionPanelSync();
+  qpRenderLeaderboard();
 });
 
 // ── duo: 復活システム ────────────────────────────────────────────
 // 相方がダウン → 自分が10回ラインを消すまで待機/バナー
-socket.on('qp_revive_wait',({deadId,deadName,byId,remaining,isBot})=>{
-  if(deadId===socket.id){qpShowReviveWait(remaining||10);}
-  else if(byId===socket.id){qpShowPartnerDown(remaining||10);}
-  if(deadName)addChatSystem(`💀 ${deadName} がダウン — 相方が10回ラインを消すと復活`);
+socket.on('qp_revive_wait',({deadId,deadName,byId,remaining,isBot,mission})=>{
+  if(deadId===socket.id){qpShowReviveWait(remaining||10,!!mission);}
+  else if(byId===socket.id){qpShowPartnerDown(remaining||10,!!mission);}
+  if(deadName)addChatSystem(mission?`💀 ${deadName} がダウン — 相方がミッションを達成すると復活`:`💀 ${deadName} がダウン — 相方が10回ラインを消すと復活`);
 });
 socket.on('qp_revive_progress',({deadId,byId,remaining})=>{
   if(remaining===undefined||remaining===null)return;
@@ -2082,6 +2437,29 @@ socket.on('qp_revive_done',({id,name,isBot})=>{
   if(name)addChatSystem(`💖 ${name} が復活！`);
   // 復活したbotの盤面からELIMINATED表示を消して再表示する
   if(renderer&&renderer.opponentRevive)renderer.opponentRevive(id);
+});
+// Hard Duo イベント
+socket.on('qp_hard_duo_event',({event,duration,endsAt})=>{
+  if(event){
+    _qpHardDuoEvent = { id: event.id, name: event.name, desc: event.desc, until: endsAt || Date.now() + duration };
+    addChatSystem(`⚡ ハードデュオイベント: ${event.name} — ${event.desc}`);
+    if(event.noRevive){
+      _qpHideReviveUI();
+      _qpHidePartnerDown();
+    }
+  }else{
+    _qpHardDuoEvent = null;
+    if(gameState)gameState._hardDuoBottomGarbage=null;
+  }
+});
+socket.on('qp_hard_duo_permanent_garbage',({lines})=>{
+  if(!gameState||!lines)return;
+  const cols=getGameCols();
+  for(let i=0;i<lines;i++){
+    const row=Array(cols).fill('R');
+    gameState.board.push(row);
+    gameState.board.shift();
+  }
 });
 // 通常ボットの自動復活（5秒後）
 socket.on('qp_bot_revive',({id,name})=>{
@@ -2575,7 +2953,8 @@ const PIECE_SHAPES={
   L:[[[0,0,1],[1,1,1],[0,0,0]],[[0,1,0],[0,1,0],[0,1,1]],[[0,0,0],[1,1,1],[1,0,0]],[[1,1,0],[0,1,0],[0,1,0]]]
 };
 const KICK_JLSTZ={'0->1':[[-1,0],[-1,1],[0,-2],[-1,-2]],'1->0':[[1,0],[1,-1],[0,2],[1,2]],'1->2':[[1,0],[1,-1],[0,2],[1,2]],'2->1':[[-1,0],[-1,1],[0,-2],[-1,-2]],'2->3':[[1,0],[1,1],[0,-2],[1,-2]],'3->2':[[-1,0],[-1,-1],[0,2],[-1,2]],'3->0':[[-1,0],[-1,-1],[0,2],[-1,2]],'0->3':[[1,0],[1,1],[0,-2],[1,-2]]};
-const KICK_I={'0->1':[[-2,0],[1,0],[-2,1],[1,-2]],'1->0':[[2,0],[-1,0],[2,-1],[-1,2]],'1->2':[[-1,0],[2,0],[-1,-2],[2,1]],'2->1':[[1,0],[-2,0],[1,2],[-2,-1]],'2->3':[[2,0],[-1,0],[2,-1],[-1,2]],'3->2':[[-2,0],[1,0],[-2,1],[1,-2]],'3->0':[[1,0],[-2,0],[1,2],[-2,-1]],'0->3':[[-1,0],[2,0],[-1,-2],[2,1]]};
+const KICK_I={'0->1':[[1,0],[-2,0],[-2,-1],[1,2]],'1->0':[[-1,0],[2,0],[-1,-2],[2,1]],'1->2':[[-1,0],[2,0],[-1,2],[2,-1]],'2->1':[[-2,0],[1,0],[-2,1],[1,-2]],'2->3':[[2,0],[-1,0],[2,1],[-1,-2]],'3->2':[[1,0],[-2,0],[1,2],[-2,-1]],'3->0':[[1,0],[-2,0],[1,-2],[-2,1]],'0->3':[[-1,0],[2,0],[-2,-1],[2,1]]};
+const KICK_I_180=[[0,-1],[1,0],[0,1],[-1,0]];
 const PIECE_TYPES=['I','O','T','S','Z','J','L'];
 
 // ---- Seeded Bag ----
@@ -2636,7 +3015,7 @@ class TetrisGame{
     this.lastSpin=null;this.lastSpinType=null;
     this._lastClearShown=undefined;
     this._lastClearPiece=undefined;
-    this._wasRotated=false;this._wasKicked=false;this._b2bBreakHoles3=0;
+    this._wasRotated=false;this._wasMoved=false;this._ccwOnly=true;this._wasKicked=false;this._b2bBreakHoles3=0;
     this.garbageQueue=[];
     this._deferredGarbage=[];
     this._qpRiseQueue=null;
@@ -2782,7 +3161,7 @@ class TetrisGame{
     }
     this._garbagePushY=0;
     this.current={type,rotation:0,x:_spX,y:_spawnY,customShape};
-    this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
+    this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasMoved=false;this._ccwOnly=true;this._wasKicked=false;this.locking=false;
     
     // ── フリーフォールで28個以上に達している場合はスポーン直後に即座に最下部（ghostY）へスナップ ──
     if(myHasMod('freefall') && (this._freefallPieces||0)>=28){
@@ -2830,10 +3209,20 @@ class TetrisGame{
       if(nx<0||nx>=getGameCols())return false;
       if(ny>=ROWS+HIDDEN)return false;
       if(ny>=0&&this.board[ny][nx])return false;
+      // Hard Duo: 底部固定ゴミとの衝突判定
+      if(this._hardDuoBottomGarbage && this._hardDuoBottomGarbage.until > Date.now()){
+        const lines = this._hardDuoBottomGarbage.lines || 2;
+        const bottomStart = ROWS+HIDDEN-lines;
+        if(ny >= bottomStart) return false;
+      }
     }
     return true;
   }
 
+  _noteRotation(dir){
+    if(dir>=0)this._ccwOnly=false;
+    qpMissionEvent({type:'rotate',dir});
+  }
   rotate(dir){
     if(this._diceFrozen()) return false;
     const oldRot=this.current.rotation;
@@ -2846,7 +3235,7 @@ class TetrisGame{
       const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
-        this.current=base;this._wasRotated=true;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
+        this.current=base;this._wasRotated=true;this._noteRotation(dir);this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -2854,7 +3243,7 @@ class TetrisGame{
       for(const[kx,ky]of [[-1,0],[1,0],[0,-1],[0,1],[-2,0],[2,0]]){
         const t={...base,x:base.x+kx,y:base.y-ky};
         if(this.isValid(t)){
-          this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
+this.current=t;this._wasRotated=true;this._wasKicked=true;this._noteRotation(dir);this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
           if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
           return true;
         }
@@ -2865,14 +3254,14 @@ class TetrisGame{
     const kicks=this.current.type==='I'?KICK_I[key]:KICK_JLSTZ[key];
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
-      this.current=base;this._wasRotated=true;this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
+      this.current=base;this._wasRotated=true;this._noteRotation(dir);this.checkSpin(0,0,false);this._updateLockAfterMove();SFX.rotate();
       if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
-        this.current=t;this._wasRotated=true;this._wasKicked=true;this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
+        this.current=t;this._wasRotated=true;this._wasKicked=true;this._noteRotation(dir);this.checkSpin(kx,ky,true);this._updateLockAfterMove();SFX.rotate();
         if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
@@ -2946,7 +3335,7 @@ class TetrisGame{
       const kicks180=[[0,0],[-1,0],[1,0],[0,1],[-1,1],[1,1]];
       for(const[kx,ky]of kicks180){
         const t={...base,x:base.x+kx,y:base.y+ky};
-        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;this._updateLockAfterMove();SFX.rotate();
+        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;this._noteRotation(2);this._updateLockAfterMove();SFX.rotate();
           renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
           return true;}
       }
@@ -2956,13 +3345,14 @@ class TetrisGame{
     // 通常ピース: SRS+ 180°kick テーブル (Iミノは対角も含む)
     const kicks180={
       'O':[[0,0]],
-      'I':[[0,0],[1,0],[-1,0],[2,0],[-2,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]],
+      'I':[[0,0],KICK_I_180[oldRot]],
     }[this.current.type]||[[0,0],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
     const base={...this.current,rotation:newRot};
     for(const[kx,ky]of kicks180){
       const t={...base,x:base.x+kx,y:base.y+ky};
       if(this.isValid(t)){
         this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this._wasRotated=true;this._wasKicked=true;
+        this._noteRotation(2);
         this._updateLockAfterMove();SFX.rotate();
         renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);
         renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
@@ -3001,7 +3391,7 @@ class TetrisGame{
     if(!this.current) return false;
     if(this._diceFrozen()) return false;
     if(this.isValid(this.current,dx,0)){
-      this.current.x+=dx;this.lastSpin=null;this._wasKicked=false;this._updateLockAfterMove();SFX.move();
+      this.current.x+=dx;this.lastSpin=null;this._wasKicked=false;this._wasMoved=true;this._updateLockAfterMove();SFX.move();
       return true;
     } else {
       renderer&&renderer.onWallBump(dx);
@@ -3140,13 +3530,16 @@ class TetrisGame{
       const ny=this.current.y+r,nx=this.current.x+c;
       if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<cols)this.board[ny][nx]=this.current.type;
     }
+    const isMini = spinType && spinType.startsWith('MINI');
     if(wasSpin){
       SFX.spinLock();
-      playNoise(0.025,0.5,2500); // カチッというクリック音
+      playNoise(0.025,0.5,2500);
       socket.emit('spin_effect',{spinType});ReplayRecorder.record('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType,spinType);
     }
     else SFX.lock();
     this.clearLines();
+
+    qpMissionEvent({type:'place',pieceType:this._lockType,rotation:this._lockRot,x:this._lockX,y:this._lockY,linesCleared:this._lastLinesCleared||0,spinType:wasSpin?spinType:null,isMini,holdUsed:this.holdUsed,moved:this._wasMoved,rotated:this._wasRotated,ccwOnly:this._ccwOnly!==false,softDropHeld:!!keyState[_kb('softDrop')],dasHeld:!!dasActive});
 
     // 相殺後に残ったゴミを適用（コンボ中はclearLines内の相殺でキャンセルされる）
     if (this.alive) this._applyReadyGarbage();
@@ -3572,6 +3965,7 @@ class TetrisGame{
         lockX:this._lockX,lockY:this._lockY,lockType:this._lockType,lockRot:this._lockRot};
       socket.emit('line_clear_effect',lcEv);
       ReplayRecorder.record('line_clear_effect',lcEv);
+      qpMissionEvent({type:'clear',count,spinType,isMini,pieceType:this._lockType,rotation:this._lockRot,lockX:this._lockX,lockY:this._lockY,ren:this.ren,b2bCount:this.b2bCount,allClear,attack,garbageCleared:garbageCountInClear,cancelled:cancelledByGarbage,holdPiece:this.holdPiece,holdUsed:this.holdUsed,moved:this._wasMoved,rotated:this._wasRotated});
 
       if(count===1)SFX.clear1();
       else if(count===2)SFX.clear2();
@@ -4564,7 +4958,7 @@ class TetrisGame{
       // ── MOD: Snow ── スポーン地点を1マス上に上げる
       const _spawnBaseY=SPAWN_Y-(myHasMod('snow')?1:0);
       this.current={type:nextType,rotation:0,x:_spX2,y:_spawnBaseY,customShape:nextCustomShape};
-      this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasKicked=false;this.locking=false;
+      this.lastSpin=null;this.lastSpinType=null;this._wasRotated=false;this._wasMoved=false;this._ccwOnly=true;this._wasKicked=false;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
       // スポーン位置が埋まっている場合、10マス上まで探す
       if(!this.isValid(this.current)){
@@ -4589,6 +4983,7 @@ class TetrisGame{
       }
     }
     this.cancelLock();SFX.hold();
+    qpMissionEvent({type:'hold',pieceType:type});
   }
 
   updateGravity(dt){
@@ -4649,7 +5044,7 @@ class TetrisGame{
 
   _updateSoftDrop(dt){
     if(!this.alive||!this.current)return;
-    if(!keyState['ArrowDown']&&!_softDropping){this._softDropAccum=0;return;}
+    if(!keyState[_kb('softDrop')]&&!_softDropping){this._softDropAccum=0;return;}
     const interval=settings.softDropInterval??50;
     if(interval===0){
       while(this.isValid(this.current,0,1)){this.current.y++;this.score+=1;}
@@ -6957,7 +7352,8 @@ class GameRenderer{
     this.opponentPlayers=players.filter(p=>p.id!==myId);
     // duo: 相方companionは右側に1v1レイアウトで表示し、他のプレイヤーは後ろに散らして表示する
     this._isDuo=!!(typeof quickPlayMode!=='undefined'&&quickPlayMode&&typeof roomSettings!=='undefined'&&roomSettings&&roomSettings.duoOn);
-    this._duoCompanion=this._isDuo?(this.opponentPlayers.find(p=>p.isCompanion||p._qpCompanion)||null):null;
+    this._duoPartnerId=(typeof qpDuoPartnerId!=='undefined'&&qpDuoPartnerId)||null;
+    this._duoCompanion=this._isDuo?(this.opponentPlayers.find(p=>p.isCompanion||p._qpCompanion||(this._duoPartnerId&&p.id===this._duoPartnerId))||null):null;
     this._duoCompId=this._duoCompanion?this._duoCompanion.id:null;
     this.boardOffsetY=0;this.boardOffsetX=0;
     this.tiltAngle=0;this.tiltTarget=0;this.shakePower=0;
@@ -6974,6 +7370,7 @@ class GameRenderer{
     this._rippleFilter=null;this._rippleActive=false;this._rippleT=0;this._rippleDuration=1150;this._rippleFilterArea=null;
     // 送信時の矢印（ベジェ軌道）エフェクト
     this._sendArrows=[];
+    this._duoLightnings=[];
     // B2Bバッジ初期化 (buildSideUI後に呼ばれるので存在チェック)
     if(this.b2bBadgeCont)this.b2bBadgeCont.visible=false;
     // 煙エフェクト（危機状態）
@@ -7650,6 +8047,21 @@ class GameRenderer{
           if(settings.quality!=='low'&&settings.quality!=='minimum'){g.lineStyle(1,col,0.45*ga);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.lineStyle(0);}
         } else {
           this.drawCell(g,c*CELL,dy,CELL,v,1);
+        }
+      }
+    }
+    // Hard Duo: 底部固定ゴミ描画
+    if(this.gs._hardDuoBottomGarbage && this.gs._hardDuoBottomGarbage.until > Date.now()){
+      const lines = this.gs._hardDuoBottomGarbage.lines || 2;
+      const col = 0x00ffff;
+      for(let l=0;l<lines;l++){
+        const r = ROWS+HIDDEN-1-l;
+        const dy = (r-HIDDEN)*CELL;
+        for(let c=0;c<cols;c++){
+          const sz = CELL-1;
+          g.beginFill(col,0.8);g.drawRect(c*CELL+1,dy+1,sz-1,sz-1);g.endFill();
+          g.beginFill(0xffffff,0.4);g.drawRect(c*CELL+1,dy+1,sz-1,3);g.drawRect(c*CELL+1,dy+1,3,sz-1);g.endFill();
+          g.beginFill(0x000000,0.5);g.drawRect(c*CELL+1,dy+sz-2,sz-1,2);g.drawRect(c*CELL+sz-2,dy+1,2,sz-1);g.endFill();
         }
       }
     }
@@ -8873,7 +9285,7 @@ class GameRenderer{
 
   // 壁バウンス: 押している間は沈み込み、単発タップだけ短いバウンス
   onWallBump(dx){
-    const isHeld=dx>0?keyState['ArrowRight']:keyState['ArrowLeft'];
+    const isHeld=dx>0?keyState[_kb('right')]:keyState[_kb('left')];
     if(isHeld){
       // 押しっぱなし: バウンスせず wallPressX に任せる
       return;
@@ -10777,8 +11189,8 @@ class GameRenderer{
     this.boardOffsetY*=Math.exp(-dt/4000);if(this.boardOffsetY<0.3&&this.boardOffsetY>0)this.boardOffsetY=0;
     // 壁押し込み: 右キーを押しながら壁に触れているときに枠が沈む
     if(this.gs&&this.gs.current){
-      const isRightHeld=keyState['ArrowRight'];
-      const isLeftHeld=keyState['ArrowLeft'];
+      const isRightHeld=keyState[_kb('right')];
+      const isLeftHeld=keyState[_kb('left')];
       const atRightWall=!this.gs.isValid(this.gs.current,1,0);
       const atLeftWall=!this.gs.isValid(this.gs.current,-1,0);
       if(isRightHeld&&atRightWall){
@@ -11350,6 +11762,7 @@ class GameRenderer{
     this._updateRippleFx(dt);
     _opRippleUpdateAll(this.opBoardData,dt);
     this._updateSendArrows(dt);
+    this._updateDuoLightnings(dt);
     this._updateOpponentThreats(dt);
     this._updateMyB2BBreakPops(dt);
     // ── Elapsed time ──
@@ -11666,6 +12079,68 @@ class GameRenderer{
       g.lineTo(cx+Math.cos(ang+2.5)*sz*0.5,cy+Math.sin(ang+2.5)*sz*0.5);
       g.lineTo(cx+Math.cos(ang-2.5)*sz*0.5,cy+Math.sin(ang-2.5)*sz*0.5);
       g.closePath();g.endFill();
+      return true;
+    });
+  }
+
+  _spawnDuoLightning(p0,p2,attack,dur){
+    if(!this.effectsLayer)return;
+    const g=new PIXI.Graphics();
+    this.effectsLayer.addChild(g);
+    const a=Math.max(1,attack||1);
+    this._duoLightnings.push({g,p0:{x:p0.x,y:p0.y},p2:{x:p2.x,y:p2.y},t:0,dur:dur||300,seed:Math.random()*1000,width:Math.min(11,4+a*0.6)});
+  }
+
+  _duoLightningPath(g,a,b,amp,width,alpha,seed,wobble){
+    const dx=b.x-a.x,dy=b.y-a.y;
+    const len=Math.max(1,Math.hypot(dx,dy));
+    const nx=-dy/len,ny=dx/len;
+    const segs=Math.max(6,Math.min(18,Math.round(len/28)));
+    let px=a.x,py=a.y;
+    g.lineStyle(width,0xff2e63,alpha*0.35);
+    g.moveTo(px,py);
+    for(let i=1;i<=segs;i++){
+      const t=i/segs;
+      const noise=Math.sin(i*12.9898+seed)+Math.cos(i*7.233+wobble)*0.55;
+      const off=noise*amp*Math.sin(Math.PI*t);
+      const x=a.x+dx*t+nx*off,y=a.y+dy*t+ny*off;
+      g.lineTo(x,y);
+      if(i>1&&i<segs&&i%3===0){
+        const bl=amp*(1.2+Math.abs(Math.sin(i*4.11+seed)));
+        g.moveTo(x,y);
+        g.lineTo(x+nx*bl+dx/len*bl*0.5,y+ny*bl+dy/len*bl*0.5);
+        g.moveTo(x,y);
+      }
+      px=x;py=y;
+    }
+    g.lineStyle(Math.max(1,width*0.45),0xffffff,Math.min(1,alpha*1.25));
+    g.moveTo(a.x,a.y);
+    for(let i=1;i<=segs;i++){
+      const t=i/segs;
+      const noise=Math.sin(i*12.9898+seed)+Math.cos(i*7.233+wobble)*0.55;
+      const off=noise*amp*Math.sin(Math.PI*t);
+      g.lineTo(a.x+dx*t+nx*off,a.y+dy*t+ny*off);
+    }
+  }
+
+  _updateDuoLightnings(dt){
+    if(!this._duoLightnings||this._duoLightnings.length===0)return;
+    this._duoLightnings=this._duoLightnings.filter(b=>{
+      b.t+=dt;
+      if(b.t>=b.dur){try{b.g.destroy();}catch(e){}return false;}
+      const p=b.t/b.dur;
+      const grow=Math.min(1,p*5);
+      const alpha=p<0.65?1:Math.max(0,1-(p-0.65)/0.35);
+      const end={x:b.p0.x+(b.p2.x-b.p0.x)*grow,y:b.p0.y+(b.p2.y-b.p0.y)*grow};
+      const amp=7+6*Math.sin(p*Math.PI);
+      const g=b.g;g.clear();
+      this._duoLightningPath(g,b.p0,end,amp*1.7,b.width*1.8,alpha*0.4,b.seed,b.t*0.02);
+      this._duoLightningPath(g,b.p0,end,amp,b.width,alpha,b.seed,b.t*0.02);
+      if(p>0.45){
+        g.beginFill(0xffffff,alpha*0.8);
+        g.drawCircle(end.x,end.y,b.width*(p>0.85?(1-p)*4:1));
+        g.endFill();
+      }
       return true;
     });
   }
@@ -12163,27 +12638,25 @@ function handleKeyDown(e){
   if(keyState[e.code])return;
   keyState[e.code]=true;
   // ゲーム用キーはブラウザのデフォルト動作を抑制
-  if(e.code.startsWith('Arrow')||['Space','KeyX','KeyZ','KeyA','KeyC','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
-  switch(e.code){
-    case 'ArrowLeft':gameState.move(-1);_dasStartedAt=performance.now();startDAS(-1);break;
-    case 'ArrowRight':gameState.move(1);_dasStartedAt=performance.now();startDAS(1);break;
-    case 'ArrowUp':case 'KeyX':gameState.rotate(1);break;
-    case 'KeyZ':gameState.rotate(-1);break;
-    case 'KeyA':gameState.rotate180();break;
-    case 'ArrowDown':startSoftDrop();break;
-    case 'Space':gameState.hardDrop();break;
-    case 'ShiftLeft':case 'ShiftRight':case 'KeyC':gameState.hold();break;
-    case 'KeyU':if(isOfflineSolo||isSoloGame)gameState.undo();break;
-    case 'KeyR':if(isOfflineSolo||isSoloGame)gameState.resetBoard();break;
-  }
+  if(_keyCodes().includes(e.code))e.preventDefault();
+  if(_isKey(e,'left')){gameState.move(-1);_dasStartedAt=performance.now();startDAS(-1);}
+  else if(_isKey(e,'right')){gameState.move(1);_dasStartedAt=performance.now();startDAS(1);}
+  else if(_isKey(e,'rotateCW'))gameState.rotate(1);
+  else if(_isKey(e,'rotateCCW'))gameState.rotate(-1);
+  else if(_isKey(e,'rotate180'))gameState.rotate180();
+  else if(_isKey(e,'softDrop'))startSoftDrop();
+  else if(_isKey(e,'hardDrop'))gameState.hardDrop();
+  else if(_isKey(e,'hold'))gameState.hold();
+  else if(_isKey(e,'undo')){if(isOfflineSolo||isSoloGame)gameState.undo();}
+  else if(_isKey(e,'reset')){if(isOfflineSolo||isSoloGame)gameState.resetBoard();}
 }
 function handleKeyUp(e){
   keyState[e.code]=false;
-  if(e.code==='ArrowLeft'||e.code==='ArrowRight'){
+  if(e.code===_kb('left')||e.code===_kb('right')){
     stopDAS();
     if(renderer)renderer._wallBumpActive=false;
   }
-  if(e.code==='ArrowDown')stopSoftDrop();
+  if(e.code===_kb('softDrop'))stopSoftDrop();
 }
 function startDAS(dir){
   stopDAS();
@@ -12316,49 +12789,59 @@ socket.on('bot_update',(data)=>{
 // BOT piece motion update
 socket.on('bot_piece_update',({id,currentPiece})=>{
   if(!renderer)return;
-  // PuyoRenderer: update opPuyoData
-  if(renderer.opPuyoData&&renderer.opPuyoData[id]){renderer.opPuyoData[id].currentPiece=currentPiece;return;}
-  const d=renderer.opBoardData[id];if(!d)return;
-  // ボットの操作が見えるよう、スポーン位置から着地位置へ落下補間
-  const prevType=d.currentPiece&&d.currentPiece.type;
-  d.currentPiece=currentPiece;
-  // ボットの操作が見えるよう、スポーン位置から着地位置へ約320msで落下補間
-  if(currentPiece&&(!prevType||prevType!==currentPiece.type)&&currentPiece.y>=0){
-    d._pieceLerpY=-2;
-    d._pieceLerpTargetY=currentPiece.y;
-    d._pieceLerpStep=Math.max(0,(currentPiece.y+2)/320);
+  if(renderer.opPuyoData&&renderer.opPuyoData[id]){renderer.opPuyoData[id].currentPiece=currentPiece;_qpPreviewSetPiece(id,currentPiece);return;}
+  const d=renderer.opBoardData&&renderer.opBoardData[id];
+  if(d){
+    const prevType=d.currentPiece&&d.currentPiece.type;
+    d.currentPiece=currentPiece;
+    if(currentPiece&&(!prevType||prevType!==currentPiece.type)&&currentPiece.y>=0){
+      d._pieceLerpY=-2;
+      d._pieceLerpTargetY=currentPiece.y;
+      d._pieceLerpStep=Math.max(0,(currentPiece.y+2)/320);
+    }
   }
+  _qpPreviewSetPiece(id,currentPiece);
 });
 
 // CC2 ボットの操作列(回転→スライド→落下)をパスとして再生する。
 // ミノがプレイヤーの操作通りに動いているように見せる。
 let _botPathTimers = {}; // botId -> interval
+function _qpPreviewSetPiece(id,piece){
+  if(!qpBoards||!qpBoards[id])return;
+  qpBoards[id].currentPiece=piece;
+  if(qpSelectedId===id)qpDrawPreview(id);
+}
 function _startBotPiecePlayback(id, d, type, path, stepMs){
   if(_botPathTimers[id]){clearInterval(_botPathTimers[id]);delete _botPathTimers[id];}
-  if(!path||path.length<2||!d)return;
-  // 旧式の縦方向補間を無効化（パス再生と競合しないように）
-  d._pieceLerpTargetY=undefined; d._pieceLerpStep=0;
+  if(!path||path.length<2)return;
+  if(d){d._pieceLerpTargetY=undefined;d._pieceLerpStep=0;}
+  const setPiece=(piece)=>{
+    if(d){
+      d.currentPiece=piece;
+      if(d.current!==undefined)d.current=piece;
+    }
+    _qpPreviewSetPiece(id,piece);
+  };
   const w0=path[0];
-  d.currentPiece={type,rotation:w0.rotation,x:w0.x,y:w0.y};
+  setPiece({type,rotation:w0.rotation,x:w0.x,y:w0.y});
   const N=path.length;
   let i=0,t=0;
   _botPathTimers[id]=setInterval(()=>{
     t+=16;
-    // セグメント進捗を更新
     while(t>=stepMs&&i<N-1){t-=stepMs;i++;}
     if(i>=N-1){
       clearInterval(_botPathTimers[id]);delete _botPathTimers[id];
       const last=path[N-1];
-      d.currentPiece={type,rotation:last.rotation,x:last.x,y:Math.round(last.y)};
-      d._pieceLerpTargetY=undefined;d._pieceLerpStep=0;
+      const piece={type,rotation:last.rotation,x:last.x,y:Math.round(last.y)};
+      setPiece(piece);
+      if(d){d._pieceLerpTargetY=undefined;d._pieceLerpStep=0;}
       return;
     }
     const a=path[i],b=path[i+1];
     const k=Math.min(1,t/stepMs);
-    // 回転は最短経路で補間し整数に丸める
     let dr=((b.rotation-a.rotation+2)%4+4)%4-2;
     let rot=Math.round((a.rotation+dr*k)%4+4)%4;
-    d.currentPiece={type,rotation:rot,x:a.x+(b.x-a.x)*k,y:Math.round(a.y+(b.y-a.y)*k)};
+    setPiece({type,rotation:rot,x:a.x+(b.x-a.x)*k,y:Math.round(a.y+(b.y-a.y)*k)});
   },16);
 }
 socket.on('bot_piece_path',({id,type,path,stepMs})=>{
@@ -12366,7 +12849,7 @@ socket.on('bot_piece_path',({id,type,path,stepMs})=>{
   let d;
   if(renderer.opPuyoData&&renderer.opPuyoData[id])d=renderer.opPuyoData[id];
   else if(renderer.opBoardData&&renderer.opBoardData[id])d=renderer.opBoardData[id];
-  if(d)_startBotPiecePlayback(id,d,type,path,stepMs||42);
+  _startBotPiecePlayback(id,d,type,path,stepMs||42);
 });
 
 // 現在ミノのリアルタイム位置更新
@@ -12393,6 +12876,8 @@ socket.on('qp_live_update',({players})=>{
       if(p.garbageLines!==undefined) d.garbageLines=p.garbageLines;
       if(p.b2bCount!==undefined) d.b2bCount=p.b2bCount;
       if(p.combo!==undefined){ d.combo=p.combo; d.ren=p.combo; }
+      // duo相方のミノをリアルタイムで描画
+      if(renderer._duoCompId && id === renderer._duoCompId) renderer.drawOpponentBoard(id);
     }
     // ぷよ側（QPでぷよボットが混在する場合）
     const pd=renderer.opPuyoData&&renderer.opPuyoData[id];
@@ -12402,6 +12887,46 @@ socket.on('qp_live_update',({players})=>{
       if(p.nextPieces && !pd._isTetrisBoard) pd.nextQueue=p.nextPieces;
       if(p.garbageLines!==undefined && !pd._isTetrisBoard) pd.ojamaQueue=p.garbageLines;
     }
+    // プレビュー用 qpBoards も更新
+    if(qpBoards!==undefined){
+      const previewPiece=_botPathTimers[id] ? (qpBoards[id]&&qpBoards[id].currentPiece) : p.currentPiece;
+      qpBoards[id]={board:p.board,score:0,lines:0,level:1,currentPiece:previewPiece,nextPieces:p.nextPieces,holdPiece:p.holdPiece,alive:true};
+      if(qpSelectedId===id)qpDrawPreview(id);
+    }
+  }
+});
+
+socket.on('qp_duo_beam',({fromId,toId,attack,lockX,lockY})=>{
+  if(!renderer||!renderer._spawnDuoLightning||settings.particles==='off'||settings.quality==='minimum')return;
+  const lx=Number.isFinite(lockX)?lockX:0;
+  const ly=Number.isFinite(lockY)?lockY:HIDDEN+5;
+  const opStart=(id)=>{
+    const d=renderer.opBoardData&&renderer.opBoardData[id];
+    if(!d||!d.cont||!d.cont.visible)return null;
+    const cell=(d.cell||CELL);
+    return d.cont.toGlobal(new PIXI.Point((lx+0.5)*cell,(ly-HIDDEN+0.5)*cell));
+  };
+  const myStart=()=>{
+    if(!renderer.boardCont)return null;
+    const c=renderer._boardCenterLocal(lx,ly,'I',1);
+    return renderer.boardCont.toGlobal(new PIXI.Point(c.x,c.y));
+  };
+  const opEnd=(id)=>{
+    const d=renderer.opBoardData&&renderer.opBoardData[id];
+    return d&&d.cont?renderer._boardRandomPoint(d.cont,d.boardW,d.boardH):{x:renderer.W/2,y:renderer.H*0.35};
+  };
+  const myEnd=()=>renderer.boardCont?renderer.boardCont.toGlobal(new PIXI.Point(BOARD_W/2,BOARD_H*0.35)):{x:renderer.W/2,y:renderer.H*0.35};
+  let start=null,end=null;
+  if(fromId===socket.id&&toId===socket.id){start=myStart();end=myEnd();}
+  else if(fromId===socket.id&&toId!==socket.id){start=myStart();end=opEnd(toId);}
+  else if(toId===socket.id){start=opStart(fromId)||{x:0,y:renderer.H*0.35};end=myEnd();}
+  else{start=opStart(fromId);end=opEnd(toId);}
+  if(!start||!end)return;
+  const n=Math.min(4,Math.max(2,Math.round((attack||0)/2)));
+  const dur=300;
+  for(let i=0;i<n;i++){
+    const off=(i-(n-1)/2)*18;
+    renderer._spawnDuoLightning({x:start.x+off*0.2,y:start.y+off},{x:end.x+off*1.4,y:end.y+off*0.7},attack,dur);
   }
 });
 
@@ -15817,24 +16342,22 @@ function _puyoStopDas(key){
   if(t){t.active=false;clearTimeout(t.das);clearInterval(t.arr);delete _puyoDasTimers[key];}
 }
 function _puyoKeyUp(e){
-  switch(e.code){
-    case'ArrowLeft':case'ArrowRight':_puyoStopDas(e.code);break;
-    case'ArrowUp':case'KeyX':_puyoStopDas('rot');break;
-  }
+  if(e.code===_kb('left')||e.code===_kb('right'))_puyoStopDas(e.code);
+  if(e.code===_kb('rotateCW'))_puyoStopDas('rot');
 }
 function _puyoKey(e){
   if(!puyoGameState||!puyoGameState.alive)return;
   if(e.repeat)return;
-  if(e.code.startsWith('Arrow')||['Space','KeyX','KeyZ','KeyA','KeyC','ShiftLeft','ShiftRight'].includes(e.code))e.preventDefault();
-  switch(e.code){
-    case'ArrowLeft':_puyoStartDas(e.code,()=>puyoGameState.move(-1));break;
-    case'ArrowRight':_puyoStartDas(e.code,()=>puyoGameState.move(1));break;
-    case'ArrowDown':puyoGameState.hardDrop();break;
-    case'Space':puyoGameState.hardDrop();break;
-    case'ArrowUp':case'KeyX':_puyoStartDas('rot',()=>puyoGameState.rotate(1));break;
-    case'KeyZ':puyoGameState.rotate(-1);break;
-    case'KeyA':puyoGameState.rotate180();break;
-  }
+  const ae=document.activeElement;
+  if(ae&&(ae.tagName==='INPUT'||ae.tagName==='TEXTAREA'||ae.isContentEditable))return;
+  if(_keyCodes().includes(e.code))e.preventDefault();
+  if(e.code===_kb('left'))_puyoStartDas(e.code,()=>puyoGameState.move(-1));
+  else if(e.code===_kb('right'))_puyoStartDas(e.code,()=>puyoGameState.move(1));
+  else if(e.code===_kb('hardDrop'))puyoGameState.hardDrop();
+  else if(e.code===_kb('softDrop'))puyoGameState.hardDrop();
+  else if(e.code===_kb('rotateCW'))_puyoStartDas('rot',()=>puyoGameState.rotate(1));
+  else if(e.code===_kb('rotateCCW'))puyoGameState.rotate(-1);
+  else if(e.code===_kb('rotate180'))puyoGameState.rotate180();
 }
 
 
@@ -15858,66 +16381,56 @@ function _puyoKey(e){
   document.addEventListener('gestureend',    function(e){ e.preventDefault(); }, { passive: false });
 })();
 
-document.addEventListener('DOMContentLoaded',()=>{
-  loadSettings();
-  document.getElementById('ghost-opacity').value=settings.ghostOpacity;
-  document.getElementById('ghost-val').textContent=settings.ghostOpacity+'%';
-  const ooEl=document.getElementById('overlay-opacity');
-  const ooValEl=document.getElementById('overlay-opacity-val');
-  if(ooEl)ooEl.value=settings.overlayOpacity!==undefined?settings.overlayOpacity:33;
-  if(ooValEl)ooValEl.textContent=(settings.overlayOpacity!==undefined?settings.overlayOpacity:33)+'%';
-  document.getElementById('quality-select').value=settings.quality;
-  document.getElementById('quality-val').textContent=settings.quality==='minimum'?'MINIMUM':settings.quality==='ultra'?'ULTRA':settings.quality.toUpperCase();
-  document.getElementById('particles-select').value=settings.particles;
-  document.getElementById('shake-select').value=settings.shake;
-  const ebEl=document.getElementById('error-banner-select');
-  if(ebEl) ebEl.value=settings.errorBanner!==undefined?settings.errorBanner:'on';
-  const siEl=document.getElementById('shake-intensity');
-  const siValEl=document.getElementById('shake-intensity-val');
-  if(siEl)siEl.value=settings.shakeIntensity??100;
-  if(siValEl)siValEl.textContent=(settings.shakeIntensity??100)+'%';
-  const shsEl=document.getElementById('shake-speed');
-  const shsValEl=document.getElementById('shake-speed-val');
-  if(shsEl)shsEl.value=settings.shakeSpeed??100;
-  if(shsValEl)shsValEl.textContent=(settings.shakeSpeed??100)+'%';
-  const arsEl=document.getElementById('arrow-speed');
-  const arsValEl=document.getElementById('arrow-speed-val');
-  if(arsEl)arsEl.value=settings.arrowSpeed??100;
-  if(arsValEl)arsValEl.textContent=(settings.arrowSpeed??100)+'%';
-  const arsZEl=document.getElementById('arrow-size');
-  const arsZValEl=document.getElementById('arrow-size-val');
-  if(arsZEl)arsZEl.value=settings.arrowSize??100;
-  if(arsZValEl)arsZValEl.textContent=(settings.arrowSize??100)+'%';
-  const rpsEl=document.getElementById('ripple-strength');
-  const rpsValEl=document.getElementById('ripple-strength-val');
-  if(rpsEl)rpsEl.value=settings.rippleStrength??100;
-  if(rpsValEl)rpsValEl.textContent=(settings.rippleStrength??100)+'%';
-  const rptrEl=document.getElementById('ripple-speed');
-  const rptrValEl=document.getElementById('ripple-speed-val');
-  if(rptrEl)rptrEl.value=settings.rippleSpeed??100;
-  if(rptrValEl)rptrValEl.textContent=(settings.rippleSpeed??100)+'%';
-  document.getElementById('sfx-volume').value=settings.sfxVolume;
-  document.getElementById('sfx-val').textContent=settings.sfxVolume+'%';
-  document.getElementById('tilt-select').value=settings.tilt;
-  // ソフトドロップ速度
-  const sdi=document.getElementById('soft-drop-interval');
-  const sdv=document.getElementById('soft-drop-val');
-  if(sdi)sdi.value=settings.softDropInterval??50;
-  if(sdv)sdv.textContent=settings.softDropInterval===0?'INSTANT':(settings.softDropInterval??50)+'ms';
-  // DAS / ARR
-  const dasDel=document.getElementById('das-delay-input');
-  const dasDelV=document.getElementById('das-delay-val');
-  if(dasDel)dasDel.value=settings.dasDelay??133;
-  if(dasDelV)dasDelV.textContent=(settings.dasDelay??133)+'ms';
-  const arrInt=document.getElementById('arr-interval-input');
-  const arrIntV=document.getElementById('arr-interval-val');
-  if(arrInt)arrInt.value=settings.arrInterval??20;
-  if(arrIntV)arrIntV.textContent=(settings.arrInterval??20)+'ms';
-  const dcdDel=document.getElementById('dcd-delay-input');
-  const dcdDelV=document.getElementById('dcd-delay-val');
-  if(dcdDel)dcdDel.value=settings.dcdDelay||0;
-  if(dcdDelV)dcdDelV.textContent=(settings.dcdDelay||0)+'ms';
+function applySettingsToUI(){
+  const gi=id=>document.getElementById(id);
+  const qge=(id,v)=>{const el=gi(id);if(el)el.value=v;};
+  const qgt=(id,v)=>{const el=gi(id);if(el)el.textContent=v;};
+  qge('ghost-opacity',settings.ghostOpacity);
+  qgt('ghost-val',settings.ghostOpacity+'%');
+  const oo=settings.overlayOpacity!==undefined?settings.overlayOpacity:33;
+  qge('overlay-opacity',oo);qgt('overlay-opacity-val',oo+'%');
+  qge('quality-select',settings.quality);
+  qgt('quality-val',settings.quality==='minimum'?'MINIMUM':settings.quality==='ultra'?'ULTRA':settings.quality.toUpperCase());
+  qge('particles-select',settings.particles);
+  qge('shake-select',settings.shake);
+  qge('error-banner-select',settings.errorBanner!==undefined?settings.errorBanner:'on');
+  const si=settings.shakeIntensity??100;
+  qge('shake-intensity',si);qgt('shake-intensity-val',si+'%');
+  const shs=settings.shakeSpeed??100;
+  qge('shake-speed',shs);qgt('shake-speed-val',shs+'%');
+  const ars=settings.arrowSpeed??100;
+  qge('arrow-speed',ars);qgt('arrow-speed-val',ars+'%');
+  const arz=settings.arrowSize??100;
+  qge('arrow-size',arz);qgt('arrow-size-val',arz+'%');
+  const rps=settings.rippleStrength??100;
+  qge('ripple-strength',rps);qgt('ripple-strength-val',rps+'%');
+  const rpt=settings.rippleSpeed??100;
+  qge('ripple-speed',rpt);qgt('ripple-speed-val',rpt+'%');
+  qge('sfx-volume',settings.sfxVolume);
+  qgt('sfx-val',settings.sfxVolume+'%');
+  qge('tilt-select',settings.tilt);
+  const sdi=settings.softDropInterval??50;
+  qge('soft-drop-interval',sdi);qgt('soft-drop-val',sdi===0?'INSTANT':sdi+'ms');
+  const das=settings.dasDelay??133;
+  qge('das-delay-input',das);qgt('das-delay-val',das+'ms');
+  const arr=settings.arrInterval??20;
+  qge('arr-interval-input',arr);qgt('arr-interval-val',arr+'ms');
+  const dcd=settings.dcdDelay||0;
+  qge('dcd-delay-input',dcd);qgt('dcd-delay-val',dcd+'ms');
   sfxVol=settings.sfxVolume/100;
+  if(typeof applyDpadLayout==='function')applyDpadLayout();
+  if(typeof applyUiLayout==='function')applyUiLayout();
+  const ul=settings.uiLayout||{};
+  qge('board-offset-y',ul.boardOffsetY||0);qgt('board-offset-y-val',(ul.boardOffsetY||0)+'px');
+  qge('board-scale',ul.boardScale||100);qgt('board-scale-val',(ul.boardScale||100)+'%');
+  qge('side-ui-offset-y',ul.sideUiOffsetY||0);qgt('side-ui-offset-y-val',(ul.sideUiOffsetY||0)+'px');
+  qge('side-ui-font-scale',ul.sideUiFontScale||100);qgt('side-ui-font-scale-val',(ul.sideUiFontScale||100)+'%');
+  for(const a of KEY_BINDING_ACTIONS)qgt('key-'+a.id+'-btn',keyCodeLabel(_kb(a.id)));
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  loadSettings(getSavedName());
+  applySettingsToUI();
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
   document.getElementById('gl-join-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glJoinRoom();});
   document.getElementById('gl-room-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glCreateRoom();});
@@ -15938,26 +16451,6 @@ document.addEventListener('DOMContentLoaded',()=>{
       setupMobileControls();
     }
   }catch(e){}
-  // Apply saved dpad layout
-  applyDpadLayout();
-  // UIレイアウト設定の初期化
-  const ul=settings.uiLayout||{};
-  const bOffY=document.getElementById('board-offset-y');
-  const bOffYv=document.getElementById('board-offset-y-val');
-  const bSc=document.getElementById('board-scale');
-  const bScv=document.getElementById('board-scale-val');
-  const sOffY=document.getElementById('side-ui-offset-y');
-  const sOffYv=document.getElementById('side-ui-offset-y-val');
-  const sFsc=document.getElementById('side-ui-font-scale');
-  const sFscv=document.getElementById('side-ui-font-scale-val');
-  if(bOffY)bOffY.value=ul.boardOffsetY||0;
-  if(bOffYv)bOffYv.textContent=(ul.boardOffsetY||0)+'px';
-  if(bSc)bSc.value=ul.boardScale||100;
-  if(bScv)bScv.textContent=(ul.boardScale||100)+'%';
-  if(sOffY)sOffY.value=ul.sideUiOffsetY||0;
-  if(sOffYv)sOffYv.textContent=(ul.sideUiOffsetY||0)+'px';
-  if(sFsc)sFsc.value=ul.sideUiFontScale||100;
-  if(sFscv)sFscv.textContent=(ul.sideUiFontScale||100)+'%';
 
   // ダブルタップ拡大・ピンチ拡大を完全ブロック
   let _lastTap = 0;

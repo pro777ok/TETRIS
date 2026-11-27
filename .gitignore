@@ -1,3 +1,7 @@
 target
 node_modules
 .env
+quickplay_data
+user_settings
+training_data
+replay_data

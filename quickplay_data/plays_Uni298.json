@@ -1,13 +1,13 @@
 [
   {
-    "recordedAt": 1795656521465,
-    "seed": 348810,
+    "recordedAt": 1795741004553,
+    "seed": 417437,
     "name": "Uni298",
-    "durationMs": 208291,
+    "durationMs": 190392,
     "apm": 0,
     "pps": 0,
     "lines": 0,
-    "finalM": 1906.3,
+    "finalM": 0.5,
     "frames": []
   }
 ]

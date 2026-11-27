@@ -255,6 +255,18 @@
     transition: border-color 0.2s;
   }
   .online-player-tag:hover { border-color: rgba(0,245,255,0.5); }
+  .qp-invite-btn {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid rgba(255,0,110,0.45);
+    border-radius: 8px;
+    background: rgba(255,0,110,0.16);
+    color: #ff9ace;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.62rem;
+    cursor: pointer;
+  }
+  .qp-invite-btn:hover { background: rgba(255,0,110,0.3); color: #fff; }
   .prev-room-banner {
     background: rgba(0,245,255,0.08);
     border: 1px solid rgba(0,245,255,0.3);
@@ -403,6 +415,21 @@
   .settings-val { color: var(--neon-yellow); font-size: 0.85rem; float: right; }
   .settings-sec-head { cursor: pointer; user-select: none; transition: color 0.15s; }
   .settings-sec-head:hover { color: var(--neon-yellow); }
+  .keybind-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.5rem; }
+  .keybind-row label { flex: 1; color: rgba(255,255,255,0.6); font-size: 0.78rem; letter-spacing: 0.08em; }
+  .keybind-btn {
+    min-width: 7.5rem;
+    padding: 0.35rem 0.5rem;
+    background: rgba(0,245,255,0.08);
+    border: 1px solid rgba(0,245,255,0.35);
+    border-radius: 4px;
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+  .keybind-btn:hover { background: rgba(0,245,255,0.2); }
+  .keybind-btn.capturing { background: rgba(255,0,110,0.2); border-color: var(--neon-pink); color: var(--neon-pink); }
 
   /* RESULT */
   #result-overlay {
@@ -1136,6 +1163,15 @@
     white-space: nowrap;
   }
   .qp-target-badge.zero { opacity: 0.35; border-color: rgba(255,255,255,0.2); color: #fff; }
+  .qp-mission {
+    flex: 0 0 auto;
+    font-size: 0.58rem;
+    color: #ff9ace;
+    border: 1px solid rgba(255,154,206,0.35);
+    border-radius: 4px;
+    padding: 0.05rem 0.25rem;
+    white-space: nowrap;
+  }
   #qp-footer {
     display: flex;
     align-items: center;
@@ -1222,7 +1258,8 @@
   }
   /* DUO SETTINGS (クイックプレイ専用ホストパネル) */
   #qp-duo-wrap,
-  #qp-cc2-wrap {
+  #qp-cc2-wrap,
+  #qp-invite-wrap {
     display: none;
     flex-direction: column;
     gap: 0.35rem;
@@ -1237,6 +1274,8 @@
   #qp-cc2-wrap {
     border-color: rgba(0,245,255,0.3);
   }
+  #qp-invite-wrap { border-color: rgba(255,154,206,0.45); }
+  #qp-invite-list { display: flex; flex-wrap: wrap; gap: 0.25rem; max-height: 88px; overflow: auto; }
   #qp-duo-wrap .qp-duo-title,
   #qp-cc2-wrap .qp-duo-title {
     font-family: 'Orbitron', sans-serif;
@@ -1352,6 +1391,29 @@
     color: rgba(255,46,99,0.85);
   }
   #qp-hud-penalty-val { font-variant-numeric: tabular-nums; color: #ff2e63; }
+  #qp-hud-mission {
+    margin-top: 0.2rem;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.62rem;
+    color: #ff9ace;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #qp-hud-hardduo-event {
+    margin-top: 0.2rem;
+    font-family: 'Orbitron', 'Share Tech Mono', monospace;
+    font-size: 0.65rem;
+    color: #ff4400;
+    text-shadow: 0 0 8px #ff4400;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    animation: hardduo-pulse 1s ease-in-out infinite;
+  }
+  @keyframes hardduo-pulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
   #qp-hud-row2 {
     display: flex;
     align-items: center;
@@ -1477,6 +1539,7 @@
   #qp-rank-list .qp-rk { min-width: 14px; color: rgba(255,255,255,0.35); }
   #qp-rank-list .qp-rm { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 700; }
   #qp-rank-list .qp-rlvl { min-width: 34px; text-align: right; font-size: 0.6rem; }
+  #qp-rank-list .qp-rmission { min-width: 22px; text-align: center; color: #ff9ace; font-size: 0.58rem; }
 </style>
 </head>
 <body>
@@ -1725,6 +1788,11 @@
             <div class="toggle-knob"></div>
           </label>
         </div>
+      </div>
+
+      <div id="qp-invite-wrap" class="qp-duo-wrap">
+        <div class="qp-duo-title">📨 ONLINE DUO <span class="qp-duo-sub">招待したプレイヤーがホストの相方になります</span></div>
+        <div id="qp-invite-list"></div>
       </div>
 
     </div>
@@ -2149,6 +2217,8 @@
       <div id="qp-hud-accel" style="display:none"><span id="qp-hud-accel-bar"><i id="qp-hud-accel-fill"></i></span><span id="qp-hud-accel-val">-0.25</span></div>
       <div id="qp-hud-penalty" style="display:none"><span>PENALTY</span><span id="qp-hud-penalty-val">×0.00</span></div>
       <div id="qp-hud-targets" class="zero">targeted ×0</div>
+      <div id="qp-hud-mission"></div>
+      <div id="qp-hud-hardduo-event" style="display:none"></div>
     </div>
 
     <!-- Quick Play 試合中のランキング -->
@@ -2380,6 +2450,20 @@
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">タップとスワイプの判定距離 (小さい=敏感, 大きい=タップしやすい)</div>
     </div>
+    <h2 class="settings-sec-head" style="margin-top:1rem" onclick="toggleSettingsSection('sec-keybinds')">▼ 🔑 KEY BINDINGS</h2>
+    <div id="sec-keybinds" class="settings-sec">
+    <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ボタンを押してからキーを入力。ESCでキャンセル</div>
+    <div class="keybind-row"><label>LEFT</label><button type="button" class="keybind-btn" id="key-left-btn" onclick="startKeyCapture('left')">←</button></div>
+    <div class="keybind-row"><label>RIGHT</label><button type="button" class="keybind-btn" id="key-right-btn" onclick="startKeyCapture('right')">→</button></div>
+    <div class="keybind-row"><label>ROTATE CW</label><button type="button" class="keybind-btn" id="key-rotateCW-btn" onclick="startKeyCapture('rotateCW')">↑</button></div>
+    <div class="keybind-row"><label>ROTATE CCW</label><button type="button" class="keybind-btn" id="key-rotateCCW-btn" onclick="startKeyCapture('rotateCCW')">Z</button></div>
+    <div class="keybind-row"><label>ROTATE 180</label><button type="button" class="keybind-btn" id="key-rotate180-btn" onclick="startKeyCapture('rotate180')">A</button></div>
+    <div class="keybind-row"><label>SOFT DROP</label><button type="button" class="keybind-btn" id="key-softDrop-btn" onclick="startKeyCapture('softDrop')">↓</button></div>
+    <div class="keybind-row"><label>HARD DROP</label><button type="button" class="keybind-btn" id="key-hardDrop-btn" onclick="startKeyCapture('hardDrop')">SPACE</button></div>
+    <div class="keybind-row"><label>HOLD</label><button type="button" class="keybind-btn" id="key-hold-btn" onclick="startKeyCapture('hold')">C</button></div>
+    <div class="keybind-row"><label>UNDO (SOLO)</label><button type="button" class="keybind-btn" id="key-undo-btn" onclick="startKeyCapture('undo')">U</button></div>
+    <div class="keybind-row"><label>RESET (SOLO)</label><button type="button" class="keybind-btn" id="key-reset-btn" onclick="startKeyCapture('reset')">R</button></div>
+    </div>
     <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>
     <button class="btn" onclick="resetAllSettings()" style="margin-top:0.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;width:100%;">🗑 RESET ALL SETTINGS</button>
   </div>
@@ -2451,6 +2535,7 @@
 </div>
 
 
+<script src="missions.js"></script>
 <script src="game.js"></script>
 </body>
 </html>
